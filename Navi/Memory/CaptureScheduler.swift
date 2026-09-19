@@ -75,11 +75,17 @@ final class CaptureScheduler: @unchecked Sendable {
         Log.memory.info("Capture loop started")
         // First tick shortly after start so the user sees something happen.
         try? await Task.sleep(for: .seconds(3))
+        var lastSkip: Skip?
         while !Task.isCancelled {
             let cfg = await MainActor.run { CaptureConfig.current }
             let started = Date()
             let skip = await tick(cfg)
-            if let skip { Log.memory.debug("Capture skipped: \(String(describing: skip))") }
+            // Log a skip reason once when it changes (not every tick).
+            if skip != lastSkip {
+                if let skip { Log.memory.info("Capture skipped: \(String(describing: skip), privacy: .public)") }
+                else { Log.memory.info("Capture resumed") }
+                lastSkip = skip
+            }
             let elapsed = Date().timeIntervalSince(started)
             let wait = max(2, Double(cfg.intervalSeconds) - elapsed)
             try? await Task.sleep(for: .seconds(wait))
