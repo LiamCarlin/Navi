@@ -172,6 +172,7 @@ final class PanelViewModel: ObservableObject {
         if !q.isEmpty { recentQueries = Array(([q] + recentQueries).prefix(20)) }
         Task { @MainActor in
             let outcome = await result.perform()
+            if case .keepOpen = outcome, result.kind == .calculation { showToast("Copied") }
             handle(outcome)
         }
     }
