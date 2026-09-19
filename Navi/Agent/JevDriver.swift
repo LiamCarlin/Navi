@@ -125,7 +125,7 @@ struct JevDriver: Sendable {
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
     struct Request: @unchecked Sendable {
-        var state: String                              // JSON text
+        var state: JevClient.JSONValue                 // structured state object
         var questions: [String: JevClient.Question]
         var operations: [String]                       // offered operation names
         var heads: [String: [String]]                  // head name → offered ids
@@ -176,94 +176,95 @@ struct JevDriver: Sendable {
     static func request(for input: StepInput) -> Request {
         let snap = input.snapshot
         let goal = input.task
-        let operationInstructions = serialize(["goal": goal, "rules": nextActionRules])
-        func targetInstructions(_ op: Operation) -> String {
-            serialize(["goal": goal, "operation": op.rawValue, "rules": [nextActionRules, targetRules]])
+        typealias J = JevClient.JSONValue
+        let operationInstructions = J(any: ["goal": goal, "rules": nextActionRules])
+        func targetInstructions(_ op: Operation) -> J {
+            J(any: ["goal": goal, "operation": op.rawValue, "rules": [nextActionRules, targetRules]])
         }
-        func criteria(_ e: AXElement) -> String {
+        func criteria(_ e: AXElement) -> J {
             var d: [String: Any] = ["element": "[\(e.index)] \(e.label)", "current_value": e.value ?? "", "role": e.role]
             if e.role == "AXCheckBox" || e.role == "AXRadioButton" { d["checked"] = (e.value == "1" || e.value?.lowercased() == "true") }
             if e.role == "AXTab" { d["selected"] = (e.value == "1" || e.value?.lowercased() == "true") }
             if e.role == "AXDisclosureTriangle" || e.role == "AXPopUpButton" { d["expanded"] = (e.value == "1") }
             if !e.path.isEmpty { d["context"] = e.path }
-            return serialize(d)
+            return J(any: d)
         }
 
         var questions: [String: JevClient.Question] = [:]
         var heads: [String: [String]] = [:]
         var operations: [String: String] = [:]
-        var req = Request(state: formatState(input), questions: [:], operations: [], heads: [:])
+        var req = Request(state: J(any: stateJSON(for: input)), questions: [:], operations: [], heads: [:])
 
         // CLICK — every candidate.
         let clickable = snap.elements.filter { $0.operations.contains("CLICK") }
         if !clickable.isEmpty {
             operations[Operation.click.rawValue] = Operation.click.label
-            var crit: [String: String] = [:]
+            var crit: [String: J] = [:]
             for e in clickable { crit["\(e.index)"] = criteria(e) }
-            questions["click_target"] = .choice(instructions: targetInstructions(.click), criteria: crit)
+            questions["click_target"] = .choiceJSON(instructions: targetInstructions(.click), criteria: crit)
             heads["click_target"] = clickable.map { "\($0.index)" }
         }
         // TYPE_TEXT — editable, non-secure fields.
         let editable = snap.elements.filter { $0.operations.contains("TYPE_TEXT") }
         if !editable.isEmpty {
             operations[Operation.typeText.rawValue] = Operation.typeText.label
-            var crit: [String: String] = [:]
+            var crit: [String: J] = [:]
             for e in editable { crit["\(e.index)"] = criteria(e) }
-            questions["type_text_target"] = .choice(instructions: targetInstructions(.typeText), criteria: crit)
+            questions["type_text_target"] = .choiceJSON(instructions: targetInstructions(.typeText), criteria: crit)
             heads["type_text_target"] = editable.map { "\($0.index)" }
         }
         // SELECT — pop-ups whose options are enumerable: "index:option".
         let selectable = snap.elements.filter { $0.operations.contains("SELECT") }
         if !selectable.isEmpty {
-            var crit: [String: String] = [:]
+            var crit: [String: J] = [:]
             var ids: [String] = []
             for e in selectable {
                 for (i, opt) in e.options.prefix(40).enumerated() {
                     let key = "\(e.index):\(i + 1)"
                     if crit.count >= 250 { break }
-                    crit[key] = serialize(["element": "[\(e.index)] \(e.label) → \(opt)", "current_value": e.value ?? "", "role": e.role])
+                    crit[key] = J(any: ["element": "[\(e.index)] \(e.label) → \(opt)", "current_value": e.value ?? "", "role": e.role])
                     ids.append(key)
                     req.selectTargets[key] = (e.id, opt)
                 }
             }
             if !crit.isEmpty {
                 operations[Operation.select.rawValue] = Operation.select.label
-                questions["select_target"] = .choice(instructions: targetInstructions(.select), criteria: crit)
+                questions["select_target"] = .choiceJSON(instructions: targetInstructions(.select), criteria: crit)
                 heads["select_target"] = ids
             }
         }
         // KEY — fixed combos.
         do {
             operations[Operation.key.rawValue] = Operation.key.label
-            var crit: [String: String] = [:]
-            for (k, d) in keyCombos { crit[k] = d }
-            questions["key_target"] = .choice(instructions: targetInstructions(.key), criteria: crit)
+            var crit: [String: J] = [:]
+            for (k, d) in keyCombos { crit[k] = .string(d) }
+            questions["key_target"] = .choiceJSON(instructions: targetInstructions(.key), criteria: crit)
             heads["key_target"] = keyCombos.map(\.0)
         }
         // OPEN_APP / OPEN_URL — only when the task names something (zero-latency candidates).
         if !input.appCandidates.isEmpty {
             operations[Operation.openApp.rawValue] = Operation.openApp.label
-            var crit: [String: String] = [:]
+            var crit: [String: J] = [:]
             for (i, a) in input.appCandidates.prefix(20).enumerated() {
-                let key = "a\(i + 1)"; crit[key] = serialize(["app": a]); req.appTargets[key] = a
+                let key = "a\(i + 1)"; crit[key] = J(any: ["app": a]); req.appTargets[key] = a
             }
-            questions["open_app_target"] = .choice(instructions: targetInstructions(.openApp), criteria: crit)
+            questions["open_app_target"] = .choiceJSON(instructions: targetInstructions(.openApp), criteria: crit)
             heads["open_app_target"] = Array(crit.keys).sorted()
         }
         if !input.urlCandidates.isEmpty {
             operations[Operation.openURL.rawValue] = Operation.openURL.label
-            var crit: [String: String] = [:]
+            var crit: [String: J] = [:]
             for (i, u) in input.urlCandidates.prefix(20).enumerated() {
-                let key = "u\(i + 1)"; crit[key] = serialize(["url": u]); req.urlTargets[key] = u
+                let key = "u\(i + 1)"; crit[key] = J(any: ["url": u]); req.urlTargets[key] = u
             }
-            questions["open_url_target"] = .choice(instructions: targetInstructions(.openURL), criteria: crit)
+            questions["open_url_target"] = .choiceJSON(instructions: targetInstructions(.openURL), criteria: crit)
             heads["open_url_target"] = Array(crit.keys).sorted()
         }
         // Always offered.
         for op in [Operation.scrollUp, .scrollDown, .wait, .done, .blocked, .needVision] {
             operations[op.rawValue] = op.label
         }
-        questions["operation"] = .choice(instructions: operationInstructions, criteria: operations)
+        questions["operation"] = .choiceJSON(instructions: operationInstructions, criteria: operations.mapValues { J.string($0) })
         heads["operation"] = Array(operations.keys).sorted()
 
         // Safety nouls ride along in the same call (same wording as JevGate).

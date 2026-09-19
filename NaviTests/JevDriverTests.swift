@@ -102,13 +102,14 @@ struct JevDriverTests {
         // Structured criteria carry the element table row and the repo's TARGET rules.
         let data = try JSONEncoder().encode(q["click_target"]!)
         let enc = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let crit = try #require(enc["criteria"] as? [String: String])
-        #expect(crit["2"]?.contains("\"element\":\"[2] Sign in\"") == true)
-        #expect(crit["3"]?.contains("\"current_value\":\"Medium\"") == true)
-        #expect((enc["instructions"] as? String)?.contains("Choose only an offered element index") == true)
+        let crit = try #require(enc["criteria"] as? [String: [String: Any]])
+        #expect(crit["2"]?["element"] as? String == "[2] Sign in")
+        #expect(crit["3"]?["current_value"] as? String == "Medium")
+        let instr = try #require(enc["instructions"] as? [String: Any])
+        #expect((instr["rules"] as? [String])?.last?.contains("Choose only an offered element index") == true)
         let opData = try JSONEncoder().encode(q["operation"]!)
         let opEnc = try #require(try JSONSerialization.jsonObject(with: opData) as? [String: Any])
-        #expect((opEnc["instructions"] as? String)?.contains("BLOCKED means no supported operation can make progress") == true)
+        #expect(((opEnc["instructions"] as? [String: Any])?["rules"] as? String)?.contains("BLOCKED means no supported operation can make progress") == true)
     }
 
     @Test func questionsNeverExceed255Options() throws {

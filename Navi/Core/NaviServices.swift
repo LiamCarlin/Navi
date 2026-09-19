@@ -72,6 +72,12 @@ final class NaviServices: @unchecked Sendable {
         let claude = ClaudeClient()
         let memory = MemoryService(jev: jev, claude: claude)
         let agent = ComputerAgent(jev: jev, claude: claude)
+        // Browser tasks run on browser-use/jev-ultrafast (vendored) via the Python bridge.
+        ComputerAgent.browserRunner = { task, startURL, handle in
+            let maxSteps = UserDefaults.standard.integer(forKey: "agentMaxSteps")
+            let shots = UserDefaults.standard.bool(forKey: "ultrafastScreenshots")
+            await UltrafastBridge.run(task: task, startURL: startURL, handle: handle, maxSteps: maxSteps, screenshots: shots)
+        }
         let router = QueryRouter(jev: jev, claude: claude, memory: memory, agent: agent)
         let answers = AnswerService(claude: claude)
         return NaviServices(jev: jev, claude: claude, router: router, answers: answers, agent: agent, memory: memory)

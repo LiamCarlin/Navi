@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard url.scheme == "navi" else { continue }
             #if DEBUG
             if DebugSnapshot.handle(url) { continue }   // navi://debug-snapshot (Settings/DebugSnapshot.swift)
+            if DebugJevProbe.handle(url, jev: services.jev) { continue }   // navi://debug-jev-probe
             #endif
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
             let q = comps?.queryItems?.first(where: { $0.name == "q" })?.value ?? ""

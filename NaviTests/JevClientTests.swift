@@ -72,7 +72,7 @@ struct JevVercelGatewayTests {
     @Test func buildsGatewayRequestHeaders() throws {
         setenv("AI_GATEWAY_API_KEY", "vck_test", 1)
         defer { unsetenv("AI_GATEWAY_API_KEY") }
-        let (req, key) = try JevClient.buildRequest(transport: .vercelGateway, state: "s",
+        let (req, key) = try JevClient.buildRequest(transport: .vercelGateway, state: .string("s"),
                                                     questions: ["ok": .noul(instructions: "x")], model: "jev-latest")
         #expect(req.url == JevClient.vercelEndpoint)
         #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer vck_test")
@@ -84,21 +84,40 @@ struct JevVercelGatewayTests {
         #expect(body["model"] == nil)                                             // model travels in the header
         #expect(((body["questions"] as? [String: [String: Any]])?["ok"]?["type"] as? String) == "boolean")
         #expect(String(data: key.prefix(3), encoding: .utf8) == "vc:")
-        let (req2, _) = try JevClient.buildRequest(transport: .vercelGateway, state: "s", questions: [:], model: "typesafe-ai/jev-fast")
+        let (req2, _) = try JevClient.buildRequest(transport: .vercelGateway, state: .string("s"), questions: [:], model: "typesafe-ai/jev-fast")
         #expect(req2.value(forHTTPHeaderField: "ai-model-id") == "typesafe-ai/jev-fast")
     }
 
     @Test func resolvesTransportPreference() {
-        unsetenv("TYPESAFE_API_KEY"); unsetenv("AI_GATEWAY_API_KEY")
-        // No keys stored in this test environment's Keychain for the Navi service is assumed;
-        // env vars drive resolution.
+        // Env vars override the Keychain, so these cases hold regardless of what this
+        // Mac's Keychain contains.
         setenv("AI_GATEWAY_API_KEY", "vck_test", 1)
-        #expect(JevClient.resolveTransport(preference: .auto) == .vercelGateway)
         #expect(JevClient.resolveTransport(preference: .vercelGateway) == .vercelGateway)
         setenv("TYPESAFE_API_KEY", "ts_test", 1)
         #expect(JevClient.resolveTransport(preference: .auto) == .typesafe)
+        #expect(JevClient.resolveTransport(preference: .typesafe) == .typesafe)
         #expect(JevClient.resolveTransport(preference: .vercelGateway) == .vercelGateway)
         unsetenv("TYPESAFE_API_KEY"); unsetenv("AI_GATEWAY_API_KEY")
+    }
+
+    @Test func encodesStructuredStateAndCriteria() throws {
+        setenv("TYPESAFE_API_KEY", "ts_test", 1)
+        defer { unsetenv("TYPESAFE_API_KEY") }
+        let state = JevClient.JSONValue(any: ["page": ["url": "https://x", "title": "T"], "elements": [["index": 1, "label": "Search"]]])
+        let q: [String: JevClient.Question] = [
+            "operation": .choice(instructions: ["goal": "g", "rules": "r"], criteria: ["CLICK": "Click", "DONE": "Done"]),
+            "click_target": .choice(instructions: ["goal": "g"], criteria: ["1": ["element": "[1] Search", "role": "AXButton", "checked": false]]),
+        ]
+        let (req, _) = try JevClient.buildRequest(transport: .typesafe, state: state, questions: q, model: "jev-latest")
+        let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+        let st = body["state"] as! [String: Any]
+        #expect((st["page"] as? [String: Any])?["title"] as? String == "T")
+        #expect(((st["elements"] as? [[String: Any]])?.first?["index"] as? Int) == 1)
+        let qs = body["questions"] as! [String: [String: Any]]
+        #expect((qs["operation"]?["instructions"] as? [String: Any])?["goal"] as? String == "g")
+        let crit = qs["click_target"]?["criteria"] as? [String: [String: Any]]
+        #expect(crit?["1"]?["role"] as? String == "AXButton")
+        #expect(crit?["1"]?["checked"] as? Bool == false)
     }
 
     @Test func derivedConfidence() {

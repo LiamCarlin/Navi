@@ -63,28 +63,81 @@ final class JevClient: @unchecked Sendable {
         session = URLSession(configuration: cfg)
     }
 
+    // MARK: - JSON values (structured state / instructions / criteria)
+
+    /// Arbitrary JSON, so `state`, `instructions` and `criteria` can be real
+    /// objects — the form the docs recommend ("use an object for most requests").
+    indirect enum JSONValue: Encodable, Sendable, Equatable {
+        case string(String), number(Double), bool(Bool), null
+        case array([JSONValue]), object([String: JSONValue])
+
+        /// Converts Foundation JSON (`[String: Any]`, `[Any]`, `String`, `NSNumber`, `NSNull`).
+        init(any: Any) {
+            switch any {
+            case let v as JSONValue: self = v
+            case let s as String: self = .string(s)
+            case let b as Bool: self = .bool(b)
+            case let n as NSNumber: self = .number(n.doubleValue)
+            case let i as Int: self = .number(Double(i))
+            case let d as Double: self = .number(d)
+            case let a as [Any]: self = .array(a.map { JSONValue(any: $0) })
+            case let o as [String: Any]: self = .object(o.mapValues { JSONValue(any: $0) })
+            case is NSNull: self = .null
+            default: self = .string(String(describing: any))
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.singleValueContainer()
+            switch self {
+            case .string(let s): try c.encode(s)
+            case .number(let d): if d == d.rounded(), abs(d) < 1e15 { try c.encode(Int(d)) } else { try c.encode(d) }
+            case .bool(let b): try c.encode(b)
+            case .null: try c.encodeNil()
+            case .array(let a): try c.encode(a)
+            case .object(let o): try c.encode(o)
+            }
+        }
+    }
+
     // MARK: - Question / answer types
 
     enum Question: Encodable, Sendable {
         case choice(instructions: String, criteria: [String: String])
         case score(instructions: String, criteria: [String])
         case noul(instructions: String)
+        /// Structured variants — instructions/criteria are JSON objects, as in
+        /// docs.typesafe.ai/primitives/advanced. Criteria: option name → object.
+        case choiceJSON(instructions: JSONValue, criteria: [String: JSONValue])
+        case scoreJSON(instructions: JSONValue, criteria: [JSONValue])
+        case noulJSON(instructions: JSONValue)
 
         private enum CodingKeys: String, CodingKey { case type, instructions, criteria }
 
         /// Set on the encoder's userInfo to spell yes/no questions `boolean` (Vercel).
         static let booleanSpellingKey = CodingUserInfoKey(rawValue: "jev.booleanSpelling")!
 
+        /// Convenience: build a structured choice from Foundation JSON.
+        static func choice(instructions: [String: Any], criteria: [String: Any]) -> Question {
+            .choiceJSON(instructions: JSONValue(any: instructions), criteria: criteria.mapValues { JSONValue(any: $0) })
+        }
+
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
+            let boolSpelling = encoder.userInfo[Self.booleanSpellingKey] as? String ?? "noul"
             switch self {
             case .choice(let i, let crit):
                 try c.encode("choice", forKey: .type); try c.encode(i, forKey: .instructions); try c.encode(crit, forKey: .criteria)
             case .score(let i, let crit):
                 try c.encode("score", forKey: .type); try c.encode(i, forKey: .instructions); try c.encode(crit, forKey: .criteria)
             case .noul(let i):
-                let spelling = encoder.userInfo[Self.booleanSpellingKey] as? String ?? "noul"
-                try c.encode(spelling, forKey: .type); try c.encode(i, forKey: .instructions)
+                try c.encode(boolSpelling, forKey: .type); try c.encode(i, forKey: .instructions)
+            case .choiceJSON(let i, let crit):
+                try c.encode("choice", forKey: .type); try c.encode(i, forKey: .instructions); try c.encode(crit, forKey: .criteria)
+            case .scoreJSON(let i, let crit):
+                try c.encode("score", forKey: .type); try c.encode(i, forKey: .instructions); try c.encode(crit, forKey: .criteria)
+            case .noulJSON(let i):
+                try c.encode(boolSpelling, forKey: .type); try c.encode(i, forKey: .instructions)
             }
         }
     }
@@ -130,9 +183,15 @@ final class JevClient: @unchecked Sendable {
         JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
     }
 
-    /// Ask Jev one or more questions about `state`. Throws `NaviError`.
+    /// Ask Jev one or more questions about a plain-text `state`. Throws `NaviError`.
     /// `transport` overrides the Settings preference (used by the connection tests).
     func ask(state: String, questions: [String: Question], model: String? = nil,
+             cacheable: Bool = true, transport: Transport? = nil) async throws -> Response {
+        try await ask(state: .string(state), questions: questions, model: model, cacheable: cacheable, transport: transport)
+    }
+
+    /// Structured-state variant (`state` is a JSON object/array — the recommended form).
+    func ask(state: JSONValue, questions: [String: Question], model: String? = nil,
              cacheable: Bool = true, transport: Transport? = nil) async throws -> Response {
         let pref = Self.preference
         guard let transport = transport ?? Self.resolveTransport(preference: pref) else {
@@ -162,7 +221,7 @@ final class JevClient: @unchecked Sendable {
 
     /// Builds the HTTP request for a transport. Returns the request and a cache key
     /// (the transport-tagged body).
-    static func buildRequest(transport: Transport, state: String, questions: [String: Question],
+    static func buildRequest(transport: Transport, state: JSONValue, questions: [String: Question],
                              model: String) throws -> (URLRequest, Data) {
         switch transport {
         case .typesafe:
@@ -211,13 +270,13 @@ final class JevClient: @unchecked Sendable {
     // MARK: - Internals
 
     private struct RequestBody: Encodable {
-        var state: String
+        var state: JSONValue
         var model: String
         var questions: [String: Question]
     }
 
     private struct VercelRequestBody: Encodable {
-        var state: String
+        var state: JSONValue
         var questions: [String: Question]
     }
 
