@@ -64,7 +64,7 @@ final class PanelController {
             self.viewModel.reset()
             // If something activated Navi (e.g. the settings window), hand focus back.
             if NSApp.isActive, let app = self.previousApp, app != NSRunningApplication.current,
-               !NSApp.windows.contains(where: { $0.isVisible && $0.identifier?.rawValue == WindowID.main }) {
+               !NSApp.windows.contains(where: { $0.isVisible && AppActivation.isMainWindow($0) }) {
                 app.activate()
             }
         })

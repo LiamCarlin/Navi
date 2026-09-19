@@ -11,6 +11,7 @@ final class HotKeyManager {
 
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+    private var settingsObserver: NSObjectProtocol?
     private static let signature: OSType = 0x4E415649 // 'NAVI'
 
     func register(settings: NaviSettings) {
@@ -40,7 +41,8 @@ final class HotKeyManager {
             Log.app.info("Hotkey registered: code=\(keyCode) mods=\(mods)")
         }
 
-        NotificationCenter.default.addObserver(forName: .naviSettingsChanged, object: nil, queue: .main) { [weak self] _ in
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        settingsObserver = NotificationCenter.default.addObserver(forName: .naviSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
                 if NaviSettings.shared.hotKeyCode != keyCode || NaviSettings.shared.hotKeyModifiers != mods {
