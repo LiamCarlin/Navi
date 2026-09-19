@@ -32,6 +32,13 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var statusLine: String = ""   // e.g. "Jev · openApp 92% · 140ms"
     @Published private(set) var isRouting = false
 
+    // Panel UI hooks (additive; see Panel/Views/NaviPanelView.swift)
+    /// Bumped every time the panel is shown so the view can re-focus the text field.
+    @Published private(set) var focusRequestID: Int = 0
+    /// Called by the root view whenever its rendered height changes so the
+    /// NSPanel can resize/re-center. Set by `PanelController`.
+    var onContentHeightChange: ((CGFloat) -> Void)?
+
     enum Mode: Equatable { case results, answer, agent }
 
     let services: NaviServices
@@ -55,6 +62,25 @@ final class PanelViewModel: ObservableObject {
         toast = nil
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }
         mode = .results
+        focusRequestID &+= 1
+    }
+
+    /// Ask the view to (re)focus the text field.
+    func requestFocus() { focusRequestID &+= 1 }
+
+    /// Dismisses the error banner.
+    func clearError() { errorMessage = nil }
+
+    /// Copies the current answer to the pasteboard and shows a toast.
+    @discardableResult
+    func copyAnswer() -> Bool {
+        let text = answerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        showToast("Copied")
+        return true
     }
 
     func reset() {
@@ -240,3 +266,101 @@ final class PanelViewModel: ObservableObject {
         onDismiss?()
     }
 }
+
+// MARK: - Previews (Panel UI)
+
+#if DEBUG
+extension PanelViewModel {
+    /// Builds a view model with canned state for SwiftUI previews. Uses the
+    /// placeholder services so nothing touches the network.
+    static func preview(query: String = "",
+                        results: [SearchResult] = [],
+                        decision: RouteDecision? = nil,
+                        mode: Mode = .results,
+                        answer: String = "",
+                        isAnswering: Bool = false,
+                        agentTask: String? = nil,
+                        agentEvents: [AgentEvent] = [],
+                        agentScreenshot: NSImage? = nil,
+                        pendingApproval: (id: UUID, description: String, risk: String)? = nil,
+                        toast: String? = nil,
+                        error: String? = nil,
+                        statusLine: String? = nil,
+                        isRouting: Bool = false,
+                        selectedIndex: Int = 0) -> PanelViewModel {
+        let jev = JevClient()
+        let claude = ClaudeClient()
+        let memory = MemoryService(jev: jev, claude: claude)
+        let agent = ComputerAgent(jev: jev, claude: claude)
+        let router = QueryRouter(jev: jev, claude: claude, memory: memory, agent: agent)
+        let services = NaviServices(jev: jev, claude: claude, router: router,
+                                    answers: AnswerService(claude: claude), agent: agent, memory: memory)
+        let vm = PanelViewModel(services: services)
+        vm.query = query
+        vm.routeTask?.cancel()          // keep the canned state; no heuristic re-route
+        vm.results = results
+        vm.selectedIndex = min(selectedIndex, max(0, results.count - 1))
+        vm.decision = decision
+        vm.mode = mode
+        vm.answerText = answer
+        vm.isAnswering = isAnswering
+        vm.agentEvents = agentEvents
+        vm.agentScreenshot = agentScreenshot
+        vm.pendingApproval = pendingApproval
+        vm.toast = toast
+        vm.errorMessage = error
+        vm.isRouting = isRouting
+        if let agentTask {
+            vm.agentRun = AgentRunHandle(task: agentTask, cancel: {}, respond: { _ in })
+        }
+        if let statusLine {
+            vm.statusLine = statusLine
+        } else if let d = decision {
+            let pct = Int((d.probabilities[d.intent] ?? d.confidence) * 100)
+            vm.statusLine = d.source == .jev ? "Jev · \(d.intent.displayName) \(pct)% · \(d.latencyMs) ms" : d.intent.displayName
+        }
+        return vm
+    }
+
+    /// Sample rows used by the previews.
+    static var sampleResults: [SearchResult] {
+        func row(_ id: String, _ kind: ResultKind, _ title: String, _ subtitle: String?, _ icon: ResultIcon,
+                 hint: String? = nil) -> SearchResult {
+            SearchResult(id: id, kind: kind, title: title, subtitle: subtitle, icon: icon, shortcutHint: hint) { .dismiss }
+        }
+        return [
+            row("app:maps", .app, "Maps", "Application", .appBundle("/System/Applications/Maps.app"), hint: "⏎ Open"),
+            row("app:mail", .app, "Mail", "Application", .appBundle("/System/Applications/Mail.app"), hint: "⏎ Open"),
+            row("calc", .calculation, "= 40.8", "12% of 340", .system("equal"), hint: "⏎ Copy"),
+            row("url", .url, "maps.google.com", "Open in browser", .system("globe"), hint: "⏎ Open"),
+            row("file", .file, "Q3 roadmap.md", "~/Documents/Notes", .file(NSHomeDirectory()), hint: "⏎ Open"),
+            row("web", .webSearch, "Search the web for “maps”", "Google", .system("magnifyingglass")),
+            row("mem", .memory, "You read the Jev docs yesterday at 4:12 pm", "Safari · docs.typesafe.ai", .system("clock.arrow.circlepath")),
+            row("ask", .answer, "Ask Navi", "Stream an answer from Claude", .system("sparkle"), hint: "⌘⏎ Ask"),
+            row("task", .task, "Do it for me", "Open Chrome, search and click", .system("cursorarrow.motionlines")),
+            row("sys", .systemCommand, "Toggle Dark Mode", "System", .system("moon.fill")),
+        ]
+    }
+
+    static var sampleAnswer: String {
+        """
+        ## DNS in one minute
+
+        **DNS** (Domain Name System) turns names like `api.typesafe.ai` into IP addresses.
+
+        1. Your Mac asks its **resolver** (usually your router or `1.1.1.1`).
+        2. The resolver walks the hierarchy: root → `.ai` TLD → the authoritative server.
+        3. The answer is cached according to its *TTL*.
+
+        - Records: `A`, `AAAA`, `CNAME`, `MX`, `TXT`
+        - Lookups are UDP on port 53, with DoH/DoT for privacy
+
+        ```bash
+        dig +short api.typesafe.ai
+        ```
+
+        > Tip: `sudo dscacheutil -flushcache` clears the local cache.
+        """
+    }
+}
+#endif
