@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         services.startBackgroundServices()
 
+        // Drop the Dock icon again once the main window closes.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+                if let w = note.object as? NSWindow, AppActivation.isMainWindow(w) { AppActivation.hideDockIfNoWindows() }
+            }
+        }
+
         if NaviSettings.shared.isFirstLaunch {
             NaviSettings.shared.isFirstLaunch = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -41,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // navi://query?q=... lets other tools (Shortcuts, Raycast, CLI) drive Navi.
         for url in urls {
             guard url.scheme == "navi" else { continue }
+            #if DEBUG
+            if DebugSnapshot.handle(url) { continue }   // navi://debug-snapshot (Settings/DebugSnapshot.swift)
+            #endif
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
             let q = comps?.queryItems?.first(where: { $0.name == "q" })?.value ?? ""
             panelController.show(prefill: q, submit: url.host == "run")
@@ -57,13 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.toggle()
     }
 
-    func openMainWindow() {
+    /// Opens (or focuses) the main SwiftUI window, optionally at a section.
+    func openMainWindow(section: SettingsSection? = nil) {
+        if let section { SettingsNavigator.shared.go(section) }
         AppActivation.showDock()
-        // Ask SwiftUI to open (or focus) the main window.
-        if let existing = NSApp.windows.first(where: { $0.identifier?.rawValue == WindowID.main }) {
+        if let existing = AppActivation.mainWindow {
             existing.makeKeyAndOrderFront(nil)
         } else {
-            NSApp.sendAction(Selector(("openMainWindow:")), to: nil, from: nil)
+            // `MenuBarLabel` (always alive) receives this and calls openWindow(id:).
             NotificationCenter.default.post(name: .naviOpenMainWindow, object: nil)
         }
     }
