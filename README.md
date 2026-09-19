@@ -14,7 +14,7 @@ dependencies) that pairs two very different models:
 | | Model | Role | Speed |
 |---|---|---|---|
 | **System One** | Jev (`jev-latest`, TypeSafe AI) | Typed *decisions* with calibrated probabilities: what does this query mean? is this action risky? is this frame worth remembering? | 70–500 ms |
-| **System Two** | Claude (`claude-opus-5`, Anthropic) | Text and action: answers, computer use, digests | seconds |
+| **System Two** | Claude (`claude-sonnet-5` by default — switchable to Opus 5 / Haiku 4.5 in Settings → Home or the ✦ menu) | Text and action: answers, computer use, digests | seconds |
 
 ## Why Jev
 

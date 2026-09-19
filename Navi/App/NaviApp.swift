@@ -100,6 +100,18 @@ struct MenuBarMenu: View {
             AppActivation.showDock()
         }
         Divider()
+        Menu("Model: \(shortModel(settings.answerModel))") {
+            ForEach(NaviSettings.claudeModels, id: \.id) { m in
+                Button {
+                    settings.answerModel = m.id
+                    settings.agentModel = m.id
+                } label: {
+                    if settings.answerModel == m.id { Label(shortModel(m.id), systemImage: "checkmark") }
+                    else { Text(shortModel(m.id)) }
+                }
+            }
+        }
+        Divider()
         Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
         if settings.memoryCaptureEnabled {
             if settings.memoryIsPaused {
@@ -111,5 +123,14 @@ struct MenuBarMenu: View {
         Divider()
         Button("Quit Navi") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+
+    private func shortModel(_ id: String) -> String {
+        switch id {
+        case "claude-sonnet-5": return "Sonnet 5"
+        case "claude-opus-5": return "Opus 5"
+        case "claude-haiku-4-5": return "Haiku 4.5"
+        default: return id
+        }
     }
 }

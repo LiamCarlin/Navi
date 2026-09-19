@@ -60,8 +60,8 @@ final class NaviSettings: ObservableObject {
             "appearance": Appearance.system.rawValue,
             "jevModel": "jev-latest",
             "jevProvider": JevProvider.auto.rawValue,
-            "answerModel": "claude-opus-5",
-            "agentModel": "claude-opus-5",
+            "answerModel": "claude-sonnet-5",
+            "agentModel": "claude-sonnet-5",
             "digestProvider": DigestProvider.auto.rawValue,
             "jevConfidenceThreshold": 0.55,
             "agentApprovalMode": ApprovalMode.askForRisky.rawValue,
@@ -83,8 +83,8 @@ final class NaviSettings: ObservableObject {
         appearance = Appearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
         jevModel = d.string(forKey: "jevModel") ?? "jev-latest"
         jevProvider = JevProvider(rawValue: d.string(forKey: "jevProvider") ?? "") ?? .auto
-        answerModel = d.string(forKey: "answerModel") ?? "claude-opus-5"
-        agentModel = d.string(forKey: "agentModel") ?? "claude-opus-5"
+        answerModel = d.string(forKey: "answerModel") ?? "claude-sonnet-5"
+        agentModel = d.string(forKey: "agentModel") ?? "claude-sonnet-5"
         digestProvider = DigestProvider(rawValue: d.string(forKey: "digestProvider") ?? "") ?? .auto
         jevConfidenceThreshold = d.double(forKey: "jevConfidenceThreshold")
         agentApprovalMode = ApprovalMode(rawValue: d.string(forKey: "agentApprovalMode") ?? "") ?? .askForRisky
@@ -102,7 +102,21 @@ final class NaviSettings: ObservableObject {
         usageClaudeInputTokens = d.integer(forKey: "usageClaudeInputTokens")
         usageClaudeOutputTokens = d.integer(forKey: "usageClaudeOutputTokens")
         usageDigestFrames = d.integer(forKey: "usageDigestFrames")
+
+        // 2026-09-19: default model moved from Opus 5 to Sonnet 5 (cost). Migrate once.
+        if !d.bool(forKey: "migratedDefaultModelToSonnet") {
+            if answerModel == "claude-opus-5" { answerModel = "claude-sonnet-5" }
+            if agentModel == "claude-opus-5" { agentModel = "claude-sonnet-5" }
+            d.set(true, forKey: "migratedDefaultModelToSonnet")
+        }
     }
+
+    /// Claude models offered in pickers. Sonnet 5 is the default (2.5× cheaper than Opus 5).
+    static let claudeModels: [(id: String, label: String)] = [
+        ("claude-sonnet-5", "Claude Sonnet 5 — default, $2 / $10 per MTok"),
+        ("claude-opus-5", "Claude Opus 5 — most capable, $5 / $25 per MTok"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, $1 / $5 per MTok"),
+    ]
 
     // MARK: Derived
 

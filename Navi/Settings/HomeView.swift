@@ -20,6 +20,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 hero
+                ModelsCard()
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Status").font(.title3.weight(.semibold))
@@ -185,5 +186,59 @@ struct SettingsKeyCap: View {
             .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.separator))
             .foregroundStyle(.primary)
+    }
+}
+
+
+/// Quick model switcher shown on Home so the current models are always one click away.
+struct ModelsCard: View {
+    @EnvironmentObject private var settings: NaviSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Models").font(.title3.weight(.semibold))
+                Spacer()
+                Text("Jev makes the decisions; Claude writes text and is the vision fallback.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 16) {
+                modelPicker("Answers", selection: $settings.answerModel, icon: "text.bubble")
+                modelPicker("Agent fallback", selection: $settings.agentModel, icon: "cursorarrow.motionlines")
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Decisions", systemImage: "bolt.fill").font(.caption).foregroundStyle(.secondary)
+                    Text("Jev · \(settings.jevModel)").font(.callout.weight(.medium))
+                    Text(JevClient.resolveTransport(preference: settings.jevProvider).map { $0 == .typesafe ? "TypeSafe direct" : "Vercel AI Gateway" } ?? "no key yet")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(18)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func modelPicker(_ title: String, selection: Binding<String>, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(title, systemImage: icon).font(.caption).foregroundStyle(.secondary)
+            Picker("", selection: selection) {
+                ForEach(NaviSettings.claudeModels, id: \.id) { Text(shortLabel($0.id)).tag($0.id) }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 220, alignment: .leading)
+            Text(NaviSettings.claudeModels.first { $0.id == selection.wrappedValue }?.label.split(separator: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func shortLabel(_ id: String) -> String {
+        switch id {
+        case "claude-sonnet-5": return "Claude Sonnet 5"
+        case "claude-opus-5": return "Claude Opus 5"
+        case "claude-haiku-4-5": return "Claude Haiku 4.5"
+        default: return id
+        }
     }
 }

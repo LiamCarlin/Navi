@@ -4,7 +4,7 @@ import AppKit
 struct ProvidersView: View {
     @EnvironmentObject private var settings: NaviSettings
 
-    static let claudeModels = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
+    static let claudeModels = NaviSettings.claudeModels.map(\.id)
 
     var body: some View {
         FormPage(title: "AI Providers", subtitle: "Keys are stored in the macOS Keychain and never leave this Mac except to call the provider.") {
@@ -46,10 +46,10 @@ struct ProvidersView: View {
                         .textFieldStyle(.roundedBorder).frame(width: 200)
                 }
                 Picker("Answers", selection: $settings.answerModel) {
-                    ForEach(Self.claudeModels, id: \.self) { Text($0).tag($0) }
+                    ForEach(NaviSettings.claudeModels, id: \.id) { Text($0.label).tag($0.id) }
                 }
-                Picker("Computer-use agent", selection: $settings.agentModel) {
-                    ForEach(Self.claudeModels, id: \.self) { Text($0).tag($0) }
+                Picker("Computer-use agent (Claude fallback)", selection: $settings.agentModel) {
+                    ForEach(NaviSettings.claudeModels, id: \.id) { Text($0.label).tag($0.id) }
                 }
                 Picker("Screen Memory digest", selection: $settings.digestProvider) {
                     ForEach(DigestProvider.allCases) { Text($0.label).tag($0) }
