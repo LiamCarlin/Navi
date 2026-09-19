@@ -1,0 +1,89 @@
+name: Navi
+options:
+  bundleIdPrefix: com.liamcarlin
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SWIFT_EMIT_LOC_STRINGS: NO
+    OTHER_SWIFT_FLAGS: "-D NAVI"
+targets:
+  Navi:
+    type: application
+    platform: macOS
+    sources:
+      - path: Navi
+        excludes:
+          - "**/*.md"
+    info:
+      path: Navi/Resources/Info.plist
+      properties:
+        CFBundleName: Navi
+        CFBundleDisplayName: Navi
+        CFBundleIdentifier: com.liamcarlin.navi
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "26.0"
+        LSUIElement: true
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication
+        NSAppleEventsUsageDescription: "Navi uses Apple Events to control apps (Chrome, Safari, Finder) when you ask it to perform tasks."
+        NSAccessibilityUsageDescription: "Navi needs Accessibility access to click, type and navigate apps on your behalf."
+        NSScreenCaptureUsageDescription: "Navi captures your screen so it can see what you're working on and act on your instructions."
+        NSMicrophoneUsageDescription: "Navi can listen for voice queries when you enable voice input."
+        NSSpeechRecognitionUsageDescription: "Navi transcribes voice queries on-device."
+        NSCalendarsFullAccessUsageDescription: "Navi can read your calendar to answer schedule questions."
+        NSContactsUsageDescription: "Navi can look up contacts when you ask."
+        NSLocationWhenInUseUsageDescription: "Navi uses your location for Maps and weather queries."
+        NSUserNotificationsUsageDescription: "Navi notifies you when a background task completes."
+        CFBundleURLTypes:
+          - CFBundleURLName: com.liamcarlin.navi
+            CFBundleURLSchemes: [navi]
+    entitlements:
+      path: Navi/Navi.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.automation.apple-events: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.liamcarlin.navi
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+    dependencies: []
+  NaviTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: NaviTests
+    dependencies:
+      - target: Navi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.liamcarlin.navi.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Navi.app/Contents/MacOS/Navi"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Navi:
+    build:
+      targets:
+        Navi: all
+        NaviTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [NaviTests]
