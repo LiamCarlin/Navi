@@ -34,8 +34,7 @@ struct NaviApp: App {
             MenuBarMenu()
                 .environmentObject(NaviSettings.shared)
         } label: {
-            Image(systemName: "sparkle")
-                .symbolRenderingMode(.hierarchical)
+            MenuBarLabel()
         }
         .menuBarExtraStyle(.menu)
     }
@@ -45,17 +44,46 @@ enum WindowID {
     static let main = "main"
 }
 
+/// The menu-bar icon. It is the one SwiftUI view that is alive for the whole
+/// process lifetime, so it doubles as the AppKit → SwiftUI bridge for opening
+/// the main window: `AppDelegate.openMainWindow()` posts `.naviOpenMainWindow`
+/// and this view calls `openWindow(id:)`.
+struct MenuBarLabel: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: "sparkle")
+            .symbolRenderingMode(.hierarchical)
+            .onReceive(NotificationCenter.default.publisher(for: .naviOpenMainWindow)) { _ in
+                openWindow(id: WindowID.main)
+                AppActivation.showDock()
+            }
+    }
+}
+
 /// Toggles the Dock icon: visible while the main window is open, hidden otherwise.
 enum AppActivation {
+    /// SwiftUI names the NSWindow for `Window(id: "main")` "main-AppWindow-1".
+    @MainActor static func isMainWindow(_ w: NSWindow) -> Bool {
+        !(w is NaviPanel) && (w.identifier?.rawValue.hasPrefix(WindowID.main) ?? false)
+    }
+
+    @MainActor static var mainWindow: NSWindow? { NSApp.windows.first(where: isMainWindow) }
+
     @MainActor static func showDock() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        mainWindow?.makeKeyAndOrderFront(nil)
     }
 
+    /// Called after the main window closes. Waits a beat so a window that is
+    /// mid-transition isn't miscounted, then drops back to menu-bar-only.
     @MainActor static func hideDockIfNoWindows() {
-        let visible = NSApp.windows.contains { $0.isVisible && !($0 is NaviPanel) && $0.identifier?.rawValue == WindowID.main }
-        if !visible {
-            NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            MainActor.assumeIsolated {
+                let visible = NSApp.windows.contains { $0.isVisible && isMainWindow($0) }
+                if !visible { NSApp.setActivationPolicy(.accessory) }
+            }
         }
     }
 }
@@ -73,6 +101,13 @@ struct MenuBarMenu: View {
         }
         Divider()
         Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
+        if settings.memoryCaptureEnabled {
+            if settings.memoryIsPaused {
+                Button("Resume capture") { settings.memoryPausedUntil = nil }
+            } else {
+                Button("Pause capture for 1 hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
+            }
+        }
         Divider()
         Button("Quit Navi") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
