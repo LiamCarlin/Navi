@@ -6,3 +6,7 @@ xcuserdata/
 .DS_Store
 *.dSYM
 .env
+vendor/jev-ultrafast/.venv/
+vendor/jev-ultrafast/**/__pycache__/
+scripts/ultrafast/__pycache__/
+.claude/

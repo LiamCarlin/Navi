@@ -1,0 +1,300 @@
+import AppKit
+import Foundation
+
+/// Browser tasks run on **jev-ultrafast** (Browser Use × TypeSafe,
+/// https://github.com/browser-use/jev-ultrafast, vendored under
+/// `vendor/jev-ultrafast`): Jev picks the operation + target from an indexed
+/// DOM element table in one request per step; a small LLM writes text only
+/// for TYPE_TEXT. Chrome is driven over CDP through Browser Harness.
+///
+/// Navi launches `scripts/ultrafast/navi_runner.py` under `uv` and turns its
+/// JSON-lines output into `AgentEvent`s. Keys travel in the environment.
+enum UltrafastBridge {
+    // MARK: Runtime location
+
+    /// Repo root that holds `vendor/jev-ultrafast` and `scripts/ultrafast`.
+    /// Order: explicit setting → bundled copy → the source checkout.
+    static var repoRoot: URL? {
+        let fm = FileManager.default
+        var candidates: [URL] = []
+        if let p = UserDefaults.standard.string(forKey: "ultrafastRepoRoot"), !p.isEmpty {
+            candidates.append(URL(fileURLWithPath: p))
+        }
+        if let res = Bundle.main.resourceURL { candidates.append(res.appendingPathComponent("ultrafast")) }
+        candidates.append(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Navi"))
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        candidates.append(appSupport.appendingPathComponent("Navi/ultrafast"))
+        return candidates.first { fm.fileExists(atPath: $0.appendingPathComponent("vendor/jev-ultrafast/pyproject.toml").path) }
+    }
+
+    static var vendorDir: URL? { repoRoot?.appendingPathComponent("vendor/jev-ultrafast") }
+    static var runnerScript: URL? { repoRoot?.appendingPathComponent("scripts/ultrafast/navi_runner.py") }
+    static var uvPath: String? {
+        ["/opt/homebrew/bin/uv", "/usr/local/bin/uv", NSHomeDirectory() + "/.local/bin/uv"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    enum RuntimeStatus: Equatable {
+        case ready(String)          // python version
+        case missingUV
+        case missingRepo
+        case missingVenv
+        case error(String)
+
+        var label: String {
+            switch self {
+            case .ready(let v): return "Installed · \(v)"
+            case .missingUV: return "uv not installed (brew install uv)"
+            case .missingRepo: return "vendor/jev-ultrafast not found"
+            case .missingVenv: return "Runtime not installed — run Install"
+            case .error(let e): return e
+            }
+        }
+        var isReady: Bool { if case .ready = self { return true }; return false }
+    }
+
+    static func runtimeStatus() -> RuntimeStatus {
+        guard uvPath != nil else { return .missingUV }
+        guard let vendor = vendorDir else { return .missingRepo }
+        let py = vendor.appendingPathComponent(".venv/bin/python").path
+        guard FileManager.default.isExecutableFile(atPath: py) else { return .missingVenv }
+        let (out, code) = shell(py, ["-c", "import sys, jev_ultrafast, browser_harness; print(sys.version.split()[0])"], cwd: vendor)
+        return code == 0 ? .ready("Python " + out.trimmingCharacters(in: .whitespacesAndNewlines)) : .missingVenv
+    }
+
+    /// `scripts/ultrafast/setup.sh` — installs uv deps into vendor/.venv.
+    static func installRuntime() async -> (ok: Bool, log: String) {
+        guard let root = repoRoot else { return (false, "vendor/jev-ultrafast not found") }
+        return await Task.detached {
+            let (out, code) = shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/setup.sh").path], cwd: root, timeout: 600)
+            return (code == 0, out)
+        }.value
+    }
+
+    enum ChromeStatus: Equatable {
+        case ready, chromeNotRunning, debuggingBlocked, runtimeMissing, error(String)
+        var label: String {
+            switch self {
+            case .ready: return "Chrome connected"
+            case .chromeNotRunning: return "Chrome is not running"
+            case .debuggingBlocked: return "Enable remote debugging in Chrome (chrome://inspect/#remote-debugging)"
+            case .runtimeMissing: return "Runtime not installed"
+            case .error(let e): return e
+            }
+        }
+    }
+
+    static func chromeStatus() async -> ChromeStatus {
+        guard let root = repoRoot else { return .runtimeMissing }
+        return await Task.detached {
+            let (out, _) = shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/doctor.sh").path], cwd: root, timeout: 40)
+            let line = out.split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+            switch line {
+            case "ready": return .ready
+            case "chrome-not-running": return .chromeNotRunning
+            case "debugging-blocked": return .debuggingBlocked
+            case "runtime-missing": return .runtimeMissing
+            default: return .error(line.isEmpty ? "Unknown doctor output" : line)
+            }
+        }.value
+    }
+
+    static func openChromeDebuggingPage() {
+        let url = URL(string: "chrome://inspect/#remote-debugging")!
+        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+            NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func approveChromeConnection() async -> String {
+        guard let root = repoRoot else { return "runtime missing" }
+        return await Task.detached {
+            shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/approve.sh").path], cwd: root, timeout: 45).0
+        }.value
+    }
+
+    // MARK: Run
+
+    /// Environment for the runner: Jev transport + keys, text-helper key.
+    static func environment() -> [String: String]? {
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["PYTHONUNBUFFERED"] = "1"
+        env["TYPESAFE_MODEL"] = UserDefaults.standard.string(forKey: "jevModel") ?? "jev-latest"
+        let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
+        switch JevClient.resolveTransport(preference: pref) {
+        case .typesafe:
+            env["TYPESAFE_API_KEY"] = Keychain.get(.typesafe)
+            env.removeValue(forKey: "NAVI_JEV_TRANSPORT")
+        case .vercelGateway:
+            env["AI_GATEWAY_API_KEY"] = Keychain.get(.vercelGateway)
+            env["NAVI_JEV_TRANSPORT"] = "vercel"
+        case nil:
+            return nil
+        }
+        if let k = Keychain.get(.anthropic) { env["ANTHROPIC_API_KEY"] = k }
+        // Text helper for TYPE_TEXT: Claude Haiku on the Anthropic key. Developers can
+        // instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL / TEXT_MODEL (upstream's
+        // OpenAI-compatible helper) before launching Navi; those pass through untouched.
+        env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
+        return env
+    }
+
+    /// Runs one browser task, streaming events into `handle`. Returns when the
+    /// runner exits. Cancellation kills the subprocess.
+    static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async {
+        guard let uv = uvPath, let vendor = vendorDir, let runner = runnerScript else {
+            handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
+            return
+        }
+        guard let env = environment() else {
+            handle.emit(.failed(NaviError.missingAPIKey(.typesafe).localizedDescription))
+            return
+        }
+        let url = startURL ?? "https://www.google.com/?hl=en"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: uv)
+        var args = ["run", "--python", "3.12", "--project", vendor.path, "python", runner.path, "--url", url, "--goal", task]
+        if maxSteps > 0 { args += ["--max-steps", String(maxSteps)] }
+        if screenshots { args.append("--screenshots") }
+        proc.arguments = args
+        proc.currentDirectoryURL = vendor
+        proc.environment = env
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+
+        handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)"))
+        do { try proc.run() } catch {
+            handle.emit(.failed("Could not start runner: \(error.localizedDescription)"))
+            return
+        }
+        Log.agent.info("ultrafast runner started pid=\(proc.processIdentifier)")
+
+        let stderrTask = Task.detached { () -> String in
+            String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        }
+        var finished = false
+        var stepIndex = 0
+        var lastDecision = ""
+        do {
+            for try await line in out.fileHandleForReading.bytes.lines {
+                if Task.isCancelled { break }
+                guard let data = line.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let event = json["event"] as? String else { continue }
+                switch event {
+                case "status":
+                    handle.emit(.status(json["message"] as? String ?? ""))
+                case "ready":
+                    let n = json["elements"] as? Int ?? 0
+                    handle.emit(.status("Page ready · \(n) elements · \(json["title"] as? String ?? "")"))
+                case "decision":
+                    let op = json["operation"] as? String ?? "?"
+                    let conf = Int(((json["confidence"] as? Double) ?? 0) * 100)
+                    let ms = json["latency_ms"] as? Int ?? 0
+                    lastDecision = "Jev · \(op)\((json["target"] as? String).map { " [\($0)]" } ?? "") \(conf)% · \(ms) ms"
+                    handle.emit(.status(lastDecision))
+                case "step":
+                    stepIndex += 1
+                    let kind = (json["kind"] as? String ?? "").uppercased()
+                    let action = (json["action"] as? String ?? "").split(separator: "→").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+                    var desc: String
+                    switch kind {
+                    case "FILL": desc = "Type “\((json["text"] as? String) ?? "")” into \(action)"
+                    case "CLICK": desc = "Click \(action)"
+                    case "SELECT": desc = "Select \(action)"
+                    case "SCROLL": desc = "Scroll"
+                    case "WAIT": desc = "Wait for the page"
+                    default: desc = "\(kind.capitalized) \(action)"
+                    }
+                    if let changed = json["page_changed"] as? Bool, !changed, kind != "WAIT" { desc += " (no change)" }
+                    handle.emit(.step(index: stepIndex, description: desc))
+                case "screenshot":
+                    if let b64 = json["jpeg_base64"] as? String, let d = Data(base64Encoded: b64), let img = NSImage(data: d) {
+                        handle.emit(.screenshot(img))
+                    }
+                case "done":
+                    finished = true
+                    let status = json["status"] as? String ?? "done"
+                    let summary = json["summary"] as? String ?? ""
+                    let ms = json["elapsed_ms"] as? Int ?? 0
+                    switch status {
+                    case "done": handle.emit(.completed(summary: "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
+                    case "cancelled": handle.emit(.cancelled)
+                    default: handle.emit(.failed("Blocked: \(summary)"))
+                    }
+                case "error":
+                    finished = true
+                    handle.emit(.failed(json["message"] as? String ?? "Runner error"))
+                default: break
+                }
+            }
+        } catch {
+            Log.agent.error("ultrafast stdout read failed: \(error.localizedDescription)")
+        }
+        if Task.isCancelled, proc.isRunning {
+            proc.interrupt()
+            try? await Task.sleep(for: .milliseconds(400))
+            if proc.isRunning { proc.terminate() }
+            if !finished { handle.emit(.cancelled); finished = true }
+        }
+        proc.waitUntilExit()
+        let stderr = await stderrTask.value
+        if !finished {
+            let tail = stderr.split(separator: "\n").suffix(4).joined(separator: " · ")
+            handle.emit(.failed("Runner exited (\(proc.terminationStatus)). \(tail)"))
+        } else if !stderr.isEmpty {
+            Log.agent.debug("ultrafast stderr: \(stderr.suffix(600))")
+        }
+    }
+
+    // MARK: Helpers
+
+    /// Picks a start URL for a browser task: explicit URL in the task, a known
+    /// site name, or the current browser tab when a browser is frontmost.
+    static func startURL(for task: String, context: QueryContext) -> String? {
+        if let m = task.range(of: #"https?://[^\s"'<>]+"#, options: .regularExpression) {
+            return String(task[m])
+        }
+        let lower = task.lowercased()
+        let sites: [(String, String)] = [
+            ("google flights", "https://www.google.com/travel/flights?hl=en"), ("flights", "https://www.google.com/travel/flights?hl=en"),
+            ("youtube", "https://www.youtube.com"), ("amazon", "https://www.amazon.com"), ("wikipedia", "https://en.wikipedia.org/wiki/Main_Page"),
+            ("github", "https://github.com"), ("gmail", "https://mail.google.com"), ("google maps", "https://www.google.com/maps"),
+            ("twitter", "https://x.com"), (" x.com", "https://x.com"), ("linkedin", "https://www.linkedin.com"), ("reddit", "https://www.reddit.com"),
+            ("hacker news", "https://news.ycombinator.com"), ("airbnb", "https://www.airbnb.com"), ("booking.com", "https://www.booking.com"),
+            ("google docs", "https://docs.google.com"), ("notion", "https://www.notion.so"), ("chatgpt", "https://chatgpt.com"),
+        ]
+        for (name, url) in sites where lower.contains(name) { return url }
+        if let m = task.range(of: #"\b([a-z0-9-]+\.)+(com|org|net|io|ai|dev|app|co|edu|gov|so|sh)\b(/[^\s]*)?"#, options: [.regularExpression, .caseInsensitive]) {
+            return "https://" + String(task[m])
+        }
+        let browsers = ["com.google.Chrome", "com.apple.Safari", "com.brave.Browser", "com.microsoft.edgemac", "company.thebrowser.Browser"]
+        if let bid = context.frontmostApp, browsers.contains(bid), let url = FrontmostProbe.browserURL(bundleID: bid), url.hasPrefix("http") {
+            return url
+        }
+        return nil
+    }
+
+    @discardableResult
+    static func shell(_ launchPath: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval = 20) -> (String, Int32) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: launchPath)
+        p.arguments = args
+        p.currentDirectoryURL = cwd
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        p.environment = env
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return (error.localizedDescription, -1) }
+        let deadline = DispatchTime.now() + timeout
+        DispatchQueue.global().asyncAfter(deadline: deadline) { if p.isRunning { p.terminate() } }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
+    }
+}

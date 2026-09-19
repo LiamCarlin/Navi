@@ -41,6 +41,8 @@ struct AgentSettingsView: View {
             } footer: {
                 Text("Each gate is one System One call (~100 ms) on the textual step log — no extra screenshots, no extra Claude tokens.")
             }
+
+            BrowserRuntimeSection()
         }
     }
 
