@@ -114,6 +114,20 @@ enum UltrafastBridge {
         }.value
     }
 
+    // MARK: Warm-up
+
+    /// Starts the Browser Harness daemon (Chrome CDP bridge) in the background so
+    /// the first browser task skips the ~1 s connect. Safe to call repeatedly.
+    static func prewarm() {
+        guard let vendor = vendorDir else { return }
+        let python = vendor.appendingPathComponent(".venv/bin/python").path
+        guard FileManager.default.isExecutableFile(atPath: python) else { return }
+        Task.detached(priority: .utility) {
+            let (out, code) = shell(python, ["-c", "from browser_harness.admin import ensure_daemon; ensure_daemon(); print('warm')"], cwd: vendor, timeout: 30)
+            Log.agent.info("ultrafast prewarm: \(code == 0 ? "ready" : out.suffix(160))")
+        }
+    }
+
     // MARK: Run
 
     /// Environment for the runner: Jev transport + keys, text-helper key.
@@ -144,7 +158,9 @@ enum UltrafastBridge {
     /// Runs one browser task, streaming events into `handle`. Returns when the
     /// runner exits. Cancellation kills the subprocess.
     static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async {
-        guard let uv = uvPath, let vendor = vendorDir, let runner = runnerScript else {
+        guard let vendor = vendorDir, let runner = runnerScript,
+              case let python = vendor.appendingPathComponent(".venv/bin/python").path,
+              FileManager.default.isExecutableFile(atPath: python) else {
             handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
             return
         }
@@ -154,8 +170,9 @@ enum UltrafastBridge {
         }
         let url = startURL ?? "https://www.google.com/?hl=en"
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: uv)
-        var args = ["run", "--python", "3.12", "--project", vendor.path, "python", runner.path, "--url", url, "--goal", task]
+        // The venv's interpreter directly: no uv resolution, no lockfile check per task.
+        proc.executableURL = URL(fileURLWithPath: python)
+        var args = ["-u", runner.path, "--url", url, "--goal", task]
         if maxSteps > 0 { args += ["--max-steps", String(maxSteps)] }
         if screenshots { args.append("--screenshots") }
         proc.arguments = args

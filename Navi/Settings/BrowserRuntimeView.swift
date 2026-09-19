@@ -7,7 +7,7 @@ struct BrowserRuntimeSection: View {
     @State private var chrome: UltrafastBridge.ChromeStatus? = nil
     @State private var busy = false
     @State private var log = ""
-    @AppStorage("ultrafastScreenshots") private var screenshots = true
+    @AppStorage("ultrafastScreenshots") private var screenshots = false
     @AppStorage("ultrafastTextModel") private var textModel = "claude-haiku-4-5"
 
     var body: some View {
@@ -35,7 +35,7 @@ struct BrowserRuntimeSection: View {
             Picker("Text helper (TYPE_TEXT only)", selection: $textModel) {
                 ForEach(NaviSettings.claudeModels, id: \.id) { Text($0.label).tag($0.id) }
             }
-            Toggle("Stream page screenshots to the panel", isOn: $screenshots)
+            Toggle("Stream page screenshots to the panel (adds ~50 ms per step; off = upstream default)", isOn: $screenshots)
             if !log.isEmpty {
                 ScrollView { Text(log).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading) }
                     .frame(maxHeight: 120)

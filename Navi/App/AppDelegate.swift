@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey.register(settings: NaviSettings.shared)
 
         services.startBackgroundServices()
+        UltrafastBridge.prewarm()
 
         // Drop the Dock icon again once the main window closes.
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
