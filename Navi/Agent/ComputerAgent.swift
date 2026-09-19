@@ -1,7 +1,18 @@
 import AppKit
 import Foundation
 
-/// Claude computer-use loop (`computer_toolset_20260801`) with Jev safety gating.
+/// Computer-use agent. Two drivers (`NaviSettings.agentDriver`):
+///
+/// - **Jev-first** (default): enumerate what's actionable via the Accessibility
+///   API (`AXSnapshotter`), ask Jev which operation + which target
+///   (`JevDriver`, one call, ~100 ms), execute (`ActionExecutor`), repeat.
+///   Claude only runs a bounded vision turn when Jev can't decide.
+/// - **Claude-only**: the original `computer_toolset_20260801` loop with Jev
+///   safety gating (`JevGate`).
+///
+/// Before either driver, one Jev choice (`TaskSurface`) decides whether the
+/// task belongs in a browser; when `ComputerAgent.browserRunner` is
+/// registered, browser tasks are handed to it instead.
 ///
 /// Contract: `ComputerAgentRunning`; init signature must stay `init(jev:claude:)`.
 /// `run` returns an `AgentRunHandle` immediately; the work happens in a
@@ -9,6 +20,13 @@ import Foundation
 final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     let jev: JevClient
     let claude: ClaudeClient
+
+    /// Integration hook: when set, tasks Jev classifies as `browser` are handed
+    /// here with `(task, startURL, handle)`. The runner owns the run from then
+    /// on — it must emit `.completed`/`.failed`/`.cancelled` on the handle
+    /// (the handle is finished for it afterwards) and should honour task
+    /// cancellation. nil ⇒ every task goes through the native driver.
+    nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle) async -> Void)?
 
     init(jev: JevClient, claude: ClaudeClient) { self.jev = jev; self.claude = claude }
 
@@ -18,13 +36,27 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
         let config = AgentRun.Config(model: s.agentModel,
                                      maxSteps: max(1, s.agentMaxSteps),
                                      approvalMode: s.agentApprovalMode,
-                                     showOverlay: s.agentShowLiveOverlay)
+                                     showOverlay: s.agentShowLiveOverlay,
+                                     driver: s.agentDriver,
+                                     jevConfidenceThreshold: min(max(s.agentJevConfidenceThreshold, 0), 1),
+                                     maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks))
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
                                     respond: { run.respond($0) })
         run.start(handle: handle)
         return handle
+    }
+}
+
+/// Object form of `ComputerAgent.browserRunner` for integrators who prefer a type.
+protocol BrowserTaskRunning: AnyObject, Sendable {
+    func run(task: String, startURL: String?, handle: AgentRunHandle) async
+}
+
+extension ComputerAgent {
+    static func useBrowserRunner(_ runner: BrowserTaskRunning?) {
+        browserRunner = runner.map { r in { @Sendable task, url, handle in await r.run(task: task, startURL: url, handle: handle) } }
     }
 }
 
@@ -36,15 +68,21 @@ final class AgentRun: @unchecked Sendable {
         var maxSteps: Int
         var approvalMode: ApprovalMode
         var showOverlay: Bool
+        var driver: AgentDriver = .jevFirst
+        var jevConfidenceThreshold: Double = 0.5
+        var maxClaudeFallbacks: Int = 6
     }
 
     static let screenshotMaxLongEdge = 1280
     static let thumbnailMaxLongEdge = 400
     static let keepRecentScreenshots = 4
+    /// Tool-use rounds a Claude fallback turn may take before it must summarise.
+    static let fallbackMaxRounds = 3
 
     private let task: String
     private let context: QueryContext
     private let config: Config
+    private let jev: JevClient
     private let claude: ClaudeClient
     private let gate: JevGate
     private let input = InputController()
@@ -67,6 +105,7 @@ final class AgentRun: @unchecked Sendable {
         self.task = task
         self.context = context
         self.config = config
+        self.jev = jev
         self.claude = claude
         self.gate = JevGate(jev: jev)
     }
@@ -128,149 +167,39 @@ final class AgentRun: @unchecked Sendable {
         }
     }
 
-    // MARK: Main loop
+    // MARK: Entry
 
     private func main(_ handle: AgentRunHandle) async {
         defer {
             Task { @MainActor in self.overlay?.hide(); self.overlay = nil }
             handle.finish()
         }
-
-        if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
-            handle.emit(.failed(problem))
-            return
-        }
-
-        if config.showOverlay {
-            await MainActor.run {
-                overlay = AgentOverlay(onStop: { [weak self] in self?.cancel() })
-                overlay?.show(step: 1, maxSteps: config.maxSteps)
-            }
-        }
-
-        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
-        let system: [[String: Any]] = [[
-            "type": "text",
-            "text": Self.systemPrompt(task: task, context: context, frontmost: front),
-            "cache_control": ["type": "ephemeral"],
-        ]]
-        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
-        messages = [["role": "user", "content": [[
-            "type": "text",
-            "text": "Task: \(task)\n\nStart by taking a screenshot to see the current state of the screen.",
-        ]]]]
-
-        handle.emit(.status("Thinking…"))
-        Log.agent.info("Agent run started: \(self.task.prefix(120), privacy: .public)")
+        Log.agent.info("Agent run started (\(self.config.driver.rawValue, privacy: .public)): \(self.task.prefix(120), privacy: .public)")
 
         do {
-            for step in 1...config.maxSteps {
+            // Step 0 — task surface. Only worth a Jev call when someone can take browser tasks.
+            if let runner = ComputerAgent.browserRunner, jev.isConfigured {
+                let front = await MainActor.run { FrontmostProbe.current(includeURL: true) }
+                let (surface, confidence) = await TaskSurface.classify(task: task, frontmost: front, jev: jev)
                 try checkCancelled()
-                await updateOverlay(step: step, status: nil)
-
-                AgentToolResult.pruneImages(in: &messages, keep: Self.keepRecentScreenshots)
-                let msg: ClaudeClient.Message
-                do {
-                    msg = try await claude.create(model: config.model, system: system, messages: messages,
-                                                  tools: tools, maxTokens: 4096, effort: "medium")
-                } catch {
-                    try checkCancelled()
-                    throw error
-                }
-                try checkCancelled()
-
-                messages.append(["role": "assistant", "content": msg.content])
-                let text = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let calls = msg.content.compactMap(AgentToolCall.init)
-
-                if step == 1, !text.isEmpty {
-                    handle.emit(.planned(text))
-                } else if !text.isEmpty, !calls.isEmpty {
-                    handle.emit(.status(String(text.prefix(200))))
-                }
-
-                switch msg.stopReason {
-                case "max_tokens":
-                    handle.emit(.failed("Claude ran out of output tokens mid-turn. Try a narrower task."))
-                    return
-                case "refusal":
-                    handle.emit(.failed(text.isEmpty ? "Claude declined to continue this task." : text))
-                    return
-                default: break
-                }
-                if msg.stopReason == "end_turn" || calls.isEmpty {
-                    Log.agent.info("Agent finished after \(step) steps")
-                    handle.emit(.completed(summary: text.isEmpty ? "Done." : text))
+                if surface == .browser {
+                    handle.emit(.status("Jev · browser task \(Int(confidence * 100))% — using the browser runner"))
+                    await runner(task, TaskSurface.startURL(task: task, frontmost: front), handle)
                     return
                 }
-
-                // ---- Jev gate (one call per turn, before executing) ----
-                let proposed = calls.map(AgentActionDescriber.technical)
-                let screen = await MainActor.run { FrontmostProbe.current(includeURL: false) }
-                let state = JevGate.formatState(task: task, step: step, maxSteps: config.maxSteps,
-                                                claudeSays: text, proposedActions: proposed,
-                                                recentActions: recentActions,
-                                                app: screen.appName ?? screen.bundleID, windowTitle: screen.windowTitle)
-                let verdict = await gate.evaluate(state: state, heuristicText: ([text] + proposed).joined(separator: "\n"))
-                try checkCancelled()
-                let decision = JevGate.decide(verdict, mode: config.approvalMode,
-                                              readOnlyTurn: calls.allSatisfy(\.isReadOnly))
-
-                var approved = true
-                if case .askApproval(let risk) = decision {
-                    let id = UUID()
-                    let description = calls.map(AgentActionDescriber.human).joined(separator: " · ")
-                    handle.emit(.needsApproval(id: id, description: description, risk: risk))
-                    await MainActor.run { overlay?.setWaitingForApproval() }
-                    approved = await awaitApproval(id: id)
-                    try checkCancelled()
-                    await updateOverlay(step: step, status: nil)
-                    if !approved { handle.emit(.status("Declined — asking Claude to adapt")) }
-                }
-
-                // ---- Execute ----
-                var results: [[String: Any]] = []
-                if !approved {
-                    results = calls.map { AgentToolResult.error(for: $0, AgentToolResult.declined) }
-                    recentActions.append("user declined: " + proposed.joined(separator: "; "))
-                } else {
-                    var turnFailed = false
-                    for call in calls {
-                        try checkCancelled()
-                        actionIndex += 1
-                        let human = AgentActionDescriber.human(call)
-                        handle.emit(.step(index: actionIndex, description: human))
-                        if turnFailed {
-                            results.append(AgentToolResult.error(for: call, AgentToolResult.notExecuted))
-                            continue
-                        }
-                        do {
-                            results.append(try await execute(call, handle: handle, step: step))
-                            recentActions.append(AgentActionDescriber.technical(call))
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {
-                            let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                            Log.agent.error("Action failed (\(call.name, privacy: .public)): \(msg, privacy: .public)")
-                            results.append(AgentToolResult.error(for: call, msg))
-                            recentActions.append(AgentActionDescriber.technical(call) + " → error: \(msg)")
-                            if call.isComputer { turnFailed = true }
-                        }
-                    }
-                }
-                if recentActions.count > 6 { recentActions.removeFirst(recentActions.count - 6) }
-
-                // ---- Stuck nudge ----
-                if verdict.isStuck > JevGate.thresholdStuck { stuckStreak += 1 } else { stuckStreak = 0 }
-                var userContent = results
-                if stuckStreak >= 2 {
-                    userContent.append(["type": "text", "text": JevGate.stuckNudge])
-                    handle.emit(.status("Jev thinks Claude is stuck — nudging"))
-                    stuckStreak = 0
-                }
-                messages.append(["role": "user", "content": userContent])
             }
-            handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
+
+            switch config.driver {
+            case .claudeOnly:
+                try await mainClaudeOnly(handle)
+            case .jevFirst:
+                if jev.isConfigured {
+                    try await mainJevFirst(handle)
+                } else {
+                    handle.emit(.status("Jev isn't configured (no TypeSafe / AI Gateway key) — using the Claude-only driver"))
+                    try await mainClaudeOnly(handle)
+                }
+            }
         } catch is CancellationError {
             Log.agent.info("Agent run cancelled")
             handle.emit(.cancelled)
@@ -285,9 +214,473 @@ final class AgentRun: @unchecked Sendable {
         }
     }
 
+    private func showOverlay(step: Int) async {
+        guard config.showOverlay else { return }
+        await MainActor.run {
+            if overlay == nil { overlay = AgentOverlay(onStop: { [weak self] in self?.cancel() }) }
+            overlay?.show(step: step, maxSteps: config.maxSteps)
+        }
+    }
+
     private func updateOverlay(step: Int, status: String?) async {
         guard config.showOverlay else { return }
         await MainActor.run { overlay?.update(step: step, maxSteps: config.maxSteps, status: status) }
+    }
+
+    // MARK: - Jev-first driver
+
+    private func mainJevFirst(_ handle: AgentRunHandle) async throws {
+        if !InputController.isTrusted {
+            await MainActor.run {
+                InputController.requestTrust()
+                InputController.openAccessibilitySettings()
+            }
+            handle.emit(.failed("Grant Accessibility access to Navi in System Settings → Privacy & Security → Accessibility"))
+            return
+        }
+        // Vision (Claude fallback + thumbnails) is optional for this driver.
+        var visionAvailable = true
+        if !claude.isConfigured {
+            visionAvailable = false
+            handle.emit(.status("No Anthropic API key — vision fallback disabled; Jev runs alone"))
+        } else if !ScreenCapture.hasPermission {
+            visionAvailable = false
+            handle.emit(.status("Screen Recording not granted — vision fallback disabled"))
+        }
+        let textHelperAvailable = claude.isConfigured
+
+        await showOverlay(step: 1)
+        let driver = JevDriver(jev: jev)
+        let snapshotter = AXSnapshotter()
+        let executor = ActionExecutor()
+
+        let wantMenuBar = AXSnapshot.taskMentionsMenu(task)
+        let t0 = Date()
+        var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar)
+        handle.emit(.planned("Jev-driven · \(snapshot.elements.count) candidates on screen · walk \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
+        await emitThumbnailIfEnabled(handle)
+
+        var history: [JevDriver.HistoryEntry] = []
+        var humanLog: [String] = []
+        var fallbacks = 0
+        var blockedFallbackUsed = false
+        var lastDeclined: AgentAction?
+        var lastActedFrame: CGRect?
+        let candidates = TextCandidates.extract(task: task)
+        let appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
+        let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+
+        /// Runs one bounded Claude turn. Returns false when the run has ended.
+        func fallback(_ reason: String, step: Int) async throws -> Bool {
+            guard visionAvailable else {
+                handle.emit(.failed("Jev couldn't decide this step (\(reason)) and the vision fallback is unavailable — grant Screen Recording and add an Anthropic key to enable it."))
+                return false
+            }
+            fallbacks += 1
+            guard fallbacks <= config.maxClaudeFallbacks else {
+                handle.emit(.failed("Jev couldn't decide (\(reason)) and the Claude fallback budget (\(config.maxClaudeFallbacks)) is used up. Raise it in Settings → Agent or narrow the task."))
+                return false
+            }
+            handle.emit(.status("Handing step to Claude: \(reason)"))
+            let outcome = try await claudeFallback(reason: reason, step: step, history: history, handle: handle)
+            switch outcome {
+            case .done(let summary):
+                handle.emit(.completed(summary: summary)); return false
+            case .failed(let msg):
+                handle.emit(.failed(msg)); return false
+            case .paused(let summary), .stepLimit(let summary):
+                var entry = JevDriver.HistoryEntry(action: "Claude: \(summary)", kind: "claude", text: nil, pageChanged: nil)
+                let next = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar)
+                entry.pageChanged = next.diff(previous: snapshot) != "no visible change"
+                history.append(entry)
+                humanLog.append("Claude: \(summary)")
+                snapshot = next
+                return true
+            }
+        }
+
+        for step in 1...config.maxSteps {
+            try checkCancelled()
+            await updateOverlay(step: step, status: nil)
+
+            // jev-ultrafast stuck rule: 3 non-WAIT actions in a row with no observable change → BLOCKED.
+            if JevDriver.isStuck(history) {
+                if blockedFallbackUsed || !visionAvailable {
+                    handle.emit(.failed("Stuck: the last three actions changed nothing on screen. Try rephrasing the task."))
+                    return
+                }
+                blockedFallbackUsed = true
+                if try await !fallback("the last three actions changed nothing on screen — try a different approach", step: step) { return }
+                continue
+            }
+
+            let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
+                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates)
+            let verdict: JevDriver.Verdict
+            let request: JevDriver.Request
+            do {
+                (verdict, request) = try await driver.ask(input)
+            } catch {
+                try checkCancelled()
+                let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                guard visionAvailable else { throw NaviError.other("Jev is unavailable (\(msg)) and the vision fallback is disabled") }
+                handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
+                let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: history, handle: handle)
+                finishClaudeOnly(outcome, handle: handle)
+                return
+            }
+            try checkCancelled()
+            let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold)
+            handle.emit(.status(JevDriver.statusLine(verdict)))
+            let action: AgentAction
+            switch decision {
+            case .finish(let reason):
+                handle.emit(.status(reason))
+                handle.emit(.completed(summary: Self.summary(humanLog)))
+                return
+            case .blocked(let reason):
+                if blockedFallbackUsed || !visionAvailable {
+                    handle.emit(.failed("Blocked: \(reason). Try rephrasing the task or doing the first step yourself."))
+                    return
+                }
+                blockedFallbackUsed = true
+                if try await !fallback(reason + " — asking Claude to try a different approach", step: step) { return }
+                continue
+            case .fallbackToClaude(let reason):
+                if try await !fallback(reason, step: step) { return }
+                continue
+            case .act(let a):
+                action = a
+            }
+
+            // TYPE_TEXT: Jev chose the field; the text comes from the task (one obvious quote) or Haiku.
+            var text: String?
+            if case .typeText(let id) = action, let field = snapshot.element(id) {
+                if let obvious = TextCandidates.obviousText(in: task),
+                   !history.contains(where: { $0.kind == "type_text" && $0.text == obvious }) {
+                    text = obvious
+                } else if textHelperAvailable {
+                    let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
+                                                pageText: snapshot.visibleText, recentActions: history.map(\.json))
+                    do {
+                        let (t, ms) = try await FieldText.generate(claude: claude, context: ctx)
+                        text = t
+                        handle.emit(.status(t == nil ? "Text helper returned no value · \(ms) ms" : "Haiku wrote the field value · \(ms) ms"))
+                    } catch {
+                        try checkCancelled()
+                        text = nil
+                    }
+                }
+                guard text != nil else {
+                    if try await !fallback("the text for \(field.displayName) must be composed by the vision model", step: step) { return }
+                    continue
+                }
+            }
+
+            // Approval gating — same JevGate rules as the Claude-only driver.
+            let human = action.human(in: snapshot, text: text)
+            let gv = JevDriver.gateVerdict(verdict, actionText: human + " " + (text ?? ""))
+            if case .askApproval(let risk) = JevGate.decide(gv, mode: config.approvalMode, readOnlyTurn: action.isReadOnly) {
+                if let d = lastDeclined, d == action {
+                    handle.emit(.failed("You declined ‘\(human)’ and Jev proposed it again — stopping."))
+                    return
+                }
+                let id = UUID()
+                handle.emit(.needsApproval(id: id, description: human, risk: risk))
+                await MainActor.run { overlay?.setWaitingForApproval() }
+                let approved = await awaitApproval(id: id)
+                try checkCancelled()
+                await updateOverlay(step: step, status: nil)
+                if !approved {
+                    handle.emit(.status("Declined"))
+                    history.append(JevDriver.HistoryEntry(action: "User declined: \(human)", kind: "declined", text: nil, pageChanged: false))
+                    lastDeclined = action
+                    continue
+                }
+            }
+            lastDeclined = nil
+
+            // Execute, settle, re-observe.
+            actionIndex += 1
+            handle.emit(.step(index: actionIndex, description: human))
+            var entry = JevDriver.HistoryEntry(action: human, kind: action.kind, text: text, pageChanged: nil)
+            let before = await AXSnapshotter.fingerprint()
+            do {
+                try await executor.perform(action, text: text, snapshot: snapshot)
+                // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget.
+                if action != .wait { await AXSnapshotter.settle(after: before, maxMs: action.settleMs) }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .public)")
+                entry.action += " → error: \(msg)"
+                handle.emit(.status("Action failed: \(msg)"))
+            }
+            try checkCancelled()
+            let targetFrame = action.elementID.flatMap { snapshot.element($0)?.frame }
+            let next = await snapshotter.capture(near: targetFrame ?? lastActedFrame, includeMenuBar: wantMenuBar)
+            let diff = next.diff(previous: snapshot)
+            entry.pageChanged = diff != "no visible change"
+            history.append(entry)
+            humanLog.append(human)
+            if let targetFrame { lastActedFrame = targetFrame }
+            snapshot = next
+            if step % 3 == 0 { await emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
+        }
+        handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
+    }
+
+    /// "Completed in 4 steps: Open Safari · Click ‘Search’ · …" — no LLM needed.
+    static func summary(_ humanLog: [String]) -> String {
+        guard !humanLog.isEmpty else { return "Done — nothing needed changing." }
+        let shown = humanLog.suffix(6)
+        let prefix = humanLog.count > 6 ? "… " : ""
+        return "Completed in \(humanLog.count) step\(humanLog.count == 1 ? "" : "s"): \(prefix)\(shown.joined(separator: " · "))"
+    }
+
+    /// Cheap 400 px thumbnail for the panel timeline (never sent to Jev).
+    private func emitThumbnailIfEnabled(_ handle: AgentRunHandle) async {
+        guard config.showOverlay, ScreenCapture.hasPermission else { return }
+        guard let frame = try? await ScreenCapture.captureMainDisplay() else { return }
+        let (thumb, _) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.thumbnailMaxLongEdge)
+        handle.emit(.screenshot(NSImage(cgImage: thumb, size: NSSize(width: thumb.width, height: thumb.height))))
+    }
+
+    // MARK: - Claude fallback (bounded) and takeover
+
+    private func claudeFallback(reason: String, step: Int, history: [JevDriver.HistoryEntry],
+                                handle: AgentRunHandle) async throws -> ClaudeOutcome {
+        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        let system: [[String: Any]] = [[
+            "type": "text",
+            "text": Self.systemPrompt(task: task, context: context, frontmost: front)
+                + Self.fallbackAddendum(reason: reason, history: history, maxRounds: Self.fallbackMaxRounds),
+            "cache_control": ["type": "ephemeral"],
+        ]]
+        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
+        messages = [["role": "user", "content": [[
+            "type": "text",
+            "text": "Task: \(task)\n\nJev (the fast accessibility-tree driver) handed you this step because: \(reason)\n\nTake a screenshot first, perform at most the next 1–3 actions, then stop and summarise in one line.",
+        ]]]]
+        map = nil
+        return try await claudeLoop(system: system, tools: tools, maxTurns: Self.fallbackMaxRounds, bounded: true,
+                                    overlayStep: step, handle: handle)
+    }
+
+    /// Jev went away mid-run: Claude finishes the task with the remaining step budget.
+    private func claudeTakeover(remainingSteps: Int, history: [JevDriver.HistoryEntry],
+                                handle: AgentRunHandle) async throws -> ClaudeOutcome {
+        if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
+            return .failed(problem)
+        }
+        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        var text = Self.systemPrompt(task: task, context: context, frontmost: front)
+        if !history.isEmpty {
+            text += "\n\n# Progress so far (by the fast driver)\n" + history.suffix(10).map { "- \($0.action)" }.joined(separator: "\n")
+        }
+        let system: [[String: Any]] = [["type": "text", "text": text, "cache_control": ["type": "ephemeral"]]]
+        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
+        messages = [["role": "user", "content": [[
+            "type": "text",
+            "text": "Task: \(task)\n\nStart by taking a screenshot to see the current state of the screen.",
+        ]]]]
+        map = nil
+        return try await claudeLoop(system: system, tools: tools, maxTurns: max(1, remainingSteps), bounded: false,
+                                    overlayStep: nil, handle: handle)
+    }
+
+    static func fallbackAddendum(reason: String, history: [JevDriver.HistoryEntry], maxRounds: Int) -> String {
+        var s = "\n\n# Fallback mode\n"
+        s += "You are assisting a faster driver (Jev) that decides steps from the accessibility tree. It handed you this single step because: \(reason)\n"
+        if !history.isEmpty {
+            s += "\nSteps taken so far:\n" + history.suffix(8).map { h in
+                "- \(h.action)" + (h.pageChanged == false ? " (no visible change)" : "")
+            }.joined(separator: "\n") + "\n"
+        }
+        s += """
+
+        Perform at most the next 1–3 actions (you have \(maxRounds) tool rounds), then stop and summarise what you did in one line:
+        - start with "Did:" when the task still needs more steps (Jev resumes from there),
+        - start with "Done:" only if the entire task is now visibly complete,
+        - start with "Stopped:" if the task cannot or must not be continued.
+        """
+        return s
+    }
+
+    // MARK: - Claude-only driver
+
+    private func mainClaudeOnly(_ handle: AgentRunHandle) async throws {
+        if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
+            handle.emit(.failed(problem))
+            return
+        }
+        await showOverlay(step: 1)
+
+        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        let system: [[String: Any]] = [[
+            "type": "text",
+            "text": Self.systemPrompt(task: task, context: context, frontmost: front),
+            "cache_control": ["type": "ephemeral"],
+        ]]
+        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
+        messages = [["role": "user", "content": [[
+            "type": "text",
+            "text": "Task: \(task)\n\nStart by taking a screenshot to see the current state of the screen.",
+        ]]]]
+
+        handle.emit(.status("Thinking…"))
+        let outcome = try await claudeLoop(system: system, tools: tools, maxTurns: config.maxSteps, bounded: false,
+                                           overlayStep: nil, handle: handle)
+        finishClaudeOnly(outcome, handle: handle)
+    }
+
+    private func finishClaudeOnly(_ outcome: ClaudeOutcome, handle: AgentRunHandle) {
+        switch outcome {
+        case .done(let s), .paused(let s): handle.emit(.completed(summary: s))
+        case .failed(let m): handle.emit(.failed(m))
+        case .stepLimit:
+            handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
+        }
+    }
+
+    enum ClaudeOutcome {
+        case done(String)          // Claude ended its turn (unbounded) or said "Done:" (bounded)
+        case paused(String)        // bounded turn used its budget; one-line summary
+        case failed(String)
+        case stepLimit(String)     // unbounded loop ran out of turns
+    }
+
+    /// The Claude tool loop shared by the Claude-only driver, the bounded
+    /// fallback and the takeover. `messages` must already hold the first user turn.
+    private func claudeLoop(system: [[String: Any]], tools: [[String: Any]], maxTurns: Int, bounded: Bool,
+                            overlayStep: Int?, handle: AgentRunHandle) async throws -> ClaudeOutcome {
+        var executed: [String] = []
+        var wrapUpSent = false
+        var turn = 0
+        func synthesized() -> String {
+            executed.isEmpty ? "Did: nothing (took a screenshot only)" : "Did: " + executed.suffix(4).joined(separator: ", ")
+        }
+
+        while true {
+            turn += 1
+            try checkCancelled()
+            if !bounded, turn > maxTurns { return .stepLimit(synthesized()) }
+            await updateOverlay(step: overlayStep ?? turn, status: nil)
+
+            AgentToolResult.pruneImages(in: &messages, keep: Self.keepRecentScreenshots)
+            let msg: ClaudeClient.Message
+            do {
+                msg = try await claude.create(model: config.model, system: system, messages: messages,
+                                              tools: tools, maxTokens: 4096, effort: "medium")
+            } catch {
+                try checkCancelled()
+                throw error
+            }
+            try checkCancelled()
+
+            messages.append(["role": "assistant", "content": msg.content])
+            let text = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let calls = msg.content.compactMap(AgentToolCall.init)
+
+            if !bounded, turn == 1, !text.isEmpty {
+                handle.emit(.planned(text))
+            } else if !text.isEmpty, !calls.isEmpty {
+                handle.emit(.status(String(text.prefix(200))))
+            }
+
+            switch msg.stopReason {
+            case "max_tokens":
+                return .failed("Claude ran out of output tokens mid-turn. Try a narrower task.")
+            case "refusal":
+                return .failed(text.isEmpty ? "Claude declined to continue this task." : text)
+            default: break
+            }
+            if msg.stopReason == "end_turn" || calls.isEmpty {
+                Log.agent.info("Claude turn ended after \(turn) rounds (bounded=\(bounded))")
+                if bounded {
+                    if text.hasPrefix("Done:") { return .done(text) }
+                    if text.hasPrefix("Stopped:") { return .failed(text) }
+                    return .paused(text.isEmpty ? synthesized() : text)
+                }
+                return .done(text.isEmpty ? "Done." : text)
+            }
+            if bounded, wrapUpSent {
+                // Claude ignored the wrap-up request; do not execute more.
+                return .paused(text.isEmpty ? synthesized() : text)
+            }
+
+            // ---- Jev gate (one call per turn, before executing) ----
+            let proposed = calls.map(AgentActionDescriber.technical)
+            let screen = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+            let state = JevGate.formatState(task: task, step: overlayStep ?? turn, maxSteps: config.maxSteps,
+                                            claudeSays: text, proposedActions: proposed,
+                                            recentActions: recentActions,
+                                            app: screen.appName ?? screen.bundleID, windowTitle: screen.windowTitle)
+            let verdict = await gate.evaluate(state: state, heuristicText: ([text] + proposed).joined(separator: "\n"))
+            try checkCancelled()
+            let decision = JevGate.decide(verdict, mode: config.approvalMode,
+                                          readOnlyTurn: calls.allSatisfy(\.isReadOnly))
+
+            var approved = true
+            if case .askApproval(let risk) = decision {
+                let id = UUID()
+                let description = calls.map(AgentActionDescriber.human).joined(separator: " · ")
+                handle.emit(.needsApproval(id: id, description: description, risk: risk))
+                await MainActor.run { overlay?.setWaitingForApproval() }
+                approved = await awaitApproval(id: id)
+                try checkCancelled()
+                await updateOverlay(step: overlayStep ?? turn, status: nil)
+                if !approved { handle.emit(.status("Declined — asking Claude to adapt")) }
+            }
+
+            // ---- Execute ----
+            var results: [[String: Any]] = []
+            if !approved {
+                results = calls.map { AgentToolResult.error(for: $0, AgentToolResult.declined) }
+                recentActions.append("user declined: " + proposed.joined(separator: "; "))
+            } else {
+                var turnFailed = false
+                for call in calls {
+                    try checkCancelled()
+                    actionIndex += 1
+                    let human = AgentActionDescriber.human(call)
+                    handle.emit(.step(index: actionIndex, description: human))
+                    if turnFailed {
+                        results.append(AgentToolResult.error(for: call, AgentToolResult.notExecuted))
+                        continue
+                    }
+                    do {
+                        results.append(try await execute(call, handle: handle, step: overlayStep ?? turn))
+                        recentActions.append(AgentActionDescriber.technical(call))
+                        if !call.isReadOnly { executed.append(human) }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                        Log.agent.error("Action failed (\(call.name, privacy: .public)): \(msg, privacy: .public)")
+                        results.append(AgentToolResult.error(for: call, msg))
+                        recentActions.append(AgentActionDescriber.technical(call) + " → error: \(msg)")
+                        if call.isComputer { turnFailed = true }
+                    }
+                }
+            }
+            if recentActions.count > 6 { recentActions.removeFirst(recentActions.count - 6) }
+
+            // ---- Stuck nudge / wrap-up ----
+            if verdict.isStuck > JevGate.thresholdStuck { stuckStreak += 1 } else { stuckStreak = 0 }
+            var userContent = results
+            if stuckStreak >= 2 {
+                userContent.append(["type": "text", "text": JevGate.stuckNudge])
+                handle.emit(.status("Jev thinks Claude is stuck — nudging"))
+                stuckStreak = 0
+            }
+            if bounded, turn >= maxTurns {
+                userContent.append(["type": "text", "text": "You have used the action budget for this step. Do not call any more tools. Reply with one line: start with \"Did:\" summarising what you just did, or \"Done:\" if the entire task is now complete."])
+                wrapUpSent = true
+            }
+            messages.append(["role": "user", "content": userContent])
+        }
     }
 
     // MARK: Permissions
@@ -312,7 +705,7 @@ final class AgentRun: @unchecked Sendable {
         return nil
     }
 
-    // MARK: Executing one tool call
+    // MARK: Executing one Claude tool call
 
     private func execute(_ call: AgentToolCall, handle: AgentRunHandle, step: Int) async throws -> [String: Any] {
         if !call.isComputer {

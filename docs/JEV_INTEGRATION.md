@@ -234,3 +234,102 @@ confirmations, local-only memory) and better with it.
 The Vercel shape was lifted from `@ai-sdk/gateway` 4.0.87
 (`GatewayEvaluationModel.doEvaluate`) because Vercel's docs only show the AI
 SDK. Both parsers are unit-tested in `NaviTests/JevClientTests.swift`.
+
+## Computer use — the Jev-first driver (`Navi/Agent/JevDriver.swift`)
+
+Default driver (`NaviSettings.agentDriver = .jevFirst`). The policy is
+browser-use/jev-ultrafast's, ported from the DOM to the macOS Accessibility
+tree: *finding the candidates is the work; Jev picks.* Per step:
+
+1. **Observe** — `AXSnapshotter.capture` walks the frontmost app's focused
+   window (`kAXFocusedWindowAttribute`, else `kAXWindowsAttribute[0]`),
+   hard time-boxed at **150 ms** (depth ≤ 25, ≤ 4 000 nodes, per-app
+   messaging timeout 0.2 s) on a serial `AXQueue`. Chrome/Electron apps get
+   `AXEnhancedUserInterface` + `AXManualAccessibility` once per run. The menu
+   bar is walked only when the task mentions a menu (`AXSnapshot.taskMentionsMenu`).
+   Candidates are the actionable roles (buttons, links, fields, pop-ups, menu
+   items, cells, tabs, …; images/text/groups only with `AXPress`), deduped on
+   (role, label, frame), focused first then reading order, capped at **120**
+   (closest to the window / last acted-on element win). Browser URL comes
+   from the `AXWebArea`'s `AXURL` — no Apple Events in the loop.
+2. **Decide** — one `JevClient.ask` (~220–500 ms measured). Nothing else
+   costs more than a few ms.
+3. **Execute** — `ActionExecutor`: `AXPress` first, CGEvent click at the
+   frame centre as fallback; `AXValue` set-and-verify for fields, else
+   select-all + type; pop-ups opened and the matching `AXMenuItem` pressed.
+4. **Settle** — poll a 3-call AX fingerprint (focused window title + focused
+   element) every 40 ms; return on the first change, cap 250 ms (500 ms after
+   Return, 800 ms after OPEN_APP / OPEN_URL). Re-observe → `page_changed`.
+
+No screenshots are taken in this loop. A 400 px thumbnail goes to the panel
+every third step when the live overlay is on and Screen Recording is granted;
+it is never sent to Jev.
+
+### State (JSON, serialised to the `state` string)
+
+```jsonc
+{
+  "app": "Safari", "bundle": "com.apple.Safari", "window": "Acme — Home",
+  "url": "https://acme.test/", "step": "2 of 40",
+  "text": "…first 1500 chars of visible AXStaticText…",
+  "elements": [
+    { "index": 1, "role": "AXTextField", "label": "Search", "value": "", "focused": true,
+      "path": "Toolbar", "operations": ["CLICK", "TYPE_TEXT"] },
+    { "index": 3, "role": "AXPopUpButton", "label": "Size", "value": "Medium",
+      "options": ["Small", "Medium", "Large"], "operations": ["CLICK", "SELECT"] }
+  ],
+  "recent_actions": [ { "action": "Click ‘Search’", "kind": "click", "text": null, "page_changed": true } ]
+}
+```
+
+### Questions (one call)
+
+| Name | Type | Offered when | Criteria |
+|---|---|---|---|
+| `operation` | choice | always | `CLICK`, `TYPE_TEXT`, `SELECT`, `KEY`, `OPEN_APP`, `OPEN_URL` only when they have ≥ 1 target; `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`, `NEED_VISION` always. Instructions `{goal, rules: NEXT_ACTION}` (jev-ultrafast text, verbatim). |
+| `click_target` | choice | any element | `"<index>"` → `{element: "[i] label", current_value, role, checked?, selected?, expanded?, context}` — instructions `{goal, operation, rules: [NEXT_ACTION, TARGET]}` |
+| `type_text_target` | choice | editable, non-secure fields | same shape |
+| `select_target` | choice | pop-ups with enumerable options | `"<index>:<option>"` |
+| `key_target` | choice | always | Return, Escape, Tab, Delete, Space, arrows, ⌘L/T/W/F/A/C/V/Z/S, ⌘⏎, ⌘⇧T, ⌃Tab |
+| `open_app_target` / `open_url_target` | choice | task names an app / URL (`TextCandidates`) | `{app}` / `{url}` |
+| `task_complete` | noul | always | "The user's goal is already fully accomplished, as evidenced by the current screen" |
+| `is_irreversible`, `is_prohibited` | noul | always | `JevGate.questions` wording — gating stays in one place |
+
+Only the head belonging to the chosen operation is read; the others are
+speculative and discarded. `JevClient.Question` currently takes string
+instructions/criteria, so the structured objects above are sent as compact
+JSON strings (see integrator notes in the handoff).
+
+### Decision rules (`JevDriver.decide`)
+
+```text
+task_complete > 0.8 or operation == DONE        → .completed(summary from history)
+operation head fails validate_choice            → fallback to Claude
+   (choice offered, probabilities cover exactly the offered ids, all finite in [0,1],
+    Σ ≈ 1 ± 0.02, chosen == argmax — same as jev-ultrafast model.validate_choice)
+operation == NEED_VISION                        → fallback to Claude
+operation == BLOCKED, or 3 consecutive non-WAIT actions with page_changed == false
+                                                → one Claude fallback ("try a different approach"), then .failed
+operation confidence < agentJevConfidenceThreshold (0.5) → fallback to Claude
+target head for the operation fails validation  → fallback to Claude
+TYPE_TEXT: text = the task's single quoted string (zero-latency) else Claude Haiku
+   with jev-ultrafast's TEXT_VALUE prompt; {"text": null} / invalid JSON → fallback to Claude
+approval: JevGate.decide(is_irreversible, is_prohibited ∨ keyword heuristic, mode, readOnly = WAIT/SCROLL)
+   — same rules as the Claude-only driver; a declined action proposed again ends the run
+```
+
+**Claude fallback** is one bounded turn of the existing `computer_toolset_20260801`
+loop (≤ 3 tool rounds, then a one-line "Did:/Done:/Stopped:" summary that is
+appended to Jev's history). Budget: `agentMaxClaudeFallbacks` (6). Needs an
+Anthropic key **and** Screen Recording; without them the run continues
+Jev-only and fails with a clear message the first time a fallback is needed.
+If Jev itself errors mid-run, Claude takes over the remaining steps.
+
+**Task surface**: when `ComputerAgent.browserRunner` is registered, one Jev
+choice (`surface`: browser / native_app / unsure over `{task, frontmost_app,
+window_title}`) runs first and browser tasks are handed to that runner with a
+start URL (first URL in the task, else the current tab).
+
+Events: `.planned("Jev-driven · 34 candidates on screen · walk 41 ms")`,
+`.status("Jev · CLICK [7] 91% · 118 ms")` per step, `.status("Handing step to
+Claude: …")`, `.completed(summary:)` built from the step log.

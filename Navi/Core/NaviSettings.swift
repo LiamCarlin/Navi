@@ -34,6 +34,12 @@ final class NaviSettings: ObservableObject {
     @Published var agentApprovalMode: ApprovalMode { didSet { d.set(agentApprovalMode.rawValue, forKey: "agentApprovalMode") } }
     @Published var agentMaxSteps: Int { didSet { d.set(agentMaxSteps, forKey: "agentMaxSteps") } }
     @Published var agentShowLiveOverlay: Bool { didSet { d.set(agentShowLiveOverlay, forKey: "agentShowLiveOverlay") } }
+    /// Who decides each computer-use step: Jev from the accessibility tree (Claude only as fallback) or Claude's vision loop.
+    @Published var agentDriver: AgentDriver { didSet { d.set(agentDriver.rawValue, forKey: "agentDriver") } }
+    /// Below this operation confidence the Jev-first driver hands the step to Claude.
+    @Published var agentJevConfidenceThreshold: Double { didSet { d.set(agentJevConfidenceThreshold, forKey: "agentJevConfidenceThreshold") } }
+    /// Maximum bounded Claude turns per Jev-first run.
+    @Published var agentMaxClaudeFallbacks: Int { didSet { d.set(agentMaxClaudeFallbacks, forKey: "agentMaxClaudeFallbacks") } }
 
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
@@ -67,6 +73,9 @@ final class NaviSettings: ObservableObject {
             "agentApprovalMode": ApprovalMode.askForRisky.rawValue,
             "agentMaxSteps": 40,
             "agentShowLiveOverlay": true,
+            "agentDriver": AgentDriver.jevFirst.rawValue,
+            "agentJevConfidenceThreshold": 0.5,
+            "agentMaxClaudeFallbacks": 6,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -90,6 +99,9 @@ final class NaviSettings: ObservableObject {
         agentApprovalMode = ApprovalMode(rawValue: d.string(forKey: "agentApprovalMode") ?? "") ?? .askForRisky
         agentMaxSteps = d.integer(forKey: "agentMaxSteps")
         agentShowLiveOverlay = d.bool(forKey: "agentShowLiveOverlay")
+        agentDriver = AgentDriver(rawValue: d.string(forKey: "agentDriver") ?? "") ?? .jevFirst
+        agentJevConfidenceThreshold = d.double(forKey: "agentJevConfidenceThreshold")
+        agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")
@@ -167,6 +179,26 @@ enum DigestProvider: String, CaseIterable, Identifiable {
         case .gemini: return "Gemini 2.5 Flash-Lite"
         case .claudeHaiku: return "Claude Haiku 4.5"
         case .localOnly: return "Local OCR only (no LLM)"
+        }
+    }
+}
+
+enum AgentDriver: String, CaseIterable, Identifiable {
+    /// Jev decides every step from the accessibility tree (~100 ms); Claude only sees the screen when Jev isn't confident.
+    case jevFirst
+    /// The original Claude computer-use loop (screenshots every step); Jev only gates safety.
+    case claudeOnly
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .jevFirst: return "Jev-first"
+        case .claudeOnly: return "Claude-only"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .jevFirst: return "Jev decides every step from the accessibility tree (~100 ms); Claude only sees the screen when Jev isn't confident."
+        case .claudeOnly: return "Claude looks at a screenshot before every action and drives the whole task; Jev only gates risky steps."
         }
     }
 }
