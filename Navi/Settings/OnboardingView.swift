@@ -161,7 +161,7 @@ struct OnboardingView: View {
             Text("You're set").font(.system(size: 28, weight: .bold, design: .rounded))
             HStack(spacing: 8) {
                 Text("Press")
-                KeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
+                SettingsKeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
                 Text("anywhere to open Navi.")
             }
             .font(.title3).foregroundStyle(.secondary)

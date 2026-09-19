@@ -50,7 +50,7 @@ struct SettingsRootView: View {
         case .providers: ProvidersView()
         case .permissions: PermissionsView()
         case .memory: MemoryView()
-        case .agent: AgentView()
+        case .agent: AgentSettingsView()
         case .usage: UsageView()
         case .about: AboutView()
         }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct AgentView: View {
+struct AgentSettingsView: View {
     @EnvironmentObject private var settings: NaviSettings
 
     var body: some View {

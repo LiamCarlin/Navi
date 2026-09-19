@@ -48,7 +48,7 @@ struct HomeView: View {
                 Text("Navi").font(.system(size: 34, weight: .bold, design: .rounded))
                 HStack(spacing: 6) {
                     Text("Press")
-                    KeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
+                    SettingsKeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
                     Text("anywhere")
                 }
                 .font(.title3)
@@ -175,7 +175,7 @@ struct HomeView: View {
 }
 
 /// A keyboard-key look for shortcut text.
-struct KeyCap: View {
+struct SettingsKeyCap: View {
     let text: String
     init(_ text: String) { self.text = text }
     var body: some View {
