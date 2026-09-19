@@ -113,12 +113,14 @@ struct OnboardingView: View {
     private var keys: some View {
         Form {
             Section {
-                Text("Navi needs two keys. Both providers have free or credited tiers; see AI Providers later for the full list of deals.")
+                Text("Navi needs a Jev key (TypeSafe direct, or Vercel AI Gateway — either works) and a Claude key. See AI Providers later for the full list of deals.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section {
-                APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "console.typesafe.ai/keys",
-                          placeholder: "ts-…", test: ProviderTests.jev)
+                APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "console.typesafe.ai/keys · early access",
+                          placeholder: "ts-…", optional: true, test: ProviderTests.jev)
+                APIKeyRow(key: .vercelGateway, title: "Jev via Vercel AI Gateway", subtitle: "vercel.com/ai-gateway → API Keys · no waitlist",
+                          placeholder: "vck_…", optional: true, test: ProviderTests.jevVercel)
                 APIKeyRow(key: .anthropic, title: "Anthropic (Claude)", subtitle: "platform.claude.com",
                           placeholder: "sk-ant-…", test: ProviderTests.claude)
             }

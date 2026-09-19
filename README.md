@@ -50,6 +50,18 @@ computer-use agent after every step (`is_irreversible`, `task_complete`,
 - **Screen Memory** — every 30 s (configurable) a frame is captured, OCR'd on-device with Vision, triaged by Jev, and — only if important and not sensitive — digested by a cheap vision model into an Obsidian vault of wiki-linked daily notes. Ask "what was I doing yesterday?" from the panel.
 - **The Navi app** — a proper macOS window (menu bar ✦ → *Navi App & Settings…*): Home with green/amber/red status cards and one-click fixes, hotkey recorder, API keys in Keychain with per-provider connection tests, permissions with live status, memory controls, agent approval mode, usage and cost estimates.
 
+## Two ways to reach Jev
+
+| Transport | Key | Notes |
+|---|---|---|
+| **TypeSafe API** (direct) | `TYPESAFE_API_KEY` from [console.typesafe.ai/keys](https://console.typesafe.ai/keys) | Early access (waitlist). Native `noul` questions, per-answer `confidence`. |
+| **Vercel AI Gateway** | `AI_GATEWAY_API_KEY` from Vercel → AI Gateway → API Keys | Model `typesafe-ai/jev`, same $0.042/MTok, no waitlist. Yes/no questions are spelled `boolean`; confidence is derived from the probability gap when the gateway doesn't send one. |
+
+Add either key in **AI Providers** (or both — "Auto" prefers TypeSafe). The
+Vercel route uses the same HTTP call `@ai-sdk/gateway` makes
+(`POST ai-gateway.vercel.sh/v4/ai/evaluation-model`), so no Node runtime is
+needed inside the app.
+
 ## Setup
 
 ### Requirements

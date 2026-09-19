@@ -9,12 +9,22 @@ struct ProvidersView: View {
     var body: some View {
         FormPage(title: "AI Providers", subtitle: "Keys are stored in the macOS Keychain and never leave this Mac except to call the provider.") {
             Section {
-                APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "System One — intent routing, agent safety gating, memory triage.",
-                          placeholder: "ts-…", test: ProviderTests.jev)
+                APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "System One — intent routing, agent safety gating, memory triage. Direct API.",
+                          placeholder: "ts-…", optional: settings.jevProvider == .vercelGateway, test: ProviderTests.jev)
+                APIKeyRow(key: .vercelGateway, title: "Jev via Vercel AI Gateway", subtitle: "Same model (typesafe-ai/jev) billed through Vercel. Use this if you don't have TypeSafe early access.",
+                          placeholder: "vck_…", optional: settings.jevProvider != .vercelGateway, test: ProviderTests.jevVercel)
+                Picker("Jev transport", selection: $settings.jevProvider) {
+                    ForEach(JevProvider.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.menu)
+                JevTransportStatus()
                 APIKeyRow(key: .anthropic, title: "Anthropic (Claude)", subtitle: "System Two — answers, computer-use agent, fallback digest.",
                           placeholder: "sk-ant-…", test: ProviderTests.claude)
             } header: {
                 Text("Required")
+            } footer: {
+                Text("One Jev key is enough — TypeSafe direct or Vercel AI Gateway. Auto prefers TypeSafe when both exist.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
@@ -31,7 +41,7 @@ struct ProvidersView: View {
             }
 
             Section("Models") {
-                ExplainedRow(title: "Jev model", explanation: "TypeSafe System One model id.") {
+                ExplainedRow(title: "Jev model", explanation: "TypeSafe id (jev-latest). Via Vercel this maps to typesafe-ai/jev unless you enter a namespaced id.") {
                     TextField("jev-latest", text: $settings.jevModel)
                         .textFieldStyle(.roundedBorder).frame(width: 200)
                 }
@@ -145,6 +155,7 @@ struct APIKeyRow: View {
     private func save() {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         Keychain.set(key, value: trimmed.isEmpty ? nil : trimmed)
+        NotificationCenter.default.post(name: .naviSettingsChanged, object: nil)
         stored = Keychain.get(key) ?? ""
         value = stored
         testState = .idle
@@ -188,6 +199,17 @@ enum ProviderTests {
         }
         let p = r["ok"]?.noul ?? 0
         return "\(r.latencyMs) ms · P(ok)=\(String(format: "%.2f", p))"
+    }
+
+    @MainActor static func jevVercel() async throws -> String {
+        let client = AppDelegate.shared?.services.jev ?? JevClient()
+        let (r, _) = try await timed {
+            try await client.ask(state: "ping",
+                                 questions: ["ok": .noul(instructions: "The word 'ping' appears in the state")],
+                                 cacheable: false, transport: .vercelGateway)
+        }
+        let p = r["ok"]?.noul ?? 0
+        return "\(r.latencyMs) ms · P(ok)=\(String(format: "%.2f", p)) · via Vercel"
     }
 
     @MainActor static func claude() async throws -> String {
@@ -260,6 +282,8 @@ struct DealsCard: View {
     static let deals: [Deal] = [
         Deal(name: "TypeSafe (Jev)", url: "https://console.typesafe.ai/keys",
              note: "Early access · $0.042 / MTok input, output free", use: "Every routing, gating and triage decision."),
+        Deal(name: "Vercel AI Gateway (Jev)", url: "https://vercel.com/ai-gateway/models/jev",
+             note: "typesafe-ai/jev · same $0.042 / MTok · no waitlist", use: "Alternative route to Jev; key from Vercel → AI Gateway → API Keys."),
         Deal(name: "Anthropic", url: "https://platform.claude.com",
              note: "YC student deal: $500 credits + Tier 4 limits", use: "Answers and the computer-use agent.", redeemed: true),
         Deal(name: "Google AI Studio", url: "https://aistudio.google.com/apikey",
@@ -306,5 +330,31 @@ struct DealsCard: View {
             .font(.callout)
         }
         .padding(.vertical, 4)
+    }
+}
+
+
+/// Shows which Jev transport will actually be used right now.
+struct JevTransportStatus: View {
+    @EnvironmentObject private var settings: NaviSettings
+    @State private var tick = 0
+
+    var body: some View {
+        let active = JevClient.resolveTransport(preference: settings.jevProvider)
+        HStack(spacing: 8) {
+            StatusDot(level: active == nil ? .warn : .ok)
+            Text(label(active)).font(.callout).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .id(tick)
+        .onReceive(NotificationCenter.default.publisher(for: .naviSettingsChanged)) { _ in tick += 1 }
+    }
+
+    private func label(_ t: JevClient.Transport?) -> String {
+        switch t {
+        case .typesafe: return "Active: TypeSafe API (api.typesafe.ai)"
+        case .vercelGateway: return "Active: Vercel AI Gateway (ai-gateway.vercel.sh · typesafe-ai/jev)"
+        case nil: return "No Jev key yet — Navi routes with local heuristics until one is added."
+        }
     }
 }

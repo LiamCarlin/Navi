@@ -8,7 +8,8 @@ enum Keychain {
     static let service = "com.liamcarlin.navi"
 
     enum Key: String, CaseIterable {
-        case typesafe = "TYPESAFE_API_KEY"      // Jev
+        case typesafe = "TYPESAFE_API_KEY"      // Jev (direct)
+        case vercelGateway = "AI_GATEWAY_API_KEY" // Jev via Vercel AI Gateway (typesafe-ai/jev)
         case anthropic = "ANTHROPIC_API_KEY"    // Claude
         case gemini = "GEMINI_API_KEY"          // cheap vision digest (optional)
         case openai = "OPENAI_API_KEY"          // optional

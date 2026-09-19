@@ -21,6 +21,8 @@ final class NaviSettings: ObservableObject {
 
     // MARK: AI
     @Published var jevModel: String { didSet { d.set(jevModel, forKey: "jevModel") } }
+    /// Which transport reaches Jev: TypeSafe's API directly or Vercel AI Gateway.
+    @Published var jevProvider: JevProvider { didSet { d.set(jevProvider.rawValue, forKey: "jevProvider") } }
     @Published var answerModel: String { didSet { d.set(answerModel, forKey: "answerModel") } }
     @Published var agentModel: String { didSet { d.set(agentModel, forKey: "agentModel") } }
     @Published var digestProvider: DigestProvider { didSet { d.set(digestProvider.rawValue, forKey: "digestProvider") } }
@@ -57,6 +59,7 @@ final class NaviSettings: ObservableObject {
             "hotKeyModifiers": 256,     // cmdKey (Carbon)
             "appearance": Appearance.system.rawValue,
             "jevModel": "jev-latest",
+            "jevProvider": JevProvider.auto.rawValue,
             "answerModel": "claude-opus-5",
             "agentModel": "claude-opus-5",
             "digestProvider": DigestProvider.auto.rawValue,
@@ -79,6 +82,7 @@ final class NaviSettings: ObservableObject {
         hotKeyModifiers = UInt32(d.integer(forKey: "hotKeyModifiers"))
         appearance = Appearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
         jevModel = d.string(forKey: "jevModel") ?? "jev-latest"
+        jevProvider = JevProvider(rawValue: d.string(forKey: "jevProvider") ?? "") ?? .auto
         answerModel = d.string(forKey: "answerModel") ?? "claude-opus-5"
         agentModel = d.string(forKey: "agentModel") ?? "claude-opus-5"
         digestProvider = DigestProvider(rawValue: d.string(forKey: "digestProvider") ?? "") ?? .auto
@@ -102,7 +106,8 @@ final class NaviSettings: ObservableObject {
 
     // MARK: Derived
 
-    var hasJevKey: Bool { Keychain.has(.typesafe) }
+    /// True when the selected Jev transport has a key.
+    var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }
     var hasClaudeKey: Bool { Keychain.has(.anthropic) }
     var hasGeminiKey: Bool { Keychain.has(.gemini) }
 
@@ -123,6 +128,19 @@ final class NaviSettings: ObservableObject {
 enum Appearance: String, CaseIterable, Identifiable {
     case system, light, dark
     var id: String { rawValue }
+}
+
+enum JevProvider: String, CaseIterable, Identifiable {
+    /// TypeSafe key if present, otherwise Vercel AI Gateway key.
+    case auto, typesafe, vercelGateway
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .auto: return "Auto (TypeSafe, then Vercel)"
+        case .typesafe: return "TypeSafe API (direct)"
+        case .vercelGateway: return "Vercel AI Gateway"
+        }
+    }
 }
 
 enum DigestProvider: String, CaseIterable, Identifiable {

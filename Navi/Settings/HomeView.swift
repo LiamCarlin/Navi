@@ -157,7 +157,7 @@ struct HomeView: View {
     // MARK: Polling
 
     private func refreshKeys() {
-        hasJev = Keychain.has(.typesafe)
+        hasJev = settings.hasJevKey
         hasClaude = Keychain.has(.anthropic)
     }
 

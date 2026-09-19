@@ -216,3 +216,21 @@ confirmations, local-only memory) and better with it.
   `calls × ~1 200 tokens × $0.042/MTok`.
 - Optional: point `Langfuse` at the same events (YC deal) for traces across
   Jev + Claude — see README.
+
+
+## Transports
+
+`JevClient` speaks two wire protocols and picks one from `NaviSettings.jevProvider`
+(`auto` → TypeSafe if that key exists, else Vercel):
+
+| | TypeSafe direct | Vercel AI Gateway |
+|---|---|---|
+| URL | `POST https://api.typesafe.ai/v1/systemone` | `POST https://ai-gateway.vercel.sh/v4/ai/evaluation-model` |
+| Auth | `Authorization: Bearer $TYPESAFE_API_KEY` | `Authorization: Bearer $AI_GATEWAY_API_KEY` + `ai-gateway-auth-method: api-key` |
+| Model | body `model: "jev-latest"` | header `ai-model-id: typesafe-ai/jev` (+ `ai-evaluation-model-specification-version: 4`, `ai-gateway-protocol-version: 0.0.1`) |
+| Yes/no | `{"type":"noul"}` → `{"noul": p}` | `{"type":"boolean"}` → `{"type":"boolean","probability": p}` |
+| Confidence | per answer | `providerMetadata.typesafe.confidence[name]` if present, else `top − runner-up` probability |
+
+The Vercel shape was lifted from `@ai-sdk/gateway` 4.0.87
+(`GatewayEvaluationModel.doEvaluate`) because Vercel's docs only show the AI
+SDK. Both parsers are unit-tested in `NaviTests/JevClientTests.swift`.

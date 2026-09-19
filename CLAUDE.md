@@ -51,6 +51,9 @@ calibrated probabilities**, never text, in 70–500 ms. It is the fast "System O
 brain; Claude is the slow "System Two" that writes text and drives the computer.
 
 - `POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer $TYPESAFE_API_KEY`
+  — or via Vercel AI Gateway: `POST https://ai-gateway.vercel.sh/v4/ai/evaluation-model`,
+  `Authorization: Bearer $AI_GATEWAY_API_KEY`, header `ai-model-id: typesafe-ai/jev`,
+  yes/no questions spelled `boolean`. `JevClient` handles both; see docs/JEV_INTEGRATION.md.
 - Body: `{ state, model, questions: { name: {type: choice|score|noul, instructions, criteria} } }`
 - Answers: `choice` → `{choice, probabilities, confidence}`; `score` → `{score, legend, confidence}`; `noul` → `{noul}` (P(true)).
 - Full docs mirrored in `docs/jev-docs-full.txt`. Patterns used here:

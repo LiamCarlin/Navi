@@ -8,9 +8,13 @@ passes 124 unit tests. A Release build is installed at `/Applications/Navi.app`.
 1. **Launch** `/Applications/Navi.app`. It lives in the menu bar (✦). The window
    opens with a 5-step setup.
 2. **Keys → AI Providers.** Paste and hit *Test* for each:
-   - Jev: https://console.typesafe.ai/keys (you're on the early-access waitlist
-     flow; until the key arrives Navi routes with local heuristics — the pill
-     says "local" instead of "Jev · 92%").
+   - Jev, either of:
+     - TypeSafe direct: https://console.typesafe.ai/keys (early access), or
+     - **Vercel AI Gateway**: Vercel dashboard → AI Gateway → API Keys
+       (model `typesafe-ai/jev`, no waitlist). Paste into "Jev via Vercel AI
+       Gateway" and hit Test.
+     Until one exists Navi routes with local heuristics — the pill says
+     "local" instead of "Jev · 92%".
    - Claude: https://platform.claude.com (your YC $500 credit is already
      redeemed on this account).
    - Gemini (optional, cheapest screen digest): https://aistudio.google.com/apikey
