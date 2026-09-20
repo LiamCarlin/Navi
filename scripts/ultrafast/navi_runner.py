@@ -317,6 +317,106 @@ class SpeculativeText:
         return text, {**helper, "speculative": True}
 
 
+# --- Adaptation 6: Claude coaches Jev once when it keeps failing -------------
+
+COACH_SYSTEM = """You are the supervisor of a fast, non-generative decision model ("Jev") that drives a web page by choosing ONE operation per step from an indexed element table: CLICK an element index, TYPE_TEXT into an element index, SELECT an option, SCROLL_UP/DOWN, WAIT, DONE, BLOCKED. Jev cannot see pixels, cannot read instructions that are not in its state, and picks the most plausible element from labels and roles.
+
+Jev is failing at the current goal. You see the goal, the page (screenshot when attached), the element table Jev sees (with indexes), and the recent actions with whether each one changed the page. Work out WHY it is failing — e.g. clicking a label or a search box instead of the right control, the control it needs is not in the table (needs scrolling, a different page, or a different search), an autocomplete or overlay is in the way, it keeps re-clicking the same thing, the goal is already satisfied, or the goal cannot be done on this page.
+
+Reply ONLY with JSON:
+{"diagnosis": "one or two sentences on what is going wrong",
+ "guidance": "2-5 short imperative lines Jev should follow from now on, naming element indexes and exact labels from the table when relevant, and what to stop doing"}
+Never invent element indexes that are not in the table. Never include credentials or payment details."""
+
+FAILURES_BEFORE_COACHING = 3
+
+
+class Coach:
+    """Once per run: when the page stops responding to Jev (upstream's stuck
+    rule, or the same element acted on three times in a row), Claude reads the
+    page and writes guidance that is added to Jev's state and to every
+    question's instructions for the rest of the run. Failing again afterwards
+    ends the run with Claude's diagnosis."""
+
+    def __init__(self):
+        self.guidance = None
+        self.diagnosis = None
+        self.used = False
+
+    @staticmethod
+    def flailing(history):
+        last = history[-FAILURES_BEFORE_COACHING:]
+        if len(last) < FAILURES_BEFORE_COACHING:
+            return None
+        if all(h.get("page_changed") is False and h.get("kind") != "wait" for h in last):
+            return "the last %d actions changed nothing" % FAILURES_BEFORE_COACHING
+        if len({h.get("action") for h in last}) == 1 and last[-1].get("kind") != "wait":
+            return "‘%s’ was chosen %d times in a row" % (last[-1].get("action", "?")[:60], FAILURES_BEFORE_COACHING)
+        return None
+
+    def ask(self, goal, page, history, why, screenshot_b64=None):
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            raise ValueError("no Anthropic key")
+        model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
+        base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+        from jev_ultrafast.model import action_space
+
+        elements = action_space(page["actions"])[0]
+        state = {
+            "goal": goal,
+            "why_asked": why,
+            "page": {"url": page.get("url"), "title": page.get("title"), "text": (page.get("text") or "")[:4000]},
+            "elements": elements[:150],
+            "recent_actions": [{k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-8:]],
+        }
+        content = []
+        if screenshot_b64:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
+        content.append({"type": "text", "text": json.dumps(state, sort_keys=True)})
+        started = time.perf_counter()
+        response = jev_model.CLIENT.post(
+            base + "/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            json={"model": model, "max_tokens": 700, "system": COACH_SYSTEM, "messages": [{"role": "user", "content": content}]},
+            timeout=60,
+        )
+        if response.is_error:
+            raise RuntimeError(f"Claude returned HTTP {response.status_code}")
+        text = "".join(b.get("text", "") for b in response.json().get("content", []) if b.get("type") == "text").strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            text = text[text.find("{"):text.rfind("}") + 1]
+        out = json.loads(text)
+        guidance = str(out.get("guidance", "")).strip()
+        if not guidance:
+            raise ValueError("no guidance")
+        self.guidance = guidance[:1200]
+        self.diagnosis = str(out.get("diagnosis", "")).strip() or "Jev kept choosing actions that had no effect"
+        self.used = True
+        return round((time.perf_counter() - started) * 1000)
+
+    def install(self):
+        """Adds the guidance to every Jev request (state + each question's instructions)."""
+        inner = jev_model.post_json
+
+        def post_json(url, key, body):
+            if self.guidance and isinstance(body, dict) and "questions" in body:
+                body = dict(body)
+                if isinstance(body.get("state"), dict):
+                    body["state"] = {**body["state"], "guidance": self.guidance}
+                qs = {}
+                for name, q in body["questions"].items():
+                    q = dict(q)
+                    if isinstance(q.get("instructions"), dict):
+                        q["instructions"] = {**q["instructions"], "guidance": self.guidance}
+                    qs[name] = q
+                body["questions"] = qs
+            return inner(url, key, body)
+
+        jev_model.post_json = post_json
+
+
 def install_adaptations():
     if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         jev_model.post_json = post_json_vercel
@@ -366,6 +466,8 @@ def main():
     args = parser.parse_args()
 
     speculative = install_adaptations()
+    coach = Coach()
+    coach.install()
     warm_connections()
     if args.max_steps > 0:
         import jev_ultrafast.questions as q
@@ -395,7 +497,35 @@ def main():
             emit("screenshot", jpeg_base64=page["screenshot"])
         seen_steps = 0
         seen_decisions = 0
-        for state in agent.run():
+        stop = None            # ("done"|"blocked", summary) once the run must end
+
+        def coach_or_stop(state, why):
+            """Claude coaches once; a second failure ends the run."""
+            if coach.used:
+                return ("blocked", f"Still failing after Claude's guidance ({why}). Claude's diagnosis: {coach.diagnosis}")
+            emit("status", message=f"Jev is struggling ({why}) — asking Claude to diagnose")
+            shot = None
+            try:
+                shot = state["browser"].observe(screenshot=True).get("screenshot")
+            except Exception:  # noqa: BLE001 — coaching works without the picture
+                pass
+            try:
+                ms = coach.ask(state["goal"], state["page"], state["history"], why, shot)
+            except Exception as exc:  # noqa: BLE001
+                return ("blocked", f"Jev keeps failing ({why}) and Claude's diagnosis was unavailable: {exc}")
+            emit("status", message=f"Claude · {ms} ms · {coach.diagnosis}")
+            emit("guidance", text=coach.guidance)
+            # A coaching entry breaks the no-change window so the stuck rule restarts.
+            state["history"].append({"step": len(state["history"]) + 1, "action": "Claude guidance: " + coach.guidance[:200],
+                                     "kind": "coach", "text": None, "page_changed": True, "url": state["page"]["url"]})
+            state["status"] = "ready"
+            return None
+
+        def run_until_stop():
+            while agent.state["status"] not in {"done", "blocked"}:
+                yield agent.command("tick")
+
+        for state in run_until_stop():
             for d in state["decisions"][seen_decisions:]:
                 emit(
                     "decision",
@@ -424,18 +554,36 @@ def main():
             seen_steps = len(state["history"])
             if args.screenshots and state["page"].get("screenshot"):
                 emit("screenshot", jpeg_base64=state["page"]["screenshot"])
-            if state["status"] in {"done", "blocked"}:
+            # Only actions since the last coaching count towards a new failure streak.
+            recent = state["history"]
+            for i in range(len(recent) - 1, -1, -1):
+                if recent[i].get("kind") == "coach":
+                    recent = recent[i + 1:]
+                    break
+            why = None
+            if state["status"] == "blocked":
+                why = Coach.flailing(recent) or "Jev answered BLOCKED"
+            elif state["status"] == "ready":
+                why = Coach.flailing(recent)
+            if why:
+                stop = coach_or_stop(state, why)
+                if stop is None:
+                    continue
+            if state["status"] in {"done", "blocked"} or stop:
+                status = stop[0] if stop else state["status"]
                 emit(
                     "done",
-                    status=state["status"],
+                    status=status,
                     elapsed_ms=state["elapsed_ms"],
                     steps=len(state["history"]),
-                    summary=summarize(state["history"], state["status"]),
+                    summary=stop[1] if stop else summarize(state["history"], state["status"]),
                     url=state["page"]["url"],
                     title=state["page"].get("title", ""),
                     page_text=(state["page"].get("text") or "")[:6000],
                     speculative_text=speculative.stats,
+                    coached=coach.used,
                 )
+                break
         return 0
     except KeyboardInterrupt:
         emit("done", status="cancelled", elapsed_ms=agent.state.get("elapsed_ms", 0),

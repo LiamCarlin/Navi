@@ -152,6 +152,8 @@ enum UltrafastBridge {
         // instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL / TEXT_MODEL (upstream's
         // OpenAI-compatible helper) before launching Navi; those pass through untouched.
         env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
+        // Coach (Claude diagnoses a failing run once): the agent model from Settings.
+        env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
         return env
     }
 
@@ -251,6 +253,8 @@ enum UltrafastBridge {
                 switch event {
                 case "status":
                     handle.emit(.status(json["message"] as? String ?? ""))
+                case "guidance":
+                    handle.emit(.planned("Guidance for Jev:\n\(json["text"] as? String ?? "")"))
                 case "ready":
                     let n = json["elements"] as? Int ?? 0
                     handle.emit(.status("Page ready · \(n) elements · \(json["title"] as? String ?? "")"))

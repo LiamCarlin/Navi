@@ -417,8 +417,12 @@ final class AgentRun: @unchecked Sendable {
         var history: [JevDriver.HistoryEntry] = []
         var humanLog: [String] = []
         var fallbacks = 0
-        var blockedFallbackUsed = false
         var lastDeclined: AgentAction?
+        // Coaching: after a few ineffective actions Claude diagnoses once and
+        // Jev continues with its guidance; failing again afterwards ends the step.
+        var tracker = JevCoach.FailureTracker()
+        var coach: JevCoach.Advice?
+        var coachAction: AgentAction?
         var lastActedFrame: CGRect?
         let candidates = TextCandidates.extract(task: task)
         let appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
@@ -453,23 +457,62 @@ final class AgentRun: @unchecked Sendable {
             }
         }
 
+        /// Asks Claude once why Jev keeps failing. Returns false when the step must end.
+        func askCoach(step: Int, request: JevDriver.Request?) async throws -> Bool {
+            let why = tracker.summary.isEmpty ? "repeated ineffective actions" : tracker.summary
+            if let coach {
+                handle.emit(.failed("Still failing after Claude's guidance (\(why)). Claude's diagnosis: \(coach.diagnosis)"))
+                return false
+            }
+            guard claude.isConfigured else {
+                handle.emit(.failed("Jev keeps failing (\(why)) and no Anthropic key is set for Claude to diagnose it."))
+                return false
+            }
+            handle.emit(.status("Jev is struggling (\(why)) — asking Claude to diagnose"))
+            await updateOverlay(step: step, status: "Asking Claude why this keeps failing")
+            var png: Data?
+            if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
+            let screen = JevDriver.stateJSON(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps,
+                                                                       snapshot: snapshot, history: []))
+            let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
+                                                      history: history.suffix(8).map(\.json), failureSummary: why, screenshotPNG: png)
+            try checkCancelled()
+            guard let advice else {
+                handle.emit(.failed("Jev keeps failing (\(why)) and Claude's diagnosis was unusable."))
+                return false
+            }
+            coach = advice
+            tracker.reset()
+            handle.emit(.status("Claude · \(ms) ms · \(advice.diagnosis)"))
+            handle.emit(.planned("Guidance for Jev:\n\(advice.guidance)"))
+            history.append(JevDriver.HistoryEntry(action: "Claude guidance: \(AgentAction.short(advice.guidance, 200))", kind: "coach", text: nil, pageChanged: true))
+            let req = request ?? JevDriver.request(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
+                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates))
+            if let a = JevDriver.coachAction(operation: advice.nextOperation, target: advice.nextTarget, request: req) {
+                coachAction = a
+            } else if advice.nextOperation == "BLOCKED" {
+                handle.emit(.failed("Claude says this cannot be done here: \(advice.diagnosis)"))
+                return false
+            } else if advice.nextOperation == "DONE" {
+                handle.emit(.completed(summary: Self.summary(humanLog)))
+                return false
+            }
+            return true
+        }
+
         for step in 1...config.maxSteps {
             try checkCancelled()
             await updateOverlay(step: step, status: nil)
 
-            // jev-ultrafast stuck rule: 3 non-WAIT actions in a row with no observable change → BLOCKED.
-            if JevDriver.isStuck(history) {
-                if blockedFallbackUsed || !visionAvailable {
-                    handle.emit(.failed("Stuck: the last three actions changed nothing on screen. Try rephrasing the task."))
-                    return
-                }
-                blockedFallbackUsed = true
-                if try await !fallback("the last three actions changed nothing on screen — try a different approach", step: step) { return }
-                continue
+            // Ineffective streak (nothing changed, same thing again, errors) → Claude coaches once.
+            if tracker.shouldCoach || JevDriver.isStuck(history) {
+                if try await !askCoach(step: step, request: nil) { return }
+                if coachAction == nil { continue }
             }
 
             let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
-                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates)
+                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
+                                            guidance: coach?.guidance)
 
             // Text the task spells out (one obvious quote) that hasn't been typed yet.
             let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
@@ -489,41 +532,44 @@ final class AgentRun: @unchecked Sendable {
             }
             defer { speculative?.task.cancel() }
 
-            let verdict: JevDriver.Verdict
-            let request: JevDriver.Request
-            do {
-                (verdict, request) = try await driver.ask(input)
-            } catch {
-                try checkCancelled()
-                let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                guard visionAvailable else { throw NaviError.other("Jev is unavailable (\(msg)) and the vision fallback is disabled") }
-                handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
-                let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: history, handle: handle)
-                finishClaudeOnly(outcome, handle: handle)
-                return
-            }
-            try checkCancelled()
-            let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold)
-            handle.emit(.status(JevDriver.statusLine(verdict)))
+            var verdict = JevDriver.Verdict()
             let action: AgentAction
-            switch decision {
-            case .finish(let reason):
-                handle.emit(.status(reason))
-                handle.emit(.completed(summary: Self.summary(humanLog)))
-                return
-            case .blocked(let reason):
-                if blockedFallbackUsed || !visionAvailable {
-                    handle.emit(.failed("Blocked: \(reason). Try rephrasing the task or doing the first step yourself."))
+            if let a = coachAction {
+                // Claude named the single best next action: take it, then Jev continues with the guidance.
+                coachAction = nil
+                handle.emit(.status("Following Claude's suggested action"))
+                action = a
+            } else {
+                let request: JevDriver.Request
+                do {
+                    (verdict, request) = try await driver.ask(input)
+                } catch {
+                    try checkCancelled()
+                    let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                    guard visionAvailable else { throw NaviError.other("Jev is unavailable (\(msg)) and the vision fallback is disabled") }
+                    handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
+                    let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: history, handle: handle)
+                    finishClaudeOnly(outcome, handle: handle)
                     return
                 }
-                blockedFallbackUsed = true
-                if try await !fallback(reason + " — asking Claude to try a different approach", step: step) { return }
-                continue
-            case .fallbackToClaude(let reason):
-                if try await !fallback(reason, step: step) { return }
-                continue
-            case .act(let a):
-                action = a
+                try checkCancelled()
+                let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold)
+                handle.emit(.status(JevDriver.statusLine(verdict)))
+                switch decision {
+                case .finish(let reason):
+                    handle.emit(.status(reason))
+                    handle.emit(.completed(summary: Self.summary(humanLog)))
+                    return
+                case .blocked(let reason):
+                    tracker.recordBlocked(reason)
+                    if try await !askCoach(step: step, request: request) { return }
+                    continue
+                case .fallbackToClaude(let reason):
+                    if try await !fallback(reason, step: step) { return }
+                    continue
+                case .act(let a):
+                    action = a
+                }
             }
 
             // TYPE_TEXT: Jev chose the field; the text comes from the task (one obvious quote) or Haiku.
@@ -582,6 +628,7 @@ final class AgentRun: @unchecked Sendable {
             actionIndex += 1
             handle.emit(.step(index: actionIndex, description: human))
             var entry = JevDriver.HistoryEntry(action: human, kind: action.kind, text: text, pageChanged: nil)
+            var actionError: String?
             let before = await AXSnapshotter.fingerprint()
             do {
                 try await executor.perform(action, text: text, snapshot: snapshot)
@@ -593,6 +640,7 @@ final class AgentRun: @unchecked Sendable {
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
                 Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .public)")
                 entry.action += " → error: \(msg)"
+                actionError = msg
                 handle.emit(.status("Action failed: \(msg)"))
             }
             try checkCancelled()
@@ -601,6 +649,7 @@ final class AgentRun: @unchecked Sendable {
             let diff = next.diff(previous: snapshot)
             entry.pageChanged = diff != "no visible change"
             history.append(entry)
+            if !action.isReadOnly { tracker.record(action: human, changed: entry.pageChanged, error: actionError) }
             humanLog.append(human)
             if let targetFrame { lastActedFrame = targetFrame }
             snapshot = next

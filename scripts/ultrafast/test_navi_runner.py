@@ -96,3 +96,25 @@ filled = {"title": "Google", "text": "", "actions": [
 ]}
 assert nr.SpeculativeText.candidate(filled, [{"step": 1, "action": "Open Search", "kind": "click"}]) is None
 print("runner adaptations OK")
+
+# --- coach ---
+h = [{"step": i, "action": "Open Search", "kind": "click", "page_changed": True} for i in range(1, 4)]
+assert "3 times in a row" in nr.Coach.flailing(h)
+h2 = [{"step": 1, "action": "A", "kind": "click", "page_changed": False}, {"step": 2, "action": "B", "kind": "click", "page_changed": False},
+      {"step": 3, "action": "C", "kind": "click", "page_changed": False}]
+assert "changed nothing" in nr.Coach.flailing(h2)
+assert nr.Coach.flailing(h2[:2]) is None
+assert nr.Coach.flailing([{"step": 1, "action": "Wait", "kind": "wait", "page_changed": False}] * 3) is None
+coach = nr.Coach()
+coach.guidance = "Click [7] Search button, stop clicking the search box."
+seen = {}
+def fake_inner(url, key, body):
+    seen["body"] = body; return {"answers": {}}
+jev_model.post_json = fake_inner
+coach.install()
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest", "state": {"page": {}},
+    "questions": {"operation": {"type": "choice", "criteria": {"CLICK": "c"}, "instructions": {"goal": "g", "rules": "r"}}}})
+assert seen["body"]["state"]["guidance"] == coach.guidance
+assert seen["body"]["questions"]["operation"]["instructions"]["guidance"] == coach.guidance
+assert seen["body"]["questions"]["operation"]["instructions"]["goal"] == "g"
+print("coach OK")
