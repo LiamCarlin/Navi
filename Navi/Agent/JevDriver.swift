@@ -91,6 +91,7 @@ struct JevDriver: Sendable {
         ("Space", "Toggle or activate the focused control"),
         ("Up", "Move selection up"), ("Down", "Move selection down"),
         ("Left", "Move left"), ("Right", "Move right"),
+        ("cmd+n", "New: note, message, email, document or window in the current app"),
         ("cmd+l", "Focus the browser address bar"),
         ("cmd+t", "New browser tab"), ("cmd+w", "Close the current tab or window"),
         ("cmd+f", "Find on page"), ("cmd+a", "Select all"), ("cmd+c", "Copy"), ("cmd+v", "Paste"),

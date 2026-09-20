@@ -95,6 +95,9 @@ struct MenuBarMenu: View {
 
     var body: some View {
         Button("Open Navi  ⌘Space") { AppDelegate.shared?.togglePanel() }
+        if let vm = AppDelegate.shared?.panelController.viewModel, vm.hasAgentToShow {
+            Button(vm.agentRun != nil ? "Show running task…" : "Show last task…") { AppDelegate.shared?.showCurrentTask() }
+        }
         Button("Navi App & Settings…") {
             openWindow(id: WindowID.main)
             AppActivation.showDock()

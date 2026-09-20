@@ -178,7 +178,10 @@ final class AgentRunHandle: @unchecked Sendable {
         self.respondAction = respond
     }
 
-    func emit(_ e: AgentEvent) { continuation.yield(e) }
+    /// Optional side channel (run log, overlay); called on the emitting thread.
+    var onEmit: (@Sendable (AgentEvent) -> Void)?
+
+    func emit(_ e: AgentEvent) { onEmit?(e); continuation.yield(e) }
     func finish() { continuation.finish() }
     func cancel() { cancelAction() }
     func respond(_ a: AgentApproval) { respondAction(a) }

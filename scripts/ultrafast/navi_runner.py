@@ -34,6 +34,7 @@ import argparse
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -196,6 +197,13 @@ class FastBrowser(Browser):
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+        # Show the work: the user asked Navi to do this, so the tab is brought to the
+        # front instead of running invisibly in the background.
+        if not os.environ.get("NAVI_BACKGROUND_TAB"):
+            try:
+                cdp("Target.activateTarget", targetId=self.target)
+            except Exception:  # noqa: BLE001 — cosmetic
+                pass
         self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -373,6 +381,13 @@ def main():
     except Exception as exc:  # noqa: BLE001
         emit("error", message=f"Could not open the browser tab: {exc}")
         return 2
+
+    # Navi terminates the runner when a run is cancelled or the app quits; close
+    # our tab instead of leaving it orphaned in the user's Chrome.
+    def on_term(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_term)
     try:
         page = agent.state["page"]
         emit("ready", elements=len(agent.snapshot()["elements"]), url=page["url"], title=page["title"])
@@ -417,6 +432,8 @@ def main():
                     steps=len(state["history"]),
                     summary=summarize(state["history"], state["status"]),
                     url=state["page"]["url"],
+                    title=state["page"].get("title", ""),
+                    page_text=(state["page"].get("text") or "")[:6000],
                     speculative_text=speculative.stats,
                 )
         return 0

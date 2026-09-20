@@ -24,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         services.startBackgroundServices()
         UltrafastBridge.prewarm()
+        NotificationCenter.default.addObserver(forName: .naviShowCurrentTask, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showCurrentTask() }
+        }
 
         // Drop the Dock icon again once the main window closes.
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
@@ -53,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             #if DEBUG
             if DebugSnapshot.handle(url) { continue }   // navi://debug-snapshot (Settings/DebugSnapshot.swift)
             if DebugJevProbe.handle(url, jev: services.jev) { continue }   // navi://debug-jev-probe
+            if DebugPlanProbe.handle(url, claude: services.claude) { continue }   // navi://debug-plan?q=…
             #endif
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
             let q = comps?.queryItems?.first(where: { $0.name == "q" })?.value ?? ""
@@ -68,6 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func togglePanel() {
         panelController.toggle()
+    }
+
+    /// Brings the panel up on the running (or just-finished) agent task.
+    func showCurrentTask() {
+        panelController.viewModel.showAgent()
+        if !panelController.isVisible { panelController.show() }
     }
 
     /// Opens (or focuses) the main SwiftUI window, optionally at a section.
@@ -86,4 +96,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension Notification.Name {
     static let naviOpenMainWindow = Notification.Name("navi.openMainWindow")
     static let naviSettingsChanged = Notification.Name("navi.settingsChanged")
+    /// Posted by the agent overlay: bring the panel up on the current task.
+    static let naviShowCurrentTask = Notification.Name("navi.showCurrentTask")
 }
