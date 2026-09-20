@@ -354,14 +354,35 @@ final class AgentRun: @unchecked Sendable {
             case .failed(let msg):
                 handle.emit(.failed(plan.isMultiStep ? "Step \(i + 1) of \(plan.steps.count) failed: \(msg)" : msg)); return
             case .completed(let summary):
-                summaries.append(summary)
-                if step.needsResult, i + 1 < plan.steps.count {
+                let isLast = i + 1 == plan.steps.count
+                if step.needsResult || (isLast && Self.isLookup(task)) {
+                    // What was found is the deliverable — for the next step, and for the
+                    // user: "Done: click ‘Weather’ · click ‘Boston’" is not an answer.
                     result = await extractResult(goal: task, pageText: pageText, fallback: summary)
-                    handle.emit(.status("Found: \(AgentAction.short(result ?? "nothing", 120))"))
+                    if !isLast { handle.emit(.status("Found: \(AgentAction.short(result ?? "nothing", 120))")) }
+                    summaries.append(isLast && result != nil && result != summary ? "\(result!)\n(\(summary))" : summary)
+                } else {
+                    summaries.append(summary)
                 }
             }
         }
         handle.emit(.completed(summary: plan.isMultiStep ? summaries.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n") : (summaries.first ?? "Done.")))
+    }
+
+    /// Does this goal ask for information rather than an effect? Then the
+    /// completion must carry what was found, not just what was clicked.
+    static func isLookup(_ goal: String) -> Bool {
+        let g = goal.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let starters = ["find", "get", "look up", "lookup", "check", "search", "see if", "see whether", "what", "whats", "what's",
+                        "how", "when", "where", "who", "which", "is ", "are ", "does ", "do ", "tell me", "show me", "give me",
+                        "can you find", "can you get", "can you check", "can you look", "can you see", "can you tell", "could you find"]
+        if starters.contains(where: { g.hasPrefix($0) }) { return true }
+        // A goal that *does* something may mention the score/price it uses; that's an effect, not a lookup.
+        let doers = ["send", "text", "message", "email", "mail", "create", "make", "open", "reply", "book", "buy", "order", "write",
+                     "type", "add", "put", "schedule", "post", "call", "play", "set", "turn", "close", "delete", "paste", "save", "fill"]
+        if doers.contains(where: { g.hasPrefix($0 + " ") }) { return false }
+        return g.range(of: #"\b(find out|look up|get the|find the|check (if|whether|the)|how (much|many|long|far|late|early)|what time|what is|what's the|the (price|score|time|weather|schedule|cost|address|hours|status))\b"#,
+                       options: .regularExpression) != nil
     }
 
     /// Runs one step against a child handle, forwarding its live events to
@@ -491,8 +512,14 @@ final class AgentRun: @unchecked Sendable {
         var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar, target: target) {
             didSet { lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n") }
         }
+        // An app that was just opened (or a window that is still building) exposes
+        // nothing for a few hundred ms; Jev would only be able to say BLOCKED.
+        let settled = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in
+            try? checkCancelled(); return !isCancelled
+        }
         lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n")
-        handle.emit(.status("Jev-driven · \(snapshot.elements.count) candidates on screen · walk \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
+        handle.emit(.status("Jev-driven · \(snapshot.elements.count) candidates on screen · walk \(Int(Date().timeIntervalSince(t0) * 1000)) ms"
+                            + (settled > 0 ? " · settled after \(settled) re-walk\(settled == 1 ? "" : "s")" : "")))
         emitThumbnailIfEnabled(handle)
 
         var history: [JevDriver.HistoryEntry] = []
@@ -504,7 +531,12 @@ final class AgentRun: @unchecked Sendable {
         var tracker = JevCoach.FailureTracker()
         var coach: JevCoach.Advice?
         var coachAction: AgentAction?
+        var coachings = 0
+        /// Where the current guidance was written (app + window): elsewhere it is stale and Claude may look again.
+        var coachedScreen: String?
         var lastActedFrame: CGRect?
+        /// Snapshot keys already given a second look after a weak BLOCKED.
+        var blockedRetries: Set<String> = []
         let candidates = TextCandidates.extract(task: task)
         let appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
         let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
@@ -541,7 +573,9 @@ final class AgentRun: @unchecked Sendable {
         /// Asks Claude once why Jev keeps failing. Returns false when the step must end.
         func askCoach(step: Int, request: JevDriver.Request?) async throws -> Bool {
             let why = tracker.summary.isEmpty ? "repeated ineffective actions" : tracker.summary
-            if let coach {
+            // Once per screen: failing again where Claude already looked ends the step;
+            // on a different app/window (often where its guidance sent Jev) it may look again.
+            if let coach, coachings >= JevCoach.maxCoachings || coachedScreen == Self.screenKey(snapshot) {
                 handle.emit(.failed("Still failing after Claude's guidance (\(why)). Claude's diagnosis: \(coach.diagnosis)"))
                 return false
             }
@@ -563,6 +597,8 @@ final class AgentRun: @unchecked Sendable {
                 return false
             }
             coach = advice
+            coachings += 1
+            coachedScreen = Self.screenKey(snapshot)
             tracker.reset()
             handle.emit(.status("Claude · \(ms) ms · \(advice.diagnosis)"))
             handle.emit(.planned("Guidance for Jev:\n\(advice.guidance)"))
@@ -591,9 +627,13 @@ final class AgentRun: @unchecked Sendable {
                 if coachAction == nil { continue }
             }
 
+            let guidance: String? = coach.map { c in
+                coachedScreen == Self.screenKey(snapshot) ? c.guidance
+                    : "(Written on a previous screen — element indexes there do not apply here; follow the intent only.) " + c.guidance
+            }
             let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                            guidance: coach?.guidance)
+                                            guidance: guidance)
 
             // Text the task spells out (one obvious quote) that hasn't been typed yet.
             let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
@@ -642,6 +682,19 @@ final class AgentRun: @unchecked Sendable {
                     handle.emit(.completed(summary: Self.summary(humanLog)))
                     return
                 case .blocked(let reason):
+                    // A BLOCKED Jev isn't sure about (or where WAIT is a close second) usually
+                    // means the screen isn't ready yet: wait, re-walk, ask again. Only the
+                    // same verdict on the same screen counts.
+                    let key = Self.screenKey(snapshot) + "|" + String(snapshot.elements.count)
+                    if JevDriver.blockedIsTentative(verdict), !blockedRetries.contains(key), blockedRetries.count < JevDriver.maxBlockedRetries {
+                        blockedRetries.insert(key)
+                        handle.emit(.status("Jev leaned BLOCKED but wasn't sure — waiting for the screen and asking again"))
+                        try? await Task.sleep(for: .milliseconds(JevDriver.tentativeBlockedWaitMs))
+                        try checkCancelled()
+                        snapshot = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
+                        _ = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
+                        continue
+                    }
                     tracker.recordBlocked(reason)
                     if try await !askCoach(step: step, request: request) { return }
                     continue
@@ -737,6 +790,33 @@ final class AgentRun: @unchecked Sendable {
             if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
         }
         handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
+    }
+
+    /// App + window identity, for "is Jev still on the screen Claude looked at?".
+    static func screenKey(_ s: AXSnapshot) -> String {
+        "\(s.bundleID ?? "")|\(s.windowTitle ?? "")|\(s.url ?? "")"
+    }
+
+    /// Re-walks while the snapshot exposes (almost) nothing, up to ~2 s, so Jev
+    /// decides from a rendered window rather than the empty tree an app shows
+    /// while launching or rebuilding a window. Returns the number of re-walks.
+    static let settleMaxMs = 2000
+    static let settlePollMs = 150
+    static let settleMinElements = 2
+    static func settleSnapshot(_ snapshot: inout AXSnapshot, snapshotter: AXSnapshotter, includeMenuBar: Bool,
+                               target: AgentTarget?, keepGoing: () -> Bool) async -> Int {
+        guard snapshot.elements.count < settleMinElements else { return 0 }
+        let start = Date()
+        var walks = 0
+        while Date().timeIntervalSince(start) * 1000 < Double(settleMaxMs), keepGoing() {
+            try? await Task.sleep(for: .milliseconds(settlePollMs))
+            let next = await snapshotter.capture(near: nil, includeMenuBar: includeMenuBar, target: target)
+            walks += 1
+            let stable = next.elements.count >= settleMinElements && next.diff(previous: snapshot) == "no visible change"
+            snapshot = next
+            if stable { break }
+        }
+        return walks
     }
 
     /// "Completed in 4 steps: Open Safari · Click ‘Search’ · …" — no LLM needed.
@@ -1254,20 +1334,37 @@ final class AgentRun: @unchecked Sendable {
 
 /// `~/Library/Logs/Navi/agent-last-run.log`: every event of the latest run
 /// with a timestamp (screenshots excluded), so a failed run can be read back
-/// after the panel is gone. Local only; never uploaded.
+/// after the panel is gone. The same lines are appended to `agent-runs.log`
+/// (rotated at ~2 MB) so a *pattern* of failures can be read back, not just
+/// the last one. Local only; never uploaded.
 final class AgentRunLog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "navi.agent.runlog")
     private let url: URL
     private let start = Date()
     private var handle: FileHandle?
+    private var history: FileHandle?
+    static let historyMaxBytes: UInt64 = 2_000_000
 
     init(task: String) {
         let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("agent-last-run.log")
-        FileManager.default.createFile(atPath: url.path, contents: Data("\(Date())  task: \(task)\n".utf8))
+        let header = Data("\(Date())  task: \(task)\n".utf8)
+        FileManager.default.createFile(atPath: url.path, contents: header)
         handle = try? FileHandle(forWritingTo: url)
         handle?.seekToEndOfFile()
+
+        let all = dir.appendingPathComponent("agent-runs.log")
+        let fm = FileManager.default
+        if let size = (try? fm.attributesOfItem(atPath: all.path))?[.size] as? UInt64, size > Self.historyMaxBytes {
+            let old = dir.appendingPathComponent("agent-runs.1.log")
+            try? fm.removeItem(at: old)
+            try? fm.moveItem(at: all, to: old)
+        }
+        if !fm.fileExists(atPath: all.path) { fm.createFile(atPath: all.path, contents: nil) }
+        history = try? FileHandle(forWritingTo: all)
+        history?.seekToEndOfFile()
+        history?.write(Data("\n".utf8) + header)
     }
 
     func record(_ e: AgentEvent) {
@@ -1284,10 +1381,15 @@ final class AgentRunLog: @unchecked Sendable {
         }
         let t = String(format: "%7.2fs", Date().timeIntervalSince(start))
         queue.async { [self] in
-            handle?.write(Data("\(t)  \(line.replacingOccurrences(of: "\n", with: "\n           "))\n".utf8))
-            if case .completed = e { try? handle?.close(); handle = nil }
-            if case .failed = e { try? handle?.close(); handle = nil }
-            if case .cancelled = e { try? handle?.close(); handle = nil }
+            let data = Data("\(t)  \(line.replacingOccurrences(of: "\n", with: "\n           "))\n".utf8)
+            handle?.write(data)
+            history?.write(data)
+            switch e {
+            case .completed, .failed, .cancelled:
+                try? handle?.close(); handle = nil
+                try? history?.close(); history = nil
+            default: break
+            }
         }
     }
 }

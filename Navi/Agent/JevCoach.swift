@@ -14,6 +14,8 @@ import Foundation
 enum JevCoach {
     /// Ineffective actions before Claude is asked.
     static let failuresBeforeCoaching = 3
+    /// Consults per step: one per screen (app + window), this many in all.
+    static let maxCoachings = 3
 
     struct Advice: Equatable, Sendable {
         var diagnosis: String

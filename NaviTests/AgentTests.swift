@@ -212,4 +212,16 @@ struct AgentTests {
             #expect(risk.contains("cvv"))
         } else { Issue.record("prohibited must always ask") }
     }
+
+    @Test func lookupGoalsAreRecognised() {
+        for g in ["Find the driving time from Olin to Northeastern", "get the score of the pats game", "what is the population of iceland",
+                  "Look up the weather in Boston", "See if the Needham line inbound to Boston is open today", "how long does it take to drive to NYC",
+                  "check whether the store is open", "i want to leave at 6pm, can you find the time it takes"] {
+            #expect(AgentRun.isLookup(g), "\(g)")
+        }
+        for g in ["Send Bella a text message with the score", "Create a new note and put the population in it", "open google flights and book the cheapest flight",
+                  "Reply to the email from Sam", "make it full screen"] {
+            #expect(!AgentRun.isLookup(g), "\(g)")
+        }
+    }
 }

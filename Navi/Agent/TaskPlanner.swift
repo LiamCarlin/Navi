@@ -55,7 +55,15 @@ enum TaskPlanner {
     - for "browser" steps also: "query": the best web search for the goal (short, no launcher chatter like "open chrome" or "go to the browser"), or "url": an exact page to open when the task names a site or URL, or "use_current_tab": true when the task refers to the page that is open now.
 
     Rules: never invent details the user did not give; keep the user's names, places and dates verbatim; searching, reading, comparing and browsing all belong to one browser step; a message or email is sent in its app, not in the browser (unless the task names a web app like Gmail); do not add verification or "confirm" steps.
+    Navi itself shows the user what the last step found, so a task that only asks to find, look up, get or check something is ONE step ending when the information is visible — never add a step to tell, report, show, say or explain the answer, and never route through an assistant app or site (ChatGPT, Claude, Siri, …) unless the user named it. A goal for the user's own reading ("leaving at 6pm", "for tomorrow") stays in the step's goal verbatim.
+    When the user names where to do it ("go to maps", "in chrome", "on Outlook"), the work happens there and only there: one step on that surface (a named website or web app is a "browser" step with its "url"; a named macOS app is an "app" step) — never a second step that repeats or double-checks the same work elsewhere.
+    {{result}} always receives the findings of the most recent step marked "needs_result": mark exactly the step that gathers what a later step uses (e.g. the step that reads the event details, not a search for the site).
+    Never ask for clarification, refuse, or explain: if the task is incomplete, typo-ridden or ambiguous, plan its most likely reading with what was given. Output is only the JSON object.
     """
+
+    /// The reply is prefilled with this so the model can only continue the JSON
+    /// object — no prose, no clarification questions, no code fences.
+    static let assistantPrefill = "{\"steps\":["
 
     static func stateJSON(task: String, frontmost: FrontmostProbe.Info) -> [String: Any] {
         var s: [String: Any] = ["task": task,
@@ -67,6 +75,23 @@ enum TaskPlanner {
     }
 
     // MARK: Parse
+
+    /// The model's continuation of `assistantPrefill`, restored to a full
+    /// document. Tolerates a model that repeats the prefill anyway (the reply
+    /// then already is a `{"steps": …}` object).
+    static func completePrefilled(_ continuation: String) -> String {
+        let t = continuation.trimmingCharacters(in: .whitespacesAndNewlines)
+        func isPlanObject(_ s: String) -> Bool {
+            var body = s
+            if body.hasPrefix("```") {
+                body = body.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard let d = body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return false }
+            return o["steps"] != nil
+        }
+        return isPlanObject(t) ? t : assistantPrefill + t
+    }
 
     /// Parses the model's reply. Returns nil for anything malformed — the
     /// caller then falls back to a one-step plan. Never trusts free text:
@@ -112,6 +137,29 @@ enum TaskPlanner {
         return Plan(steps: steps, source: "claude")
     }
 
+    /// Assistant apps/sites a plan must not route through unless the task names them.
+    static let assistantApps = ["chatgpt", "claude", "siri", "gemini", "perplexity", "copilot"]
+
+    /// Removes a trailing "tell the user the answer" step: the model sometimes
+    /// appends an app step to ChatGPT/Siri/… to *report* what a browser step
+    /// found. Navi shows the result itself, so the plan ends at the finding.
+    static func prune(_ plan: Plan, task: String) -> Plan {
+        var steps = plan.steps
+        let lowerTask = task.lowercased()
+        while steps.count > 1, let last = steps.last {
+            let app = (last.app ?? "").lowercased()
+            let goal = last.goal.lowercased()
+            let assistant = assistantApps.contains { app.contains($0) || (last.surface == .browser && goal.contains($0)) }
+            let named = assistantApps.contains { lowerTask.contains($0) }
+            let reports = last.goal.contains(resultPlaceholder)
+                && ["tell", "report", "show", "say", "explain", "give me", "answer"].contains { goal.hasPrefix($0) || goal.contains(" \($0) ") }
+                && !["send", "text", "message", "email", "mail", "note", "write", "paste", "type", "add"].contains { goal.contains($0) }
+            guard (assistant && !named) || reports else { break }
+            steps.removeLast()
+        }
+        return Plan(steps: steps, source: plan.source)
+    }
+
     /// One-step plan used when Claude is unavailable or unparseable.
     static func fallback(task: String, surface: Step.Surface, app: String? = nil) -> Plan {
         Plan(steps: [Step(surface: surface, app: app, goal: task)], source: "fallback")
@@ -143,8 +191,14 @@ enum TaskPlanner {
     static func planRaw(task: String, frontmost: FrontmostProbe.Info, claude: ClaudeClient) async throws -> (Plan?, Int, String) {
         let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost), options: [.sortedKeys])
         let start = Date()
-        let reply = try await claude.complete(model: model, system: systemPrompt, prompt: String(decoding: data, as: UTF8.self), maxTokens: 700)
-        let plan = parse(reply)
+        // Assistant prefill: Haiku continues `{"steps":[` instead of answering in
+        // prose ("I need to clarify…"), which used to throw the whole plan away.
+        let m = try await claude.create(model: model, system: systemPrompt,
+                                        messages: [["role": "user", "content": String(decoding: data, as: UTF8.self)],
+                                                   ["role": "assistant", "content": assistantPrefill]],
+                                        maxTokens: 700, effort: "low", thinking: nil)
+        let reply = completePrefilled(m.text)
+        let plan = parse(reply).map { prune($0, task: task) }
         if plan == nil { Log.agent.warning("TaskPlanner: unparseable reply: \(reply.prefix(300), privacy: .public)") }
         return (plan, Int(Date().timeIntervalSince(start) * 1000), reply)
     }

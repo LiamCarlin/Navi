@@ -101,6 +101,12 @@ struct JevDriver: Sendable {
 
     static let thresholdTaskComplete = 0.8
     static let historyInState = 10
+    /// BLOCKED below this confidence (or with WAIT ≥ `tentativeBlockedWaitShare`)
+    /// gets a wait and a fresh snapshot before it counts.
+    static let tentativeBlockedConfidence = 0.6
+    static let tentativeBlockedWaitShare = 0.25
+    static let tentativeBlockedWaitMs = 700
+    static let maxBlockedRetries = 4
 
     // MARK: Input
 
@@ -427,6 +433,14 @@ struct JevDriver: Sendable {
         case .wait: return .wait
         default: return nil
         }
+    }
+
+    /// A BLOCKED Jev is not sure about, or where WAIT is a close second: the
+    /// screen may simply not be ready yet.
+    static func blockedIsTentative(_ v: Verdict) -> Bool {
+        guard let op = v.operation, op.choice == Operation.blocked.rawValue else { return false }
+        if op.confidence < tentativeBlockedConfidence { return true }
+        return (op.probabilities[Operation.wait.rawValue] ?? 0) >= tentativeBlockedWaitShare
     }
 
     /// jev-ultrafast stuck rule: three consecutive non-WAIT actions with no

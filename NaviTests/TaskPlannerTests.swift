@@ -55,4 +55,31 @@ import Testing
         let finder = FrontmostProbe.Info(bundleID: "com.apple.finder", appName: "Finder", windowTitle: nil, url: nil)
         #expect(TaskPlanner.startURL(for: s, frontmost: finder).hasPrefix("https://www.google.com/search"))
     }
+
+    @Test func prefillContinuationIsRestored() {
+        // The model continues `{"steps":[` — the prefix is not in its reply.
+        let cont = #"{"surface":"browser","goal":"Find the driving time from Olin to Northeastern leaving at 6pm","query":"directions Olin to Northeastern"}]}"#
+        let plan = TaskPlanner.parse(TaskPlanner.completePrefilled(cont))
+        #expect(plan?.steps.count == 1 && plan?.steps[0].query == "directions Olin to Northeastern")
+        // A model that repeats the prefill anyway still parses.
+        #expect(TaskPlanner.parse(TaskPlanner.completePrefilled(#"{"steps":[{"surface":"app","app":"Notes","goal":"g"}]}"#))?.steps.count == 1)
+        // Prose in the continuation is still garbage.
+        #expect(TaskPlanner.parse(TaskPlanner.completePrefilled("I need to clarify the task")) == nil)
+    }
+
+    @Test func pruneDropsReportingStepsAndUnnamedAssistants() {
+        let task = "i want to leave olin at 6pm today to drive to northeastern can you go to maps and get the time it is going to take"
+        let plan = TaskPlanner.parse(#"{"steps":[{"surface":"browser","goal":"Find the driving time from Olin to Northeastern leaving at 6pm","needs_result":true},{"surface":"app","app":"ChatGPT","goal":"Tell me the driving time: {{result}}"}]}"#)!
+        let pruned = TaskPlanner.prune(plan, task: task)
+        #expect(pruned.steps.count == 1 && pruned.steps[0].surface == .browser)
+        // A real hand-off (Messages) survives.
+        let text = TaskPlanner.parse(#"{"steps":[{"surface":"browser","goal":"Find the score","needs_result":true},{"surface":"app","app":"Messages","goal":"Text Bella: {{result}}"}]}"#)!
+        #expect(TaskPlanner.prune(text, task: "get the score and text bella").steps.count == 2)
+        // An assistant the user asked for is kept.
+        let asked = TaskPlanner.parse(#"{"steps":[{"surface":"browser","goal":"Find x","needs_result":true},{"surface":"browser","goal":"Ask ChatGPT to summarise: {{result}}","url":"https://chatgpt.com"}]}"#)!
+        #expect(TaskPlanner.prune(asked, task: "find x then ask chatgpt to summarise it").steps.count == 2)
+        // A single step is never pruned.
+        let one = TaskPlanner.parse(#"{"steps":[{"surface":"app","app":"ChatGPT","goal":"Tell me a joke"}]}"#)!
+        #expect(TaskPlanner.prune(one, task: "tell me a joke").steps.count == 1)
+    }
 }
