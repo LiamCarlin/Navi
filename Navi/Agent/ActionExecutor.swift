@@ -7,12 +7,30 @@ import Foundation
 /// Prefers Accessibility actions (`AXPress`, setting `AXValue`) because they
 /// work even when the element is occluded and cost no key events; falls back
 /// to CGEvent input via `InputController`.
+///
+/// With a `target` set (background mode) nothing here activates an app or
+/// moves the cursor: the fallback events are posted to the target process
+/// and addressed to the window the snapshot came from, so the user keeps
+/// working in front while the agent works behind.
 final class ActionExecutor: @unchecked Sendable {
     private let input = InputController()
 
+    /// Pinned app for background mode; nil ⇒ foreground (frontmost app, HID events).
+    var target: AgentTarget? {
+        didSet { if target == nil { input.route = .hid } }
+    }
+    var isBackground: Bool { target != nil }
+
     static let refuseSecure = "Refusing to type into a secure/password field"
 
+    /// Points the process route at the snapshot's window before acting on it.
+    private func aim(at snapshot: AXSnapshot) {
+        guard let target else { return }
+        input.route = .process(pid: target.pid, window: target.window(for: snapshot)?.id)
+    }
+
     func perform(_ action: AgentAction, text: String?, snapshot: AXSnapshot) async throws {
+        aim(at: snapshot)
         switch action {
         case .click(let id):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
@@ -31,12 +49,17 @@ final class ActionExecutor: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(600))
         case .key(let combo):
             let k = try KeyCombo.parse(combo)
-            if !snapshot.elements.isEmpty { await activate(pid: snapshot.pid) }
-            await input.press(k)
+            if isBackground {
+                // Menu shortcuts are the one thing a background app can't take; flash it forward for those.
+                if k.isMenuEquivalent { await input.pressWithBriefActivation(k) } else { await input.press(k) }
+            } else {
+                if !snapshot.elements.isEmpty { await activate(pid: snapshot.pid) }
+                await input.press(k)
+            }
         case .openApp(let name):
-            _ = try await AgentCustomTools.openApp(named: name)
+            _ = try await AgentCustomTools.openApp(named: name, activate: !isBackground)
         case .openURL(let url):
-            _ = try await AgentCustomTools.openURL(url)
+            _ = try await AgentCustomTools.openURL(url, activate: !isBackground)
         }
     }
 
@@ -67,7 +90,7 @@ final class ActionExecutor: @unchecked Sendable {
         }
         if !focused { try await click(el) }
         try? await Task.sleep(for: .milliseconds(80))
-        if InputController.focusedElementIsSecureField() { throw NaviError.other(Self.refuseSecure) }
+        if await focusIsSecure() { throw NaviError.other(Self.refuseSecure) }
 
         // Fast path: set AXValue directly when the app allows it, then verify.
         if let ref = el.ref, el.isTextInput {
@@ -79,15 +102,33 @@ final class ActionExecutor: @unchecked Sendable {
             }
             if ok { return }
         }
-        // Fallback: replace existing content by typing.
-        if let v = el.value, !v.isEmpty { await input.press(KeyCombo(keyCode: 0, flags: .maskCommand, keyName: "a")) }
+        // Fallback: replace existing content by typing. ⌘A is a menu shortcut,
+        // which a background app drops, so select the whole value through AX there.
+        if let v = el.value, !v.isEmpty {
+            var selected = false
+            if isBackground, let ref = el.ref {
+                selected = await AXQueue.run {
+                    var range = CFRange(location: 0, length: v.utf16.count)
+                    guard let value = AXValueCreate(.cfRange, &range) else { return false }
+                    return AXUIElementSetAttributeValue(ref, kAXSelectedTextRangeAttribute as CFString, value) == .success
+                }
+            }
+            if !selected { await input.press(KeyCombo(keyCode: 0, flags: .maskCommand, keyName: "a")) }
+        }
         await input.type(text)
     }
 
     /// Types into whatever currently has keyboard focus (used by the Claude fallback path too).
     func typeIntoFocus(_ text: String) async throws {
-        if InputController.focusedElementIsSecureField() { throw NaviError.other(Self.refuseSecure) }
+        if await focusIsSecure() { throw NaviError.other(Self.refuseSecure) }
         await input.type(text)
+    }
+
+    /// The password-field check that matters for where the keystrokes go: the
+    /// target app's focus in background mode, the system-wide focus otherwise.
+    private func focusIsSecure() async -> Bool {
+        if let target { return await target.focusedElementIsSecureField() }
+        return InputController.focusedElementIsSecureField()
     }
 
     // MARK: Select
@@ -120,9 +161,11 @@ final class ActionExecutor: @unchecked Sendable {
 
     // MARK: Helpers
 
-    /// Brings `pid` to the front when it isn't already (CGEvent clicks land on the frontmost app).
+    /// Brings `pid` to the front when it isn't already (CGEvent clicks land on
+    /// the frontmost app). A no-op in background mode: events are routed to the
+    /// process instead, and stealing focus is the one thing that mode must not do.
     func activate(pid: pid_t) async {
-        guard pid > 0 else { return }
+        guard pid > 0, !isBackground else { return }
         let switched: Bool = await MainActor.run {
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,
                   let app = NSRunningApplication(processIdentifier: pid) else { return false }

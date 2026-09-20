@@ -93,7 +93,9 @@ final class NaviServices: @unchecked Sendable {
         ComputerAgent.browserRunner = { task, startURL, handle in
             let maxSteps = UserDefaults.standard.integer(forKey: "agentMaxSteps")
             let shots = UserDefaults.standard.bool(forKey: "ultrafastScreenshots")
-            return await UltrafastBridge.run(task: task, startURL: startURL, handle: handle, maxSteps: maxSteps, screenshots: shots)
+            let background = UserDefaults.standard.bool(forKey: "agentRunInBackground")
+            return await UltrafastBridge.run(task: task, startURL: startURL, handle: handle, maxSteps: maxSteps, screenshots: shots,
+                                             background: background)
         }
         let router = QueryRouter(jev: jev, claude: claude, memory: memory, agent: agent)
         let answers = AnswerService(claude: claude)

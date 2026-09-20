@@ -40,6 +40,10 @@ final class NaviSettings: ObservableObject {
     @Published var agentJevConfidenceThreshold: Double { didSet { d.set(agentJevConfidenceThreshold, forKey: "agentJevConfidenceThreshold") } }
     /// Maximum bounded Claude turns per Jev-first run.
     @Published var agentMaxClaudeFallbacks: Int { didSet { d.set(agentMaxClaudeFallbacks, forKey: "agentMaxClaudeFallbacks") } }
+    /// Drive the target app behind the user's windows: input is posted to that
+    /// process, screenshots capture only its window, nothing is ever activated —
+    /// so the user can keep working while a task runs.
+    @Published var agentRunInBackground: Bool { didSet { d.set(agentRunInBackground, forKey: "agentRunInBackground") } }
 
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
@@ -76,6 +80,7 @@ final class NaviSettings: ObservableObject {
             "agentDriver": AgentDriver.jevFirst.rawValue,
             "agentJevConfidenceThreshold": 0.5,
             "agentMaxClaudeFallbacks": 6,
+            "agentRunInBackground": true,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -102,6 +107,7 @@ final class NaviSettings: ObservableObject {
         agentDriver = AgentDriver(rawValue: d.string(forKey: "agentDriver") ?? "") ?? .jevFirst
         agentJevConfidenceThreshold = d.double(forKey: "agentJevConfidenceThreshold")
         agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
+        agentRunInBackground = d.bool(forKey: "agentRunInBackground")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")

@@ -17,6 +17,13 @@ import Foundation
 /// the native driver; a step's findings flow into the next step's goal.
 /// Without Claude, one Jev choice (`TaskSurface`) picks the surface instead.
 ///
+/// **Background mode** (`NaviSettings.agentRunInBackground`, the default): the
+/// user keeps working while the task runs. Each app step pins an `AgentTarget`
+/// (the app it opened, else the app Navi was invoked over); the accessibility
+/// walk reads that app, input is posted to that process (never the HID
+/// stream, so the cursor and the active app are untouched), and screenshots
+/// capture only that app's window. Browser steps run in a background Chrome tab.
+///
 /// Contract: `ComputerAgentRunning`; init signature must stay `init(jev:claude:)`.
 /// `run` returns an `AgentRunHandle` immediately; the work happens in a
 /// detached task owned by an `AgentRun`.
@@ -55,7 +62,8 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
                                      showOverlay: s.agentShowLiveOverlay,
                                      driver: s.agentDriver,
                                      jevConfidenceThreshold: min(max(s.agentJevConfidenceThreshold, 0), 1),
-                                     maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks))
+                                     maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks),
+                                     background: s.agentRunInBackground)
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
@@ -89,6 +97,8 @@ final class AgentRun: @unchecked Sendable {
         var driver: AgentDriver = .jevFirst
         var jevConfidenceThreshold: Double = 0.5
         var maxClaudeFallbacks: Int = 6
+        /// Drive the target app without activating it or moving the cursor.
+        var background: Bool = false
     }
 
     static let screenshotMaxLongEdge = 1280
@@ -113,6 +123,8 @@ final class AgentRun: @unchecked Sendable {
     private var worker: Task<Void, Never>?
     private var cancelled = false
     private var pending: (id: UUID, cont: CheckedContinuation<Bool, Never>)?
+    /// Terminal event of the run, for the overlay's lingering outcome.
+    private var ending: (AgentOverlay.Outcome, String)?
 
     // Loop state (only touched by the worker task).
     private var messages: [[String: Any]] = []
@@ -122,6 +134,10 @@ final class AgentRun: @unchecked Sendable {
     private var stuckStreak = 0
     /// Visible text of the last accessibility snapshot (for result extraction).
     private var lastSnapshotText: String?
+    /// Background mode: the app this step drives. nil in foreground mode.
+    private var target: AgentTarget?
+    /// Background mode: the window the last screenshot came from (event routing for Claude's clicks).
+    private var screenshotWindow: CGWindowID?
     @MainActor private var overlay: AgentOverlay?
 
     init(task: String, context: QueryContext, config: Config, jev: JevClient, claude: ClaudeClient) {
@@ -194,8 +210,31 @@ final class AgentRun: @unchecked Sendable {
     // MARK: Entry
 
     private func main(_ handle: AgentRunHandle) async {
+        // Background mode: the user may not be looking; leave the outcome on
+        // the pill for a few seconds. Foreground: the panel already shows it.
+        let previous = handle.onEmit
+        handle.onEmit = { [self] ev in
+            previous?(ev)
+            let e: (AgentOverlay.Outcome, String)?
+            switch ev {
+            case .completed(let s): e = (.completed, s)
+            case .failed(let m): e = (.failed, m)
+            case .cancelled: e = (.cancelled, "Stopped")
+            default: e = nil
+            }
+            if let e { lock.lock(); ending = e; lock.unlock() }
+        }
         defer {
-            Task { @MainActor in self.overlay?.hide(); self.overlay = nil }
+            lock.lock(); let ending = ending; lock.unlock()
+            let linger = config.background
+            Task { @MainActor in
+                if linger, let (outcome, text) = ending, let overlay = self.overlay {
+                    overlay.finish(outcome, text: text)
+                } else {
+                    self.overlay?.hide()
+                }
+                self.overlay = nil
+            }
             handle.finish()
         }
         Log.agent.info("Agent run started (\(self.config.driver.rawValue, privacy: .public)): \(self.task.prefix(120), privacy: .public)")
@@ -271,12 +310,21 @@ final class AgentRun: @unchecked Sendable {
                 }
                 pageText = text
             } else {
+                var opened: String?
                 if let app = step.app {
                     handle.emit(.status("Opening \(app)"))
-                    do { _ = try await AgentCustomTools.openApp(named: app) } catch {
+                    do { opened = try await AgentCustomTools.openApp(named: app, activate: !config.background) } catch {
                         handle.emit(.status("Couldn't open \(app): \((error as? NaviError)?.errorDescription ?? error.localizedDescription)"))
                     }
                     try? await Task.sleep(for: .milliseconds(350))
+                }
+                if config.background {
+                    await pinTarget(opened: opened)
+                    if let t = target {
+                        handle.emit(.status("Working in \(t.appName ?? t.bundleID ?? "the app") in the background — keep using your Mac"))
+                    } else {
+                        handle.emit(.status("No app to drive in the background — working on the frontmost app"))
+                    }
                 }
                 outcome = await runChild(goal: task, stepBase: 0, parent: handle) { [self] child in
                     do {
@@ -365,10 +413,39 @@ final class AgentRun: @unchecked Sendable {
         return fallback
     }
 
+    // MARK: - Background target
+
+    /// Background mode: pins the app this step drives — the one just opened,
+    /// else the one Navi was invoked over — and waits for it to have a window.
+    /// Also points the Claude-path `InputController` at that process.
+    private func pinTarget(opened: String?) async {
+        let context = self.context
+        let t: AgentTarget? = await MainActor.run {
+            if let opened, let t = AgentTarget.running(bundleIDOrName: opened) { return t }
+            return AgentTarget.default(context: context)
+        }
+        target = t
+        screenshotWindow = nil
+        if let t {
+            await t.waitForWindow()
+            input.route = .process(pid: t.pid, window: await t.currentWindow()?.id)
+            Log.agent.info("Background target: \(t.appName ?? "?", privacy: .public) pid=\(t.pid)")
+        } else {
+            input.route = .hid
+        }
+    }
+
+    /// App/window context for Jev state and Claude prompts: the pinned target
+    /// in background mode (the frontmost app is the user's, not ours), else the frontmost app.
+    private func probe(includeURL: Bool = false) async -> FrontmostProbe.Info {
+        if let target { return await target.info(includeURL: includeURL) }
+        return await MainActor.run { FrontmostProbe.current(includeURL: includeURL) }
+    }
+
     private func showOverlay(step: Int) async {
         guard config.showOverlay else { return }
         await MainActor.run {
-            if overlay == nil { overlay = AgentOverlay(onStop: { [weak self] in self?.cancel() }) }
+            if overlay == nil { overlay = AgentOverlay(onStop: { [weak self] in self?.cancel() }, background: config.background) }
             overlay?.show(step: step, maxSteps: config.maxSteps)
         }
     }
@@ -404,10 +481,14 @@ final class AgentRun: @unchecked Sendable {
         let driver = JevDriver(jev: jev)
         let snapshotter = AXSnapshotter()
         let executor = ActionExecutor()
+        executor.target = target
+        let target = self.target
 
-        let wantMenuBar = AXSnapshot.taskMentionsMenu(task)
+        // Opening a background app's menus would activate it, so the menu bar
+        // is only offered in foreground mode; Jev falls back to shortcuts.
+        let wantMenuBar = AXSnapshot.taskMentionsMenu(task) && target == nil
         let t0 = Date()
-        var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar) {
+        var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar, target: target) {
             didSet { lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n") }
         }
         lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n")
@@ -448,7 +529,7 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.failed(msg)); return false
             case .paused(let summary), .stepLimit(let summary):
                 var entry = JevDriver.HistoryEntry(action: "Claude: \(summary)", kind: "claude", text: nil, pageChanged: nil)
-                let next = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar)
+                let next = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
                 entry.pageChanged = next.diff(previous: snapshot) != "no visible change"
                 history.append(entry)
                 humanLog.append("Claude: \(summary)")
@@ -629,11 +710,11 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.step(index: actionIndex, description: human))
             var entry = JevDriver.HistoryEntry(action: human, kind: action.kind, text: text, pageChanged: nil)
             var actionError: String?
-            let before = await AXSnapshotter.fingerprint()
+            let before = await AXSnapshotter.fingerprint(target: target)
             do {
                 try await executor.perform(action, text: text, snapshot: snapshot)
                 // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget.
-                if action != .wait { await AXSnapshotter.settle(after: before, maxMs: action.settleMs) }
+                if action != .wait { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -645,7 +726,7 @@ final class AgentRun: @unchecked Sendable {
             }
             try checkCancelled()
             let targetFrame = action.elementID.flatMap { snapshot.element($0)?.frame }
-            let next = await snapshotter.capture(near: targetFrame ?? lastActedFrame, includeMenuBar: wantMenuBar)
+            let next = await snapshotter.capture(near: targetFrame ?? lastActedFrame, includeMenuBar: wantMenuBar, target: target)
             let diff = next.diff(previous: snapshot)
             entry.pageChanged = diff != "no visible change"
             history.append(entry)
@@ -670,8 +751,16 @@ final class AgentRun: @unchecked Sendable {
     /// Fire-and-forget: ScreenCaptureKit takes 100–300 ms and the loop must not wait for it.
     private func emitThumbnailIfEnabled(_ handle: AgentRunHandle) {
         guard config.showOverlay, ScreenCapture.hasPermission else { return }
+        let target = self.target
         Task.detached(priority: .utility) {
-            guard let frame = try? await ScreenCapture.captureMainDisplay() else { return }
+            // Background mode: show the window the agent is in, not whatever the user is looking at.
+            let frame: ScreenCapture.Frame?
+            if let target, let w = await target.currentWindow() {
+                frame = try? await ScreenCapture.captureWindow(id: w.id)
+            } else {
+                frame = try? await ScreenCapture.captureMainDisplay()
+            }
+            guard let frame else { return }
             let (thumb, _) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.thumbnailMaxLongEdge)
             handle.emit(.screenshot(NSImage(cgImage: thumb, size: NSSize(width: thumb.width, height: thumb.height))))
         }
@@ -681,10 +770,10 @@ final class AgentRun: @unchecked Sendable {
 
     private func claudeFallback(reason: String, step: Int, history: [JevDriver.HistoryEntry],
                                 handle: AgentRunHandle) async throws -> ClaudeOutcome {
-        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        let front = await probe()
         let system: [[String: Any]] = [[
             "type": "text",
-            "text": Self.systemPrompt(task: task, context: context, frontmost: front)
+            "text": Self.systemPrompt(task: task, context: context, frontmost: front, background: target)
                 + Self.fallbackAddendum(reason: reason, history: history, maxRounds: Self.fallbackMaxRounds),
             "cache_control": ["type": "ephemeral"],
         ]]
@@ -704,8 +793,8 @@ final class AgentRun: @unchecked Sendable {
         if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
             return .failed(problem)
         }
-        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
-        var text = Self.systemPrompt(task: task, context: context, frontmost: front)
+        let front = await probe()
+        var text = Self.systemPrompt(task: task, context: context, frontmost: front, background: target)
         if !history.isEmpty {
             text += "\n\n# Progress so far (by the fast driver)\n" + history.suffix(10).map { "- \($0.action)" }.joined(separator: "\n")
         }
@@ -747,10 +836,10 @@ final class AgentRun: @unchecked Sendable {
         }
         await showOverlay(step: 1)
 
-        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        let front = await probe()
         let system: [[String: Any]] = [[
             "type": "text",
-            "text": Self.systemPrompt(task: task, context: context, frontmost: front),
+            "text": Self.systemPrompt(task: task, context: context, frontmost: front, background: target),
             "cache_control": ["type": "ephemeral"],
         ]]
         let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
@@ -842,7 +931,7 @@ final class AgentRun: @unchecked Sendable {
 
             // ---- Jev gate (one call per turn, before executing) ----
             let proposed = calls.map(AgentActionDescriber.technical)
-            let screen = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+            let screen = await probe()
             let state = JevGate.formatState(task: task, step: overlayStep ?? turn, maxSteps: config.maxSteps,
                                             claudeSays: text, proposedActions: proposed,
                                             recentActions: recentActions,
@@ -939,12 +1028,20 @@ final class AgentRun: @unchecked Sendable {
 
     private func execute(_ call: AgentToolCall, handle: AgentRunHandle, step: Int) async throws -> [String: Any] {
         if !call.isComputer {
-            let text = try await AgentCustomTools.execute(call) { [weak handle] status in
+            let text = try await AgentCustomTools.execute(call, activate: target == nil) { [weak handle] status in
                 handle?.emit(.status(status))
             }
             if call.name == "report_progress" { await updateOverlay(step: step, status: call.input["message"] as? String) }
+            // Background mode: Claude switched apps — follow it so screenshots and events go there.
+            if target != nil, call.name == "open_app" {
+                await pinTarget(opened: text)
+                map = nil
+            }
             return AgentToolResult.custom(id: call.id, text: text)
         }
+
+        // Background mode: address the window the last screenshot came from.
+        if let target { input.route = .process(pid: target.pid, window: screenshotWindow) }
 
         switch call.name {
         case "screenshot":
@@ -993,16 +1090,19 @@ final class AgentRun: @unchecked Sendable {
 
         case "type":
             guard let text = call.text else { throw NaviError.other("type needs text") }
-            if InputController.focusedElementIsSecureField() {
-                throw NaviError.other("Refusing to type into a secure/password field")
-            }
+            let secure = if let target { await target.focusedElementIsSecureField() } else { InputController.focusedElementIsSecureField() }
+            if secure { throw NaviError.other("Refusing to type into a secure/password field") }
             await input.type(text)
 
         case "key":
             guard let text = call.text else { throw NaviError.other("key needs text") }
             let combo = try KeyCombo.parse(text)
             let rep = (call.input["repeat"] as? NSNumber)?.intValue ?? 1
-            await input.press(combo, repeat: max(1, min(rep, 100)))
+            if target != nil, combo.isMenuEquivalent {
+                await input.pressWithBriefActivation(combo, repeat: max(1, min(rep, 100)))
+            } else {
+                await input.press(combo, repeat: max(1, min(rep, 100)))
+            }
 
         case "hold_key":
             guard let text = call.text else { throw NaviError.other("hold_key needs text") }
@@ -1048,9 +1148,21 @@ final class AgentRun: @unchecked Sendable {
         return m
     }
 
-    /// Captures the display and downscales; updates `map`.
+    /// The whole display in foreground mode; in background mode only the
+    /// target app's window (even when covered), whose frame becomes the map's
+    /// bounds so Claude's coordinates still land on the right screen points.
+    private func captureFrame() async throws -> ScreenCapture.Frame {
+        guard let target else { return try await ScreenCapture.captureMainDisplay() }
+        guard let w = await target.currentWindow() else {
+            throw NaviError.other("\(target.appName ?? "The app") has no window to look at")
+        }
+        screenshotWindow = w.id
+        return try await ScreenCapture.captureWindow(id: w.id)
+    }
+
+    /// Captures the display (or target window) and downscales; updates `map`.
     private func captureDownscaled() async throws -> (CGImage, ScreenMap) {
-        let frame = try await ScreenCapture.captureMainDisplay()
+        let frame = try await captureFrame()
         let (small, f) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.screenshotMaxLongEdge)
         let m = ScreenMap(bounds: frame.bounds, scaleFactor: frame.scaleFactor, downscale: f,
                           imageSize: CGSize(width: small.width, height: small.height))
@@ -1073,7 +1185,7 @@ final class AgentRun: @unchecked Sendable {
               x1 > x0, y1 > y0 else {
             throw NaviError.other("zoom needs region [x0, y0, x1, y1] with x1 > x0 and y1 > y0")
         }
-        let frame = try await ScreenCapture.captureMainDisplay()
+        let frame = try await captureFrame()
         let (_, f) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.screenshotMaxLongEdge)
         let m = ScreenMap(bounds: frame.bounds, scaleFactor: frame.scaleFactor, downscale: f,
                           imageSize: CGSize(width: CGFloat(frame.image.width) * f, height: CGFloat(frame.image.height) * f))
@@ -1093,14 +1205,20 @@ final class AgentRun: @unchecked Sendable {
 
     // MARK: System prompt
 
-    static func systemPrompt(task: String, context: QueryContext, frontmost: FrontmostProbe.Info) -> String {
-        var ctx = "Frontmost app: \(frontmost.appName ?? context.frontmostAppName ?? "unknown")"
+    static func systemPrompt(task: String, context: QueryContext, frontmost: FrontmostProbe.Info, background: AgentTarget? = nil) -> String {
+        var ctx = "\(background == nil ? "Frontmost app" : "Target app"): \(frontmost.appName ?? context.frontmostAppName ?? "unknown")"
         if let b = frontmost.bundleID ?? context.frontmostApp { ctx += " (\(b))" }
         if let t = frontmost.windowTitle ?? context.frontmostWindowTitle, !t.isEmpty { ctx += "\nWindow: \(t)" }
         if let sel = context.selectedText, !sel.isEmpty { ctx += "\nSelected text: \(sel.prefix(400))" }
 
+        let mode = background == nil
+            ? "The user typed the task below into Navi's ⌘Space panel and is watching your progress."
+            : """
+            The user typed the task below into Navi's ⌘Space panel and has gone back to their own work: you are running **in the background**. Your screenshots show only the window of the target app (not the whole screen), your clicks and keystrokes are delivered to that app without bringing it forward, and the mouse cursor never moves. Consequences: you cannot click the menu bar, the Dock, Mission Control or anything outside the target window. Prefer in-window controls; ⌘-shortcuts still work (they bring the app forward for a split second), so use them sparingly. `open_app` switches which app you are working in (it opens behind the user's windows).
+            """
+
         return """
-        You are Navi, a computer-use agent running locally on the user's Mac (macOS 26). You see the screen through screenshots and act through the `computer` toolset plus a few helper tools. The user typed the task below into Navi's ⌘Space panel and is watching your progress.
+        You are Navi, a computer-use agent running locally on the user's Mac (macOS 26). You see the screen through screenshots and act through the `computer` toolset plus a few helper tools. \(mode)
 
         # Task
         \(task)

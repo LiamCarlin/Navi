@@ -46,6 +46,17 @@ struct AgentSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section {
+                Toggle("Run tasks in the background", isOn: $settings.agentRunInBackground)
+                Text(settings.agentRunInBackground
+                     ? "Navi drives the app behind your windows: clicks and keystrokes are delivered straight to that app, screenshots capture only its window, and browser tasks use a background Chrome tab. Your cursor, keyboard and frontmost app stay yours. The exception is ⌘-shortcuts (⌘S, ⌘L…), which macOS only delivers to the active app — Navi brings the app forward for a split second for those and hands focus straight back."
+                     : "Navi brings the app to the front and uses the real cursor and keyboard. Best for canvas apps and menus; you'll need to keep your hands off while it works.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("While it works")
+            }
+
             Section("Limits") {
                 Stepper(value: $settings.agentMaxSteps, in: 5...200, step: 5) {
                     LabeledContent("Maximum steps per task") {

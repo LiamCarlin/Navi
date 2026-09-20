@@ -275,6 +275,50 @@ No screenshots are taken in this loop. A 400 px thumbnail goes to the panel
 every third step when the live overlay is on and Screen Recording is granted;
 it is never sent to Jev.
 
+### Background mode (`NaviSettings.agentRunInBackground`, default on)
+
+The user asked for a task and went back to work; the loop above must not
+touch what they are doing. Per native step `AgentRun.pinTarget` picks an
+`AgentTarget` — the app the step just opened (launched with
+`activates = false`), else the app that was frontmost when Navi was invoked
+(`QueryContext.frontmostApp`) — and from then on:
+
+- **Observe**: `AXSnapshotter.capture(target:)` walks that pid (focused →
+  main → first window) instead of `NSWorkspace.frontmostApplication`;
+  `fingerprint(target:)`/`settle` likewise. The menu bar is never walked
+  (opening a background app's menu would activate it).
+- **Execute**: `ActionExecutor.target` puts `InputController` on the
+  `.process(pid, window)` route — `CGEvent.postToPid` with
+  `kCGMouseEventWindowUnderMousePointer` set to the window from
+  `AgentTarget.matchWindow` (AX frame ↔ `CGWindowList` bounds), so clicks
+  reach a covered window and the real cursor never moves. `AXPress` /
+  `AXValue` / `AXSelectedTextRange` do most of the work anyway; `activate()`
+  is a no-op.
+- **See** (Claude fallback / thumbnails): `ScreenCapture.captureWindow` —
+  `SCContentFilter(desktopIndependentWindow:)`, works when occluded or on
+  another Space; the window frame becomes the `ScreenMap` bounds so
+  coordinates still land on screen points.
+- **Browser steps**: `UltrafastBridge.run(background: true)` skips
+  `bringBrowserForward()` and sets `NAVI_BACKGROUND_TAB`, so the runner's tab
+  is never `Target.activateTarget`ed. CDP input and DOM reads don't need a
+  visible tab.
+
+Measured on macOS 26 (TextEdit behind Chrome): typing, clicks and
+navigation combos (⌘→, ⇧←) all land; **menu key equivalents (⌘A, ⌘S, ⌘L…) are
+silently dropped** — AppKit resolves nil-target actions through the key/main
+window, which an inactive app has neither of (setting `AXMain` or `AXPress`ing
+the menu item doesn't help either). `KeyCombo.isMenuEquivalent` combos
+therefore go through `InputController.pressWithBriefActivation`: activate the
+target, post the key, hand activation back to the previous app (~300 ms, the
+only moment the mode touches focus). Text replacement uses AX selection
+instead of ⌘A so it needs no flash. Known gaps: controls that dispatch
+through the responder chain (some toolbar items) can look pressed and do
+nothing — the no-change tracker then escalates as usual.
+
+Verified end-to-end 2026-09-20: "open TextEdit and type …" (1 step, 3 s) and
+"open Calculator and compute 12 times 34" (6 AXPress clicks, 6.4 s) with
+MATLAB/Chrome frontmost throughout; the target app never came forward.
+
 ### State (JSON, serialised to the `state` string)
 
 ```jsonc

@@ -702,7 +702,8 @@ def main():
             emit("status", message=f"Jev is struggling ({why}) — asking Claude to diagnose")
             shot = None
             try:
-                shot = state["browser"].observe(screenshot=True).get("screenshot")
+                # `state` is a snapshot (no browser in it); the live agent has the tab.
+                shot = agent.state["browser"].observe(screenshot=True).get("screenshot")
             except Exception:  # noqa: BLE001 — coaching works without the picture
                 pass
             try:
@@ -714,7 +715,9 @@ def main():
             # A coaching entry breaks the no-change window so the stuck rule restarts.
             state["history"].append({"step": len(state["history"]) + 1, "action": "Claude guidance: " + coach.guidance[:200],
                                      "kind": "coach", "text": None, "page_changed": True, "url": state["page"]["url"]})
-            state["status"] = "ready"
+            # The snapshot's status is a copy: reset the live one too, or a
+            # BLOCKED-triggered coaching ends `run_until_stop` with no "done" event.
+            state["status"] = agent.state["status"] = "ready"
             return None
 
         def run_until_stop():
