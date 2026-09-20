@@ -30,6 +30,14 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var isAnswering = false
     @Published private(set) var agentRun: AgentRunHandle?
     @Published private(set) var agentEvents: [AgentEvent] = []
+    /// The task of the current or most recent run (survives `agentRun` ending).
+    @Published private(set) var agentTaskTitle: String = ""
+    /// True once the user has moved on from a finished run (typed a new query,
+    /// performed something else, or pressed ⎋ on the outcome); until then
+    /// reopening the panel shows the run again.
+    private var agentDismissed = true
+    /// A run is live, or finished and not yet dismissed.
+    var hasAgentToShow: Bool { agentRun != nil || (!agentDismissed && !agentEvents.isEmpty) }
     @Published private(set) var agentScreenshot: NSImage?
     @Published private(set) var pendingApproval: (id: UUID, description: String, risk: String)?
     @Published private(set) var toast: String?
@@ -85,8 +93,16 @@ final class PanelViewModel: ObservableObject {
         errorMessage = nil
         toast = nil
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }
-        mode = .results
+        // Reopening while a task runs (or just finished) lands on the task, not an
+        // empty search — typing anything switches back to results.
+        mode = prefill == nil && hasAgentToShow ? .agent : .results
         focusRequestID &+= 1
+    }
+
+    /// Menu bar / overlay entry point: show the panel on the current task.
+    func showAgent() {
+        guard hasAgentToShow else { return }
+        mode = .agent
     }
 
     /// Ask the view to (re)focus the text field.
@@ -118,8 +134,8 @@ final class PanelViewModel: ObservableObject {
         mode = .results
         statusLine = ""
         errorMessage = nil
-        // Leave a running agent alone; user may reopen to check on it.
-        if agentRun == nil { agentEvents = []; agentScreenshot = nil }
+        // Leave a running (or not-yet-dismissed) agent alone; user may reopen to check on it.
+        if agentRun == nil, agentDismissed { agentEvents = []; agentScreenshot = nil; agentTaskTitle = "" }
     }
 
     // MARK: - Query pipeline
@@ -217,6 +233,7 @@ final class PanelViewModel: ObservableObject {
         #endif
         let q = query
         if !q.isEmpty { recentQueries = Array(([q] + recentQueries).prefix(20)) }
+        if agentRun == nil { agentDismissed = true }   // moving on from a finished run
         Task { @MainActor in
             let outcome = await result.perform()
             if case .keepOpen = outcome, result.kind == .calculation { showToast("Copied") }
@@ -271,6 +288,8 @@ final class PanelViewModel: ObservableObject {
         agentTask?.cancel()
         agentRun = handle
         agentEvents = []
+        agentTaskTitle = handle.task
+        agentDismissed = false
         pendingApproval = nil
         mode = .agent
         agentTask = Task { [weak self] in
@@ -373,6 +392,7 @@ final class PanelViewModel: ObservableObject {
             answerTask?.cancel()
             isAnswering = false
             if mode == .clarify { clearClarification(); requestFocus() }
+            if mode == .agent, agentRun == nil { agentDismissed = true }   // ⎋ on a finished run puts it away
             mode = .results
             return
         }

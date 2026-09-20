@@ -156,18 +156,34 @@ enum UltrafastBridge {
     }
 
     /// Runs one browser task, streaming events into `handle`. Returns when the
-    /// runner exits. Cancellation kills the subprocess.
-    static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async {
+    /// runner exits, with the final page's visible text when the task
+    /// completed (nil otherwise). Cancellation kills the subprocess.
+    static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async -> String? {
         let search = searchURL(for: task)
         let first = startURL ?? search
-        let outcome = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                    allowEarlyBlockRetry: first != search)
+        await bringBrowserForward()
+        let (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                                            allowEarlyBlockRetry: first != search)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab).
             // Start over from a search-results page for the task.
             handle.emit(.status("Nothing actionable on \(first) — retrying from a Google search"))
-            _ = await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                              allowEarlyBlockRetry: false)
+            return await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                                 allowEarlyBlockRetry: false).text
+        }
+        return text
+    }
+
+    /// The runner works in its own Chrome tab; make Chrome frontmost so the
+    /// user watches the task happen instead of wondering what the new tab is.
+    @MainActor
+    static func bringBrowserForward() {
+        let chrome = ["com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.edgemac"]
+        for bid in chrome {
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first {
+                app.activate()
+                return
+            }
         }
     }
 
@@ -175,18 +191,19 @@ enum UltrafastBridge {
 
     @discardableResult
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
-                        allowEarlyBlockRetry: Bool) async -> RunOutcome {
+                        allowEarlyBlockRetry: Bool) async -> (outcome: RunOutcome, text: String?) {
         guard let vendor = vendorDir, let runner = runnerScript,
               case let python = vendor.appendingPathComponent(".venv/bin/python").path,
               FileManager.default.isExecutableFile(atPath: python) else {
             handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
-            return .failed
+            return (.failed, nil)
         }
         guard let env = environment() else {
             handle.emit(.failed(NaviError.missingAPIKey(.typesafe).localizedDescription))
-            return .failed
+            return (.failed, nil)
         }
         var outcome: RunOutcome = .failed
+        var finalText: String?
         let proc = Process()
         // The venv's interpreter directly: no uv resolution, no lockfile check per task.
         proc.executableURL = URL(fileURLWithPath: python)
@@ -203,7 +220,7 @@ enum UltrafastBridge {
         handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)"))
         do { try proc.run() } catch {
             handle.emit(.failed("Could not start runner: \(error.localizedDescription)"))
-            return .failed
+            return (.failed, nil)
         }
         Log.agent.info("ultrafast runner started pid=\(proc.processIdentifier)")
 
@@ -270,6 +287,8 @@ enum UltrafastBridge {
                     switch status {
                     case "done":
                         outcome = .completed
+                        finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
+                            .joined(separator: "\n")
                         handle.emit(.completed(summary: "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
                     case "cancelled":
                         outcome = .cancelled
@@ -307,7 +326,7 @@ enum UltrafastBridge {
         } else if !stderr.isEmpty {
             Log.agent.debug("ultrafast stderr: \(stderr.suffix(600))")
         }
-        return outcome
+        return (outcome, outcome == .completed ? finalText : nil)
     }
 
     // MARK: Helpers

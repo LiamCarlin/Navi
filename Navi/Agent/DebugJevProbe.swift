@@ -51,3 +51,45 @@ enum DebugJevProbe {
     }
 }
 #endif
+
+#if DEBUG
+/// `navi://debug-plan?q=<task>&out=/tmp/x.json` — runs `TaskPlanner` on a task
+/// against the live API and writes the plan, for prompt tuning without the
+/// shell needing Keychain access.
+enum DebugPlanProbe {
+    @MainActor
+    static func handle(_ url: URL, claude: ClaudeClient) -> Bool {
+        guard url.host == "debug-plan" else { return false }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let out = items.first { $0.name == "out" }?.value ?? "/tmp/navi-plan.json"
+        let task = items.first { $0.name == "q" }?.value ?? ""
+        let front = FrontmostProbe.current(includeURL: true)
+        Task.detached {
+            var result: [String: Any] = ["task": task]
+            do {
+                let t = Date()
+                let (plan, ms, raw) = try await TaskPlanner.planRaw(task: task, frontmost: front, claude: claude)
+                result["raw"] = raw
+                result["wall_ms"] = Int(Date().timeIntervalSince(t) * 1000)
+                result["api_ms"] = ms
+                result["ok"] = plan != nil
+                result["steps"] = (plan?.steps ?? []).map { s -> [String: Any] in
+                    var d: [String: Any] = ["surface": s.surface.rawValue, "goal": s.goal, "needs_result": s.needsResult]
+                    if let a = s.app { d["app"] = a }
+                    if let u = s.url { d["url"] = u }
+                    if let q = s.query { d["query"] = q }
+                    if s.useCurrentTab { d["use_current_tab"] = true }
+                    d["start_url"] = s.surface == .browser ? TaskPlanner.startURL(for: s, frontmost: front) : ""
+                    return d
+                }
+            } catch {
+                result = ["ok": false, "error": error.localizedDescription]
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: out))
+            }
+        }
+        return true
+    }
+}
+#endif

@@ -20,6 +20,8 @@ final class AgentOverlay {
         model.onStop = onStop
     }
 
+    /// Also shown for browser steps (which run in their own Chrome tab); the
+    /// pill is the one thing that stays visible after the panel hides.
     func show(step: Int, maxSteps: Int) {
         update(step: step, maxSteps: maxSteps)
         if panel == nil { panel = makePanel() }
@@ -89,6 +91,15 @@ struct AgentOverlayView: View {
             Text(model.text)
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
+            Divider().frame(height: 14)
+            Button {
+                NotificationCenter.default.post(name: .naviShowCurrentTask, object: nil)
+            } label: {
+                Text("Show").font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Open the task in Navi")
             Divider().frame(height: 14)
             Button {
                 model.onStop()

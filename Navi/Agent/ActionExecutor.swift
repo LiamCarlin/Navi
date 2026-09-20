@@ -207,8 +207,9 @@ enum TaskSurface {
         if let p = prefetched, p.task == task, Date().timeIntervalSince(p.at) < prefetchTTL { prefetchLock.unlock(); return }
         inflight?.cancel()
         prefetchLock.unlock()
-        let front = FrontmostProbe.current(includeURL: true)
+        var front = FrontmostProbe.current(includeURL: false)
         let t = Task.detached(priority: .userInitiated) {
+            if let b = front.bundleID, AXSnapshotter.isBrowser(b) { front.url = FrontmostProbe.browserURL(bundleID: b) }
             let cls = await classify(task: task, frontmost: front, jev: jev)
             guard !Task.isCancelled else { return }
             prefetchLock.lock()

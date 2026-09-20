@@ -10,6 +10,7 @@ struct AgentView: View {
 
     private var taskTitle: String {
         if let t = vm.agentRun?.task, !t.isEmpty { return t }
+        if !vm.agentTaskTitle.isEmpty { return vm.agentTaskTitle }
         let q = vm.query.trimmingCharacters(in: .whitespacesAndNewlines)
         return q.isEmpty ? "Agent task" : q
     }
