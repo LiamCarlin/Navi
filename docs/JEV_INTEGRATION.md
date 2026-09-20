@@ -194,6 +194,16 @@ probe.
 
 ## Latency budget
 
+Measured 2026-09-20 from Boston to TypeSafe (us-west-2): a Jev call is
+**150–230 ms on a warm connection, 400–650 ms cold** (TCP+TLS ≈ 250 ms);
+payload size barely matters (10 vs 120 elements: 180 → 230 ms). So Navi
+keeps connections warm rather than shrinking state: `JevClient.warm()` /
+`ClaudeClient.warm()` (free `GET /v1/models`) when ⌘Space opens, and the
+browser runner warms TLS on a thread while Chrome navigates. It also starts
+observing at `readyState == "interactive"` (identical DOM snapshot 0.9–1.3 s
+before `"complete"` on Google pages).
+
+
 | Stage | Target | Notes |
 |---|---|---|
 | Keystroke → instant rows | < 16 ms (one frame) | pure local; `instantResults` must return in < 5 ms |
@@ -308,8 +318,9 @@ operation head fails validate_choice            → fallback to Claude
    (choice offered, probabilities cover exactly the offered ids, all finite in [0,1],
     Σ ≈ 1 ± 0.02, chosen == argmax — same as jev-ultrafast model.validate_choice)
 operation == NEED_VISION                        → fallback to Claude
-operation == BLOCKED, or 3 consecutive non-WAIT actions with page_changed == false
-                                                → one Claude fallback ("try a different approach"), then .failed
+operation == BLOCKED, 3 consecutive non-WAIT actions with page_changed == false,
+   or FailureTracker ≥ 3 (no change / same element again / action error)
+                                                → Claude COACHES once (see below), then .failed
 operation confidence < agentJevConfidenceThreshold (0.5) → fallback to Claude
 target head for the operation fails validation  → fallback to Claude
 TYPE_TEXT: text = the task's single quoted string (zero-latency) else Claude Haiku
@@ -325,10 +336,31 @@ Anthropic key **and** Screen Recording; without them the run continues
 Jev-only and fails with a clear message the first time a fallback is needed.
 If Jev itself errors mid-run, Claude takes over the remaining steps.
 
-**Task surface**: when `ComputerAgent.browserRunner` is registered, one Jev
-choice (`surface`: browser / native_app / unsure over `{task, frontmost_app,
-window_title}`) runs first and browser tasks are handed to that runner with a
-start URL (first URL in the task, else the current tab).
+**Coaching** (`JevCoach`, once per step): Jev does not hand the wheel to
+Claude when it flails — Claude diagnoses. It gets the goal, a screenshot, the
+element table Jev sees (with indexes) and the recent actions with their
+effects, and returns `{diagnosis, guidance, next_operation?, next_target?}`.
+The guidance is added to Jev's `state.guidance` and to every question's
+`instructions.guidance` for the rest of the step; a suggested next action is
+validated against the offered targets (`JevDriver.coachAction`) before it is
+taken. A second failure streak after coaching ends the step with the
+diagnosis. The browser runner applies the same policy (guidance injected
+into every Jev request through a `post_json` wrapper).
+
+**Speculative text**: while Jev decides, `FieldText.obviousField` (the
+focused empty text field, else the only empty one) already has Haiku writing
+its value in parallel; the value is used only if Jev picks that very field.
+The browser runner does the same, keyed by the exact `field_context`.
+
+**Planning** (`TaskPlanner`, one Haiku call, prefetched while the user
+types via `ComputerAgentRunning.prepare`): the task is split into the fewest
+single-surface steps — a browser tab or one app — each with a self-contained
+goal, a clean search query / URL for browser steps, and `{{result}}` hand-off
+(Haiku distils the final page/screen text of a `needs_result` step into the
+next goal). Browser steps go to `ComputerAgent.browserRunner` (Chrome brought
+forward, tab activated); app steps activate the app, then run this driver.
+Without an Anthropic key one Jev choice (`TaskSurface`: browser / native_app
+/ unsure) picks the surface instead.
 
 Events: `.planned("Jev-driven · 34 candidates on screen · walk 41 ms")`,
 `.status("Jev · CLICK [7] 91% · 118 ms")` per step, `.status("Handing step to

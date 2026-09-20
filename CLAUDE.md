@@ -64,6 +64,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
   - **Agent gating** (`Agent`): after each Claude computer-use step, Jev answers
     `is_irreversible` (send/pay/delete), `task_complete`, `is_stuck` from the
     textual step log — cheap and fast, so the loop stays snappy.
+  - **Jev-first driver** (`Agent/JevDriver`): one call per step picks
+    `operation` + target from the AX element table (browser steps: vendored
+    jev-ultrafast on the DOM). Claude is System Two around it: `TaskPlanner`
+    splits a task into single-surface steps (prefetched while typing),
+    `JevCoach` diagnoses **once** when Jev flails and its guidance rides in
+    Jev's state/instructions — Claude never drives unless Jev says NEED_VISION.
+    Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,
