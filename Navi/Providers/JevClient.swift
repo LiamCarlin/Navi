@@ -54,6 +54,8 @@ final class JevClient: @unchecked Sendable {
 
     private let session: URLSession
     private let cache = ResponseCache()
+    /// When the pooled connection was last used (warm-up bookkeeping).
+    private let lastUse = LastUse()
 
     init() {
         let cfg = URLSessionConfiguration.ephemeral
@@ -205,6 +207,7 @@ final class JevClient: @unchecked Sendable {
         let start = Date()
         let (respData, resp) = try await session.data(for: req)
         let ms = Int(Date().timeIntervalSince(start) * 1000)
+        await lastUse.touch()
         guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response from Jev") }
         guard (200..<300).contains(http.statusCode) else {
             let text = String(data: respData, encoding: .utf8) ?? ""
@@ -250,6 +253,46 @@ final class JevClient: @unchecked Sendable {
             req.setValue("api-key", forHTTPHeaderField: "ai-gateway-auth-method")
             req.httpBody = data
             return (req, Data("vc:\(gatewayModel):".utf8) + data)
+        }
+    }
+
+    // MARK: - Connection warm-up
+
+    /// Idle time after which the pooled connection is treated as cold. TypeSafe
+    /// keeps an idle keep-alive open for well over 45 s; URLSession may drop it
+    /// sooner, so warm generously.
+    static let warmAfterIdleSeconds: TimeInterval = 20
+
+    /// Opens (or refreshes) the TCP+TLS connection to the active transport so
+    /// the next `ask` skips the ~250 ms handshake. Free: `GET /v1/models` on
+    /// TypeSafe, a bare GET on the Gateway host. Fire-and-forget; never throws.
+    func warm() {
+        guard let transport = activeTransport else { return }
+        Task.detached(priority: .userInitiated) { [self] in
+            guard await lastUse.isColder(than: Self.warmAfterIdleSeconds) else { return }
+            var req: URLRequest
+            switch transport {
+            case .typesafe:
+                guard let key = Keychain.get(.typesafe) else { return }
+                req = URLRequest(url: URL(string: "https://api.typesafe.ai/v1/models")!)
+                req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            case .vercelGateway:
+                req = URLRequest(url: URL(string: "https://ai-gateway.vercel.sh/")!)
+            }
+            req.timeoutInterval = 5
+            let start = Date()
+            _ = try? await session.data(for: req)
+            await lastUse.touch()
+            Log.jev.debug("Jev connection warmed (\(transport.rawValue, privacy: .public)) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+        }
+    }
+
+    private actor LastUse {
+        private var at: Date?
+        func touch() { at = Date() }
+        func isColder(than seconds: TimeInterval) -> Bool {
+            guard let at else { return true }
+            return Date().timeIntervalSince(at) > seconds
         }
     }
 

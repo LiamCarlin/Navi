@@ -78,6 +78,10 @@ final class PanelViewModel: ObservableObject {
 
     func willShow(prefill: String? = nil, context: QueryContext) {
         self.context = context
+        // Open the model connections now, while the user is still typing, so the
+        // routing call and the agent's first decision skip the TLS handshake.
+        services.jev.warm()
+        services.claude.warm()
         errorMessage = nil
         toast = nil
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }

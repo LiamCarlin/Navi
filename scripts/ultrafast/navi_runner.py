@@ -17,8 +17,17 @@ Navi passes keys through the environment (never argv):
   ANTHROPIC_API_KEY           — text helper (Claude Haiku) unless TEXT_MODEL_API_KEY is set
   TEXT_MODEL_API_KEY/BASE_URL/TEXT_MODEL — optional OpenAI-compatible helper, as upstream
 
-The vendored library is not modified; the two adaptations below are
+The vendored library is not modified; the adaptations below are
 monkeypatches so `vendor/jev-ultrafast` stays byte-identical to upstream.
+
+Speed adaptations (measured on a Boston → us-west-2 path):
+  3. Start observing at `document.readyState == "interactive"` instead of
+     "complete" — the DOM snapshot is identical, 0.3–1.3 s earlier.
+  4. Warm the TLS connections to TypeSafe and Anthropic while Chrome is still
+     navigating, so the first Jev call is ~150 ms instead of ~400 ms.
+  5. Speculative TYPE_TEXT: when a page has one obvious text field, ask the
+     text helper for its value *while* Jev is deciding, so a TYPE_TEXT step
+     costs one round trip instead of two.
 """
 
 import argparse
@@ -26,11 +35,15 @@ import json
 import math
 import os
 import sys
+import threading
 import time
+from concurrent.futures import Future
 
 import httpx
 
 from jev_ultrafast import Agent, model as jev_model
+from jev_ultrafast.browser import Browser
+from jev_ultrafast.model import field_context
 from jev_ultrafast.questions import TEXT_VALUE
 
 
@@ -164,17 +177,159 @@ def field_text_claude(context):
     }
 
 
+# --- Adaptation 3: observe at "interactive" ---------------------------------
+
+class FastBrowser(Browser):
+    """Upstream `Browser.__init__` waits for readyState "complete" (every image
+    and script). The snapshot reads the DOM, which is final at "interactive";
+    on Google search / Flights that is 0.9–1.3 s earlier for an identical
+    element table. Stale-page guards already cover anything that lands later."""
+
+    READY = {"interactive", "complete"}
+
+    def __init__(self, url):
+        from browser_harness.admin import ensure_daemon
+        from browser_harness.helpers import cdp
+
+        ensure_daemon()
+        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+        self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+        self.call("Page.navigate", url=url)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                if self.evaluate("document.readyState") in self.READY:
+                    break
+            except Exception:  # noqa: BLE001 — document swapped mid-evaluate
+                pass
+            time.sleep(0.02)
+
+
+# --- Adaptation 4: warm the model connections during navigation -------------
+
+def warm_connections():
+    """TCP+TLS to the model hosts costs ~250–350 ms each from the East Coast.
+    Do it on a thread while Chrome loads the start page. GET /v1/models is
+    free on both APIs; any response (even 4xx) leaves the pooled connection
+    open in `jev_model.CLIENT`."""
+
+    def warm(url, headers):
+        try:
+            jev_model.CLIENT.get(url, headers=headers, timeout=5)
+        except Exception:  # noqa: BLE001 — best effort only
+            pass
+
+    targets = []
+    if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
+        targets.append(("https://ai-gateway.vercel.sh/", {}))
+    elif os.environ.get("TYPESAFE_API_KEY"):
+        targets.append(("https://api.typesafe.ai/v1/models", {"Authorization": f"Bearer {os.environ['TYPESAFE_API_KEY']}"}))
+    if os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("TEXT_MODEL_API_KEY"):
+        base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+        targets.append((base + "/v1/models", {"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"}))
+    for url, headers in targets:
+        threading.Thread(target=warm, args=(url, headers), daemon=True).start()
+
+
+# --- Adaptation 5: speculative text helper ----------------------------------
+
+class SpeculativeText:
+    """Runs the text helper in parallel with Jev's decision.
+
+    Right before `choose` (which receives the page the agent will act on), if
+    that page has one obvious TYPE_TEXT candidate (the field the last action
+    clicked, else the only empty text field) that nothing has been typed into
+    yet, the helper starts on a thread with exactly the `field_context` the
+    agent would build. If Jev then picks that field, `field_text` returns
+    the in-flight result (usually already done); otherwise the value is simply
+    never typed. Keyed by the full context, so a mismatch can never leak text
+    into the wrong field."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.lock = threading.Lock()
+        self.futures = {}
+        self.stats = {"started": 0, "hits": 0}
+
+    @staticmethod
+    def key(context):
+        return json.dumps(context, sort_keys=True)
+
+    @staticmethod
+    def candidate(page, history):
+        fills = [a for a in page.get("actions", []) if a.get("kind") == "fill"]
+        if not fills:
+            return None
+        typed = {h.get("action") for h in history if h.get("kind") == "fill"}
+        # Only fields that are still empty: a pre-filled search box is not about to be typed into.
+        fresh = [a for a in fills if a["label"] not in typed and not (a.get("value") or "").strip()]
+        if not fresh:
+            return None
+        # The field the previous action clicked ("Where from?" / "Open Where from?").
+        last = history[-1] if history else None
+        if last and last.get("kind") == "click":
+            label = last.get("action") or ""
+            clicked = [a for a in fresh if a["label"] == label or "Open " + a["label"] == label]
+            if len(clicked) == 1:
+                return clicked[0]
+        return fresh[0] if len(fresh) == 1 else None
+
+    def speculate(self, goal, page, history):
+        action = self.candidate(page, history)
+        if action is None:
+            return
+        context = field_context(goal, action, page, history)
+        k = self.key(context)
+        with self.lock:
+            if k in self.futures:
+                return
+            fut = Future()
+            self.futures[k] = fut
+            if len(self.futures) > 32:
+                self.futures.pop(next(iter(self.futures)))
+        self.stats["started"] += 1
+
+        def run():
+            try:
+                fut.set_result(self.inner(context))
+            except Exception as exc:  # noqa: BLE001 — surfaced when/if consumed
+                fut.set_exception(exc)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def __call__(self, context):
+        with self.lock:
+            fut = self.futures.pop(self.key(context), None)
+        if fut is None:
+            return self.inner(context)
+        self.stats["hits"] += 1
+        text, helper = fut.result()
+        return text, {**helper, "speculative": True}
+
+
 def install_adaptations():
     if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         jev_model.post_json = post_json_vercel
         # Upstream reads TYPESAFE_API_KEY unconditionally; give it a placeholder.
         os.environ.setdefault("TYPESAFE_API_KEY", "via-vercel-gateway")
-    if not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"):
-        jev_model.field_text = field_text_claude
-        # agent.py imported the name directly; patch it there too.
-        import jev_ultrafast.agent as agent_module
+    import jev_ultrafast.agent as agent_module
 
-        agent_module.field_text = field_text_claude
+    helper = field_text_claude if (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")) else jev_model.field_text
+    speculative = SpeculativeText(helper)
+    jev_model.field_text = speculative
+    # agent.py imported the names directly; patch it there too.
+    agent_module.field_text = speculative
+    agent_module.Browser = FastBrowser
+    original_choose = agent_module.choose
+
+    def choose(page, goal, history):
+        speculative.speculate(goal, page, history)
+        return original_choose(page, goal, history)
+
+    agent_module.choose = choose
+    return speculative
 
 
 # --- Run --------------------------------------------------------------------
@@ -202,7 +357,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()
 
-    install_adaptations()
+    speculative = install_adaptations()
+    warm_connections()
     if args.max_steps > 0:
         import jev_ultrafast.questions as q
 
@@ -261,6 +417,7 @@ def main():
                     steps=len(state["history"]),
                     summary=summarize(state["history"], state["status"]),
                     url=state["page"]["url"],
+                    speculative_text=speculative.stats,
                 )
         return 0
     except KeyboardInterrupt:
