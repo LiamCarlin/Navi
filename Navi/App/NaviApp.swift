@@ -115,6 +115,9 @@ struct MenuBarMenu: View {
             }
         }
         Divider()
+        // Same setting as Settings → Agent; here so it can be flipped between tasks.
+        Toggle("Run tasks in background", isOn: $settings.agentRunInBackground)
+        Divider()
         Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
         if settings.memoryCaptureEnabled {
             if settings.memoryIsPaused {
