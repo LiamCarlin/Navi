@@ -44,6 +44,18 @@ Reliability adaptations (from failed runs, see git log):
      table, so "play" could only flail on the nav links. A canvas click's
      effect is not visible in the DOM, so it is recorded as page_changed=null
      rather than a no-change failure.
+ 10. Let a page settle before Jev sees it: after a navigation (or when the
+     table is empty) the observation is repeated until readyState is
+     "complete" and two consecutive snapshots agree, up to ~3 s. A click on
+     "Directions" landed on a blank, still-rendering Google Maps document
+     that Jev — correctly — called BLOCKED, which ended the run.
+ 11. BLOCKED is a verdict, not a reflex: a low-confidence BLOCKED (or one
+     where WAIT is a close runner-up) is first answered with a short wait and
+     a fresh observation; only a repeat on the same page counts.
+ 12. Coaching is per document, not per run: after Claude's guidance takes
+     Jev to a different page, the guidance (which names element indexes of
+     the old page) is marked stale and Claude may be consulted again there,
+     up to a small budget. Failing again on the same page still ends the run.
 """
 
 import argparse
@@ -348,19 +360,49 @@ Reply ONLY with JSON:
 Never invent element indexes that are not in the table. Never include credentials or payment details."""
 
 FAILURES_BEFORE_COACHING = 3
+MAX_COACHINGS = 3
 
 
 class Coach:
-    """Once per run: when the page stops responding to Jev (upstream's stuck
-    rule, or the same element acted on three times in a row), Claude reads the
-    page and writes guidance that is added to Jev's state and to every
-    question's instructions for the rest of the run. Failing again afterwards
-    ends the run with Claude's diagnosis."""
+    """Once per document: when the page stops responding to Jev (upstream's
+    stuck rule, or the same element acted on three times in a row), Claude
+    reads the page and writes guidance that is added to Jev's state and to
+    every question's instructions for the rest of the run. Failing again on
+    the same document ends the run with Claude's diagnosis; on a different
+    document (the guidance often *is* "go to a different page") Claude may be
+    asked again, `MAX_COACHINGS` times in all."""
 
     def __init__(self):
         self.guidance = None
         self.diagnosis = None
         self.used = False
+        self.count = 0
+        self.url = None          # page the current guidance was written for
+        self.current_url = None  # page Jev is on now (set by the run loop)
+
+    @staticmethod
+    def same_document(a, b):
+        """Same page for coaching purposes: origin + path, ignoring query/fragment."""
+        if not a or not b:
+            return a == b
+        return a.split("#", 1)[0].split("?", 1)[0].rstrip("/") == b.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+    def may_ask(self, url):
+        """A first consult, or a later one on a page other than the last consult's."""
+        if self.count >= MAX_COACHINGS:
+            return False
+        return not self.used or not self.same_document(self.url, url)
+
+    def guidance_for(self, url):
+        """The guidance as Jev should read it here: unchanged on the page it was
+        written for, flagged as possibly stale elsewhere (its indexes belong to
+        the old page)."""
+        if not self.guidance:
+            return None
+        if self.same_document(self.url, url):
+            return self.guidance
+        return ("(Written on the previous page " + str(self.url or "") + " — element indexes there do not apply here; "
+                "follow the intent only.) " + self.guidance)
 
     @staticmethod
     def flailing(history):
@@ -413,6 +455,9 @@ class Coach:
         self.guidance = guidance[:1200]
         self.diagnosis = str(out.get("diagnosis", "")).strip() or "Jev kept choosing actions that had no effect"
         self.used = True
+        self.count += 1
+        self.url = page.get("url")
+        self.current_url = self.url
         return round((time.perf_counter() - started) * 1000)
 
     def install(self):
@@ -420,15 +465,16 @@ class Coach:
         inner = jev_model.post_json
 
         def post_json(url, key, body):
-            if self.guidance and isinstance(body, dict) and "questions" in body:
+            guidance = self.guidance_for(self.current_url)
+            if guidance and isinstance(body, dict) and "questions" in body:
                 body = dict(body)
                 if isinstance(body.get("state"), dict):
-                    body["state"] = {**body["state"], "guidance": self.guidance}
+                    body["state"] = {**body["state"], "guidance": guidance}
                 qs = {}
                 for name, q in body["questions"].items():
                     q = dict(q)
                     if isinstance(q.get("instructions"), dict):
-                        q["instructions"] = {**q["instructions"], "guidance": self.guidance}
+                        q["instructions"] = {**q["instructions"], "guidance": guidance}
                     qs[name] = q
                 body["questions"] = qs
             return inner(url, key, body)
@@ -607,6 +653,104 @@ def soften_canvas_step(state, history_before):
             state["status"] = "ready"
 
 
+# --- Adaptation 10: let the page settle before Jev sees it -----------------
+
+SETTLE_MAX_S = 3.0
+SETTLE_POLL_S = 0.12
+
+INTERACTIVE = {"click", "fill", "select"}
+
+
+def interactive_count(page):
+    return sum(1 for a in page.get("actions", []) if a.get("kind") in INTERACTIVE)
+
+
+def looks_unsettled(page, previous_url=None):
+    """True when the observed page is probably still loading: nothing to act on,
+    or a document that just replaced a different one (a click that navigated)."""
+    if interactive_count(page) == 0:
+        return True
+    return previous_url is not None and not Coach.same_document(previous_url, page.get("url"))
+
+
+def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
+    """Re-observes until `document.readyState` is "complete" and two consecutive
+    snapshots agree (same fingerprint), or `max_s` elapses. Returns the number of
+    extra observations. Jev then decides from the page the user would see —
+    not from the blank frame an SPA shows for its first few hundred ms."""
+    page = agent.state["page"]
+    if not looks_unsettled(page, previous_url):
+        return 0
+    browser = agent.state["browser"]
+    deadline = time.monotonic() + max_s
+    observations = 0
+    stable = page["fingerprint"]
+    while time.monotonic() < deadline:
+        time.sleep(SETTLE_POLL_S)
+        try:
+            ready = browser.evaluate("document.readyState")
+        except Exception:  # noqa: BLE001 — document swapped mid-evaluate; observe below
+            ready = None
+        try:
+            page = browser.observe(screenshot=agent.screenshots)
+        except Exception:  # noqa: BLE001 — still navigating
+            continue
+        observations += 1
+        agent.state["page"] = page
+        if ready == "complete" and page["fingerprint"] == stable and interactive_count(page) > 0:
+            break
+        stable = page["fingerprint"]
+    return observations
+
+
+# --- Adaptation 11: BLOCKED is a verdict, not a reflex ----------------------
+
+TENTATIVE_BLOCKED_CONFIDENCE = 0.6
+TENTATIVE_BLOCKED_WAIT_S = 0.7
+MAX_BLOCKED_RETRIES = 4
+
+
+def blocked_is_tentative(decision):
+    """A BLOCKED Jev is not sure about, or where WAIT is a close second: the page
+    may simply not be ready yet. Answer it with a short wait, not the end."""
+    if not decision or decision.get("operation") != "BLOCKED":
+        return False
+    probabilities = decision.get("operation_probabilities") or {}
+    if decision.get("confidence", 1.0) < TENTATIVE_BLOCKED_CONFIDENCE:
+        return True
+    return probabilities.get("WAIT", 0.0) >= 0.25
+
+
+def tick(agent, retried):
+    """Upstream `Agent.command("tick")` (predict → act, StalePage re-observes),
+    with one difference: a tentative BLOCKED on a page not yet retried is
+    discarded — the page gets a short wait and a fresh observation, and Jev
+    decides again. `retried` is the set of fingerprints already given that
+    second chance, so the same BLOCKED twice on the same page is final."""
+    state = agent.state
+    try:
+        agent.command("predict", {})
+        decision = state["decision"]
+        fingerprint = state["page"]["fingerprint"]
+        if blocked_is_tentative(decision) and fingerprint not in retried and len(retried) < MAX_BLOCKED_RETRIES:
+            retried.add(fingerprint)
+            state["decision"] = None
+            state["status"] = "ready"
+            time.sleep(TENTATIVE_BLOCKED_WAIT_S)
+            state["page"] = state["browser"].observe(screenshot=agent.screenshots)
+            settle_page(agent)
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+            return "retried"
+        agent.command("act", {"fingerprint": fingerprint})
+        return "acted"
+    except StalePage:
+        state["decision"] = None
+        state["status"] = "ready"
+        state["page"] = state["browser"].observe(screenshot=agent.screenshots)
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        return "stale"
+
+
 def install_adaptations():
     if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         jev_model.post_json = post_json_vercel
@@ -687,8 +831,12 @@ def main():
 
     signal.signal(signal.SIGTERM, on_term)
     try:
+        # An SPA start page (Google Maps, Flights, …) is often blank at "interactive".
+        settled = settle_page(agent)
         page = agent.state["page"]
-        emit("ready", elements=len(agent.snapshot()["elements"]), url=page["url"], title=page["title"])
+        emit("ready", elements=len(agent.snapshot()["elements"]), url=page["url"], title=page["title"],
+             settle_observations=settled)
+        coach.current_url = page["url"]
         if args.screenshots and page.get("screenshot"):
             emit("screenshot", jpeg_base64=page["screenshot"])
         seen_steps = 0
@@ -696,8 +844,8 @@ def main():
         stop = None            # ("done"|"blocked", summary) once the run must end
 
         def coach_or_stop(state, why):
-            """Claude coaches once; a second failure ends the run."""
-            if coach.used:
+            """Claude coaches once per document; failing again on that page ends the run."""
+            if not coach.may_ask(state["page"].get("url")):
                 return ("blocked", f"Still failing after Claude's guidance ({why}). Claude's diagnosis: {coach.diagnosis}")
             emit("status", message=f"Jev is struggling ({why}) — asking Claude to diagnose")
             shot = None
@@ -720,14 +868,25 @@ def main():
             state["status"] = agent.state["status"] = "ready"
             return None
 
+        retried_blocked = set()
+
         def run_until_stop():
             while agent.state["status"] not in {"done", "blocked"}:
                 decisions_before, history_before = len(agent.state["decisions"]), len(agent.state["history"])
-                agent.command("tick")
+                url_before = agent.state["page"].get("url")
+                result = tick(agent, retried_blocked)
+                if result == "retried":
+                    emit("status", message="Jev leaned BLOCKED but wasn't sure — waited for the page and asked again")
                 soften_canvas_step(agent.state, history_before)
                 given_up = rejected.after_tick(agent.state, decisions_before, history_before)
                 if given_up:
                     emit("status", message=f"‘{given_up[:60]}’ can't be clicked here — telling Jev and moving on")
+                # A click that navigated: give the new document time to render before Jev decides.
+                if agent.state["status"] == "ready" and len(agent.state["history"]) > history_before:
+                    n = settle_page(agent, previous_url=url_before)
+                    if n:
+                        emit("status", message=f"Page changed — settled after {n} observation{'s' if n != 1 else ''}")
+                coach.current_url = agent.state["page"].get("url")
                 yield agent.snapshot()
 
         for state in run_until_stop():
@@ -788,6 +947,7 @@ def main():
                     page_text=(state["page"].get("text") or "")[:6000],
                     speculative_text=speculative.stats,
                     coached=coach.used,
+                    coachings=coach.count,
                 )
                 break
         return 0
