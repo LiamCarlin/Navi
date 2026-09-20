@@ -106,7 +106,35 @@ enum ResultOutcome: Sendable {
     case streamAnswer(AsyncThrowingStream<String, Error>)   // show an expanding answer area
     case runAgent(AgentRunHandle)           // show live agent progress
     case showResults([SearchResult])        // replace list (e.g. memory hits)
+    case clarify(ClarificationRequest)      // ask a structured follow-up, then re-run the refined query
     case error(String)
+}
+
+// MARK: - Clarification
+
+/// A structured follow-up for a request Navi can't act on yet: one short
+/// question and a few likely interpretations, each phrased as a complete
+/// request Navi can run directly. The panel also offers a free-text answer.
+struct ClarificationPrompt: Sendable, Equatable {
+    var originalQuery: String
+    var question: String
+    var options: [String]
+
+    static let maxOptions = 4
+
+    /// The refined query for a chosen option, or for typed free text.
+    func refinedQuery(option index: Int) -> String? { options[safe: index] }
+    func refinedQuery(typed text: String) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : "\(originalQuery) — \(t)"
+    }
+}
+
+/// Deferred prompt generation so the panel can show a thinking state while
+/// Claude writes the question and options.
+struct ClarificationRequest: Sendable {
+    let originalQuery: String
+    let load: @Sendable () async throws -> ClarificationPrompt
 }
 
 // MARK: - Query context

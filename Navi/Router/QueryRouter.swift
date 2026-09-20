@@ -21,11 +21,21 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
     static let recentQueriesKey = "navi.recentQueries"
     static let recentQueriesCap = 50
     static let jevTimeoutMs = 1200
+    /// `needs_clarification` must be this sure before Navi asks a follow-up.
+    /// Deliberately high: a wrong guess on most intents costs one keystroke,
+    /// so asking should be rare.
+    static let clarifyThreshold = 0.85
+    /// Only intents where acting on a wrong guess has a real cost get a
+    /// follow-up. Questions, searches and app launches always have an obvious
+    /// default reading.
+    static let clarifiableIntents: Set<Intent> = [.computerTask]
 
     /// Speculative answers from the last Jev call that `RouteDecision` has no field for.
     struct JevExtras: Sendable { var wantsMemory: Double; var isRisky: Double }
     private let lock = NSLock()
     private var extras: [String: JevExtras] = [:]
+    /// Refined queries from a follow-up → the intent they were clarified for (see `didClarify`).
+    private var clarified: [String: Intent] = [:]
 
     init(jev: JevClient, claude: ClaudeClient, memory: MemoryServicing, agent: ComputerAgentRunning) {
         self.jev = jev; self.claude = claude; self.memory = memory; self.agent = agent
@@ -74,6 +84,17 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
 
     func route(query: String, context: QueryContext) async -> RouteDecision {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var d = await decide(query: q, context: context)
+        // A query the user just clarified keeps the intent they clarified it for.
+        if let pinned = clarifiedIntent(for: q) {
+            d.intent = pinned
+            d.needsClarification = false
+            d.probabilities[pinned] = max(d.probabilities[pinned] ?? 0, d.confidence)
+        }
+        return d
+    }
+
+    private func decide(query q: String, context: QueryContext) async -> RouteDecision {
         guard !q.isEmpty else { return .heuristic(.webSearch, confidence: 0.3) }
         let local = localSignals(for: q)
         guard jev.isConfigured else { return heuristicRoute(query: q, local: local) }
@@ -112,11 +133,23 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         return extras[q]
     }
 
+    func didClarify(query: String, intent: Intent) {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.lock(); defer { lock.unlock() }
+        if clarified.count > 200 { clarified.removeAll() }
+        clarified[q] = intent
+    }
+
+    func clarifiedIntent(for query: String) -> Intent? {
+        lock.lock(); defer { lock.unlock() }
+        return clarified[query.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
     static let jevQuestions: [String: JevClient.Question] = [
         "intent": .choice(instructions: "What does the user want Navi to do?",
                           criteria: Dictionary(uniqueKeysWithValues: Intent.allCases.map { ($0.rawValue, $0.jevCriteria) })),
         "is_risky": .noul(instructions: "Carrying this out would send a message, spend money, delete data, or otherwise be hard to undo"),
-        "needs_clarification": .noul(instructions: "The request is too ambiguous to act on without asking a follow-up question"),
+        "needs_clarification": .noul(instructions: "The request cannot be carried out at all without more information from the user: there is no reasonable default reading (e.g. 'send it to him' with no recipient or content, 'book that' with nothing to book). Short, casual, or underspecified requests that still have an obvious best interpretation are NOT ambiguous"),
         "wants_memory": .noul(instructions: "Answering well requires knowing what the user was doing or looking at earlier on this computer"),
     ]
 
@@ -180,8 +213,9 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         let risky = resp["is_risky"]?.noul ?? 0
         let clarify = resp["needs_clarification"]?.noul ?? 0
         let wantsMemory = resp["wants_memory"]?.noul ?? 0
+        let needsClarification = clarify >= clarifyThreshold && clarifiableIntents.contains(intent)
         let d = RouteDecision(intent: intent, confidence: confidence, probabilities: probs,
-                              isRisky: risky >= 0.5, needsClarification: clarify > 0.6,
+                              isRisky: risky >= 0.5, needsClarification: needsClarification,
                               latencyMs: latencyMs, source: .jev)
         return (d, JevExtras(wantsMemory: wantsMemory, isRisky: risky))
     }
@@ -349,9 +383,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         if decision.needsClarification {
             let answers = self.answers
             rows.insert(SearchResult(id: "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
-                                     subtitle: "Navi isn't sure what you mean — ask a quick follow-up",
-                                     icon: .system("questionmark.bubble"), score: 1.0, shortcutHint: "⏎ Ask") {
-                .streamAnswer(answers.streamClarification(query: q, context: context))
+                                     subtitle: "Navi needs one detail first — pick an interpretation or type one",
+                                     icon: .system("questionmark.bubble"), score: 1.0, shortcutHint: "⏎ Clarify") {
+                .clarify(ClarificationRequest(originalQuery: q) {
+                    try await answers.clarification(query: q, context: context)
+                })
             }, at: 0)
         }
         return recording(rows, query: q)

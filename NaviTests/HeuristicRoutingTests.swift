@@ -53,7 +53,7 @@ struct HeuristicRoutingTests {
         let r = try #require(QueryRouter.decision(from: resp, local: local, threshold: 0.55, latencyMs: 120))
         #expect(r.0.intent == .openApp)               // gated: low confidence + strong local app match
         #expect(r.0.source == .jev)
-        #expect(r.0.needsClarification)
+        #expect(!r.0.needsClarification)              // 0.8 < clarifyThreshold, and openApp never clarifies
         #expect(!r.0.isRisky)
         #expect(r.0.probabilities[.webSearch] == 0.4)
         #expect(r.1.wantsMemory == 0.9)
@@ -61,6 +61,39 @@ struct HeuristicRoutingTests {
         let noApp = router.localSignals(for: "best ramen in sf")
         let r2 = try #require(QueryRouter.decision(from: resp, local: noApp, threshold: 0.55, latencyMs: 120))
         #expect(r2.0.intent == .webSearch)             // nothing to gate to
+    }
+
+    @Test func clarificationIsRareAndTaskOnly() throws {
+        func resp(_ intent: String, clarify: Double) throws -> JevClient.Response {
+            try JevClient.parse(Data("""
+            {"model":"jev-latest","answers":{
+              "intent":{"type":"choice","choice":"\(intent)","probabilities":{"\(intent)":0.9},"confidence":0.9},
+              "is_risky":{"type":"noul","noul":0.2},
+              "needs_clarification":{"type":"noul","noul":\(clarify)},
+              "wants_memory":{"type":"noul","noul":0.1}},
+             "usage":{"input_tokens":1,"output_tokens":1}}
+            """.utf8), latencyMs: 90)
+        }
+        let local = router.localSignals(for: "send it to him")
+        let sure = try #require(QueryRouter.decision(from: try resp("computerTask", clarify: 0.95), local: local, threshold: 0.55, latencyMs: 90))
+        #expect(sure.0.needsClarification)
+        let unsure = try #require(QueryRouter.decision(from: try resp("computerTask", clarify: 0.7), local: local, threshold: 0.55, latencyMs: 90))
+        #expect(!unsure.0.needsClarification)
+        let question = try #require(QueryRouter.decision(from: try resp("askQuestion", clarify: 0.99), local: local, threshold: 0.55, latencyMs: 90))
+        #expect(!question.0.needsClarification)       // Claude can ask in its own answer; never a blocking prompt
+        let search = try #require(QueryRouter.decision(from: try resp("webSearch", clarify: 0.99), local: local, threshold: 0.55, latencyMs: 90))
+        #expect(!search.0.needsClarification)
+    }
+
+    @Test func clarifiedQueriesKeepTheirIntent() async {
+        #expect(router.clarifiedIntent(for: "Email Bob about lunch") == nil)
+        router.didClarify(query: "  Email Bob about lunch ", intent: .computerTask)
+        #expect(router.clarifiedIntent(for: "Email Bob about lunch") == .computerTask)
+        // Heuristics alone would call the short "mail" query an app launch; the pin wins and never re-asks.
+        router.didClarify(query: "mail", intent: .computerTask)
+        let d = await router.route(query: "mail", context: .empty)
+        #expect(d.intent == .computerTask && !d.needsClarification)
+        #expect((await router.route(query: "maps", context: .empty)).intent == .openApp)
     }
 
     @Test func instantResultsShapeAndOrder() async {

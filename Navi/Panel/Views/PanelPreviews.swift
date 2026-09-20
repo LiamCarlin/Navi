@@ -96,6 +96,31 @@ private var previewScreenshot: NSImage {
     }
 }
 
+#Preview("Clarify · options") {
+    PreviewBackdrop {
+        NaviPanelView().environmentObject(
+            PanelViewModel.preview(query: "send it to him",
+                                   decision: jev(.computerTask, 0.71, ms: 190),
+                                   mode: .clarify,
+                                   clarification: ClarificationPrompt(
+                                    originalQuery: "send it to him",
+                                    question: "Send what, and to whom?",
+                                    options: ["Email the open Safari link to Bob Smith",
+                                              "Message the clipboard text to Bob in Messages",
+                                              "Share the selected file in Finder with Bob via AirDrop"])))
+    }
+}
+
+#Preview("Clarify · thinking") {
+    PreviewBackdrop {
+        NaviPanelView().environmentObject(
+            PanelViewModel.preview(query: "send it to him",
+                                   decision: jev(.computerTask, 0.71, ms: 190),
+                                   mode: .clarify,
+                                   isClarifying: true))
+    }
+}
+
 #Preview("Agent · running") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(

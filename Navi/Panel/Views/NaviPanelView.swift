@@ -76,6 +76,9 @@ struct NaviPanelView: View {
         case .agent:
             AgentView()
                 .transition(.opacity)
+        case .clarify:
+            ClarifyView()
+                .transition(.opacity)
         }
     }
 
@@ -113,6 +116,7 @@ struct NaviPanelView: View {
                        agentEvents: vm.agentEvents.count,
                        approval: vm.pendingApproval != nil,
                        hasScreenshot: vm.agentScreenshot != nil,
+                       clarifyOptions: vm.clarification?.options.count ?? -1,
                        error: vm.errorMessage)
     }
 
@@ -152,6 +156,7 @@ struct PanelLayoutKey: Equatable {
     var agentEvents: Int
     var approval: Bool
     var hasScreenshot: Bool
+    var clarifyOptions: Int
     var error: String?
 }
 

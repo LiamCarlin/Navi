@@ -15,10 +15,20 @@ import ScreenCaptureKit
 ///     every hosted control / scroll view) and flags anything outside the
 ///     window bounds, so clipping can be checked structurally.
 ///
+/// Also:
+///
+///     navi://debug-panel-snapshot?q=…&out=/tmp/x.png[&submit=1][&delay=4]
+///
+/// shows the ⌘Space panel with `q` (optionally performing the top row once
+/// routed, like `navi://run`) and writes a PNG of the panel after `delay` s.
+/// `pick=N` answers a clarification with option N (1-based) at `delay`/2 s;
+/// with `dry=1` the refined query is routed but not performed.
+///
 /// Compiled out of Release builds.
 @MainActor
 enum DebugSnapshot {
     static func handle(_ url: URL) -> Bool {
+        if url.host == "debug-panel-snapshot" { return handlePanel(url) }
         guard url.host == "debug-snapshot" else { return false }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func q(_ n: String) -> String? { items.first { $0.name == n }?.value }
@@ -44,6 +54,28 @@ enum DebugSnapshot {
                 if let axOut { dumpHierarchy(window: target, to: axOut) }
                 Task { await write(window: target, to: out) }
             }
+        }
+        return true
+    }
+
+    private static func handlePanel(_ url: URL) -> Bool {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func q(_ n: String) -> String? { items.first { $0.name == n }?.value }
+        let out = q("out") ?? "/tmp/navi-panel.png"
+        let delay = Double(q("delay") ?? "") ?? 4
+        guard let pc = AppDelegate.shared?.panelController else { return true }
+        pc.show(prefill: q("q"), submit: q("submit") == "1")
+        if let pick = Int(q("pick") ?? ""), pick >= 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
+                let vm = pc.viewModel
+                guard vm.mode == .clarify, vm.clarification != nil else { Log.settings.error("snapshot: no clarification to answer"); return }
+                vm.clarifySelection = pick - 1
+                vm.submitClarification()
+                if q("dry") == "1" { vm.submitAfterRouting = false }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            Task { await write(window: pc.panel, to: out) }
         }
         return true
     }
