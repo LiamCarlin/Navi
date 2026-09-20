@@ -47,6 +47,38 @@ enum ScreenCapture {
         return Frame(image: image, display: display, scaleFactor: scale, bounds: bounds)
     }
 
+    /// Captures one window by its window-server number, whether or not it is
+    /// frontmost, covered by other windows, or on another Space. The frame's
+    /// `bounds` is the window's frame in global points, so a `ScreenMap`
+    /// built from it maps screenshot pixels straight to screen points.
+    /// Used by the agent in background mode so it sees the app it drives, not
+    /// whatever the user is looking at.
+    static func captureWindow(id windowID: CGWindowID) async throws -> Frame {
+        guard hasPermission else { throw NaviError.permissionDenied("Screen Recording") }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+            throw NaviError.other("The window Navi was working in is gone")
+        }
+        let bounds = window.frame
+        let screen = NSScreen.screens.first { s in
+            // NSScreen frames are bottom-left origin; compare through CG display bounds instead.
+            guard let n = (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return false }
+            return CGDisplayBounds(n).intersects(bounds)
+        } ?? NSScreen.main
+        let scale = screen?.backingScaleFactor ?? 2.0
+        let display = content.displays.first { CGDisplayBounds($0.displayID).intersects(bounds) } ?? content.displays.first
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = max(1, Int(bounds.width * scale))
+        config.height = max(1, Int(bounds.height * scale))
+        config.showsCursor = false
+        config.captureResolution = .best
+        config.ignoreShadowsSingleWindow = true
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        guard let display else { throw NaviError.other("No display available for capture") }
+        return Frame(image: image, display: display, scaleFactor: scale, bounds: bounds)
+    }
+
     /// Downscale so the long edge ≤ `maxLongEdge` pixels. Returns the new image
     /// and the factor applied (multiply model coordinates by 1/factor to get pixels).
     static func downscale(_ image: CGImage, maxLongEdge: Int) -> (CGImage, CGFloat) {

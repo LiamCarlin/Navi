@@ -101,6 +101,20 @@ struct KeyCombo: Equatable, Sendable {
         throw NaviError.other("Unknown key: \(last)")
     }
 
+    /// Keys the focused view handles itself even with ⌘/⌥ held (line/word
+    /// navigation and deletion), as opposed to menu key equivalents.
+    static let viewHandledKeys: Set<String> = [
+        "left", "right", "up", "down", "home", "end", "page_up", "pageup", "prior", "page_down", "pagedown", "next",
+        "backspace", "delete", "return", "enter", "kp_enter", "tab", "escape", "esc",
+    ]
+
+    /// True for combos an app dispatches through its main menu (⌘ plus a
+    /// character key): "cmd+s", "cmd+shift+t", "cmd+l". Those need the app to
+    /// be active — see `InputController.pressWithBriefActivation`.
+    var isMenuEquivalent: Bool {
+        flags.contains(.maskCommand) && !Self.viewHandledKeys.contains(keyName) && KeyCombo.modifierKeyCodes[keyName] == nil
+    }
+
     /// "⌘⇧S"-style label for the UI.
     var displayLabel: String {
         var out = ""
@@ -131,12 +145,37 @@ struct KeyCombo: Equatable, Sendable {
 /// CGEvent-based mouse and keyboard synthesis. All coordinates are global
 /// screen *points* (CGEvent space: origin top-left of the main display).
 /// Requires the Accessibility permission.
+///
+/// Two routes (`route`):
+/// - `.hid` posts to the system event tap: the real cursor moves, events land
+///   on whatever is under it, and the target app must be frontmost.
+/// - `.process(pid, window)` posts straight to one process's event queue
+///   (`CGEvent.postToPid`). The cursor never moves, the active app keeps the
+///   keyboard, and the user can carry on working while the agent drives an
+///   app behind their windows. Mouse events name the window they are meant
+///   for so an occluded window still receives them.
 final class InputController: @unchecked Sendable {
     enum MouseButton { case left, right, middle }
     enum ScrollDirection: String { case up, down, left, right }
 
+    enum Route: Equatable, Sendable {
+        case hid
+        case process(pid: pid_t, window: CGWindowID?)
+
+        var isBackground: Bool { if case .process = self { return true }; return false }
+    }
+
     private let source = CGEventSource(stateID: .hidSystemState)
     private let tap = CGEventTapLocation.cghidEventTap
+    private let routeLock = NSLock()
+    private var _route: Route = .hid
+    /// Where the last mouse event went in `.process` mode (there is no real cursor to ask).
+    private var virtualCursor: CGPoint = .zero
+
+    var route: Route {
+        get { routeLock.lock(); defer { routeLock.unlock() }; return _route }
+        set { routeLock.lock(); _route = newValue; routeLock.unlock() }
+    }
 
     // MARK: Permissions
 
@@ -179,7 +218,10 @@ final class InputController: @unchecked Sendable {
 
     // MARK: Mouse
 
-    var cursorPosition: CGPoint { CGEvent(source: nil)?.location ?? .zero }
+    var cursorPosition: CGPoint {
+        if case .process = route { routeLock.lock(); defer { routeLock.unlock() }; return virtualCursor }
+        return CGEvent(source: nil)?.location ?? .zero
+    }
 
     func move(to p: CGPoint) async {
         post(mouse(.mouseMoved, at: p, button: .left))
@@ -245,6 +287,13 @@ final class InputController: @unchecked Sendable {
         for _ in 0..<max(1, amount) {
             let ev = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2,
                              wheel1: v, wheel2: h, wheel3: 0)
+            if case .process(_, let window) = route {
+                ev?.location = p ?? cursorPosition
+                if let window {
+                    ev?.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window))
+                    ev?.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window))
+                }
+            }
             post(ev)
             await sleep(ms: 12)
         }
@@ -283,6 +332,38 @@ final class InputController: @unchecked Sendable {
         await sleep(ms: 30)
     }
 
+    /// Menu key equivalents (⌘S, ⌘A, ⌘L…) are dispatched through the key
+    /// window's responder chain, which an inactive app does not have: posted
+    /// to a background process they are silently dropped (verified on macOS
+    /// 26 with TextEdit). So in `.process` mode such a combo briefly activates
+    /// the app, posts the key, and hands activation straight back to the app
+    /// the user was in — a flash of a few hundred milliseconds, the one
+    /// moment background mode touches the user's focus. Returns false when
+    /// the app could not be activated (the key is then posted anyway).
+    @discardableResult
+    func pressWithBriefActivation(_ combo: KeyCombo, repeat count: Int = 1) async -> Bool {
+        guard case .process(let pid, _) = route else { await press(combo, repeat: count); return true }
+        let (previous, activated): (NSRunningApplication?, Bool) = await MainActor.run {
+            let prev = NSWorkspace.shared.frontmostApplication
+            guard prev?.processIdentifier != pid else { return (nil, true) }
+            guard let app = NSRunningApplication(processIdentifier: pid) else { return (prev, false) }
+            return (prev, app.activate())
+        }
+        if activated {
+            // Activation is asynchronous; give it up to 300 ms to land.
+            for _ in 0..<15 {
+                if await MainActor.run(body: { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }) { break }
+                await sleep(ms: 20)
+            }
+        }
+        await press(combo, repeat: count)
+        if let previous, previous.processIdentifier != pid {
+            await sleep(ms: 40)   // let the app see the key-up before it loses activation
+            _ = await MainActor.run { previous.activate() }
+        }
+        return activated
+    }
+
     func hold(_ combo: KeyCombo, seconds: Double) async {
         let down = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: true)
         down?.flags = combo.flags
@@ -305,10 +386,26 @@ final class InputController: @unchecked Sendable {
     }
 
     private func mouse(_ type: CGEventType, at p: CGPoint, button: CGMouseButton) -> CGEvent? {
-        CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p, mouseButton: button)
+        let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p, mouseButton: button)
+        if case .process(_, let window) = route {
+            routeLock.lock(); virtualCursor = p; routeLock.unlock()
+            // AppKit picks the receiving window from these fields; without them a
+            // window hidden behind the user's work may never see the click.
+            if let window {
+                e?.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window))
+                e?.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window))
+            }
+        }
+        return e
     }
 
-    private func post(_ e: CGEvent?) { e?.post(tap: tap) }
+    private func post(_ e: CGEvent?) {
+        guard let e else { return }
+        switch route {
+        case .hid: e.post(tap: tap)
+        case .process(let pid, _): e.postToPid(pid)
+        }
+    }
 
     private func sleep(ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
 }

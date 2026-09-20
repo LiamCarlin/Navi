@@ -292,6 +292,17 @@ final class PanelViewModel: ObservableObject {
         agentDismissed = false
         pendingApproval = nil
         mode = .agent
+        // Background mode: nothing activates, so the panel would stay over the
+        // user's work. Give them a beat to see the run start, then get out of
+        // the way — the overlay pill and ⌘Space bring it back (same as the
+        // foreground mode, where the driven app stealing key hides the panel).
+        if NaviSettings.shared.agentRunInBackground {
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(900))
+                guard let self, self.agentRun === handle, self.pendingApproval == nil else { return }
+                self.onDismiss?()
+            }
+        }
         agentTask = Task { [weak self] in
             for await ev in handle.events {
                 guard let self else { return }

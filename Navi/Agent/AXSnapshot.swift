@@ -230,13 +230,20 @@ final class AXSnapshotter: @unchecked Sendable {
         "com.vivaldi.Vivaldi", "org.chromium.Chromium", "company.thebrowser.Browser", "com.operasoftware.Opera",
     ]
 
-    /// Frontmost app + focused window → snapshot. Never throws; an app that
-    /// exposes nothing yields an empty element list. `includeMenuBar` adds the
-    /// app's top-level menu titles as candidates (costs ~10 IPC calls).
-    func capture(near: CGRect?, includeMenuBar: Bool = false) async -> AXSnapshot {
-        let front = await MainActor.run { () -> (pid_t?, String?, String?) in
-            let app = NSWorkspace.shared.frontmostApplication
-            return (app?.processIdentifier, app?.bundleIdentifier, app?.localizedName)
+    /// Target app (or, when nil, the frontmost app) + its focused window →
+    /// snapshot. Never throws; an app that exposes nothing yields an empty
+    /// element list. `includeMenuBar` adds the app's top-level menu titles as
+    /// candidates (costs ~10 IPC calls). A pinned `target` is what background
+    /// mode uses: the walk then ignores whatever the user has in front.
+    func capture(near: CGRect?, includeMenuBar: Bool = false, target: AgentTarget? = nil) async -> AXSnapshot {
+        let front: (pid_t?, String?, String?)
+        if let target {
+            front = (target.pid, target.bundleID, target.appName)
+        } else {
+            front = await MainActor.run { () -> (pid_t?, String?, String?) in
+                let app = NSWorkspace.shared.frontmostApplication
+                return (app?.processIdentifier, app?.bundleIdentifier, app?.localizedName)
+            }
         }
         guard let pid = front.0, pid != ProcessInfo.processInfo.processIdentifier else {
             return AXSnapshot(elements: [], bundleID: front.1, appName: front.2)
@@ -256,8 +263,10 @@ final class AXSnapshotter: @unchecked Sendable {
     }
 
     /// ~3 IPC calls; used to poll for "did anything change?" after an action.
-    static func fingerprint() async -> AXSnapshot.Fingerprint? {
-        let pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    /// `target` pins the app (background mode); nil reads the frontmost app.
+    static func fingerprint(target: AgentTarget? = nil) async -> AXSnapshot.Fingerprint? {
+        let pid: pid_t?
+        if let target { pid = target.pid } else { pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier } }
         guard let pid else { return nil }
         return await AXQueue.run {
             let app = AXUIElementCreateApplication(pid)
@@ -277,14 +286,14 @@ final class AXSnapshotter: @unchecked Sendable {
     /// Waits for the screen to react to an action: polls the cheap fingerprint
     /// every 40 ms and returns as soon as it differs from `before` (plus one
     /// extra tick so the change can finish), or after `maxMs`.
-    static func settle(after before: AXSnapshot.Fingerprint?, maxMs: Int, minMs: Int = 80) async {
+    static func settle(after before: AXSnapshot.Fingerprint?, maxMs: Int, minMs: Int = 80, target: AgentTarget? = nil) async {
         let start = Date()
         var elapsed = 0
         while elapsed < maxMs {
             try? await Task.sleep(for: .milliseconds(40))
             elapsed = Int(Date().timeIntervalSince(start) * 1000)
             if elapsed < minMs { continue }
-            if let before, let now = await fingerprint(), now != before {
+            if let before, let now = await fingerprint(target: target), now != before {
                 try? await Task.sleep(for: .milliseconds(40))
                 return
             }
@@ -324,7 +333,10 @@ final class AXSnapshotter: @unchecked Sendable {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)   // a hung app must not blow the time box
 
+        // Focused → main → first: a background app still reports a focused
+        // window, but a freshly launched one may only have a main window yet.
         var window: AXUIElement? = attr(app, kAXFocusedWindowAttribute) as! AXUIElement?
+        if window == nil { window = attr(app, kAXMainWindowAttribute) as! AXUIElement? }
         if window == nil, let wins = elements(attr(app, kAXWindowsAttribute)), let first = wins.first { window = first }
         var snap = AXSnapshot(elements: [], pid: pid)
         var raw: [AXElement] = []

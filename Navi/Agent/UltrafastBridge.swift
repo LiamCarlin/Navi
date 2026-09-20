@@ -160,18 +160,28 @@ enum UltrafastBridge {
     /// Runs one browser task, streaming events into `handle`. Returns when the
     /// runner exits, with the final page's visible text when the task
     /// completed (nil otherwise). Cancellation kills the subprocess.
-    static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async -> String? {
+    ///
+    /// `background`: leave Chrome where it is and work in a tab that is not
+    /// brought to the front (`NAVI_BACKGROUND_TAB`), so the user keeps their
+    /// current window while the task runs. CDP input and DOM reads don't need
+    /// the tab to be visible.
+    static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
+                    background: Bool = false) async -> String? {
         let search = searchURL(for: task)
         let first = startURL ?? search
-        await bringBrowserForward()
+        if background {
+            handle.emit(.status("Working in a background Chrome tab — keep using your Mac"))
+        } else {
+            await bringBrowserForward()
+        }
         let (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                            allowEarlyBlockRetry: first != search)
+                                            allowEarlyBlockRetry: first != search, background: background)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab).
             // Start over from a search-results page for the task.
             handle.emit(.status("Nothing actionable on \(first) — retrying from a Google search"))
             return await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                 allowEarlyBlockRetry: false).text
+                                 allowEarlyBlockRetry: false, background: background).text
         }
         return text
     }
@@ -193,17 +203,18 @@ enum UltrafastBridge {
 
     @discardableResult
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
-                        allowEarlyBlockRetry: Bool) async -> (outcome: RunOutcome, text: String?) {
+                        allowEarlyBlockRetry: Bool, background: Bool = false) async -> (outcome: RunOutcome, text: String?) {
         guard let vendor = vendorDir, let runner = runnerScript,
               case let python = vendor.appendingPathComponent(".venv/bin/python").path,
               FileManager.default.isExecutableFile(atPath: python) else {
             handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
             return (.failed, nil)
         }
-        guard let env = environment() else {
+        guard var env = environment() else {
             handle.emit(.failed(NaviError.missingAPIKey(.typesafe).localizedDescription))
             return (.failed, nil)
         }
+        if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         var outcome: RunOutcome = .failed
         var finalText: String?
         let proc = Process()

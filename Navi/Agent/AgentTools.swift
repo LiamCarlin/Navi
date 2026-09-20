@@ -262,14 +262,15 @@ enum AgentCustomTools {
     // MARK: Execution
 
     /// Executes a custom tool. Throws `NaviError` on failure; returns result text.
-    static func execute(_ call: AgentToolCall, emitStatus: @escaping @Sendable (String) -> Void) async throws -> String {
+    /// `activate == false` (background mode) opens apps and URLs without bringing them forward.
+    static func execute(_ call: AgentToolCall, activate: Bool = true, emitStatus: @escaping @Sendable (String) -> Void) async throws -> String {
         switch call.name {
         case "open_app":
             guard let name = call.input["name"] as? String, !name.isEmpty else { throw NaviError.other("open_app: missing name") }
-            return try await openApp(named: name)
+            return try await openApp(named: name, activate: activate)
         case "open_url":
             guard let raw = call.input["url"] as? String, !raw.isEmpty else { throw NaviError.other("open_url: missing url") }
-            return try await openURL(raw)
+            return try await openURL(raw, activate: activate)
         case "run_applescript":
             guard let src = call.input["source"] as? String, !src.isEmpty else { throw NaviError.other("run_applescript: missing source") }
             return try await runAppleScript(src, timeout: 10)
@@ -291,20 +292,23 @@ enum AgentCustomTools {
         }
     }
 
-    static func openApp(named name: String) async throws -> String {
+    /// Launches (or, when `activate`, brings forward) the app. With
+    /// `activate == false` — background mode — a running app is left where it
+    /// is and a new one is launched behind the user's windows (`open -g`).
+    static func openApp(named name: String, activate: Bool = true) async throws -> String {
         let url = await MainActor.run { findApp(named: name) }
         guard let url else {
             // Last resort: let LaunchServices resolve the name.
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = ["-a", name]
+            p.arguments = (activate ? [] : ["-g"]) + ["-a", name]
             try p.run(); p.waitUntilExit()
             guard p.terminationStatus == 0 else { throw NaviError.other("No application named \"\(name)\" was found") }
             return name
         }
         let bundleID = Bundle(url: url)?.bundleIdentifier ?? url.lastPathComponent
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
+        config.activates = activate
         _ = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
         try? await Task.sleep(for: .milliseconds(400))
         return bundleID
@@ -331,15 +335,24 @@ enum AgentCustomTools {
         return nil
     }
 
-    static func openURL(_ raw: String) async throws -> String {
+    static func openURL(_ raw: String, activate: Bool = true) async throws -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if !s.contains("://") { s = "https://" + s }
         guard let url = URL(string: s), let scheme = url.scheme?.lowercased(),
               ["http", "https", "mailto", "maps", "file"].contains(scheme) else {
             throw NaviError.other("open_url: unsupported or malformed URL: \(raw)")
         }
-        let ok = await MainActor.run { NSWorkspace.shared.open(url) }
-        guard ok else { throw NaviError.other("open_url: macOS refused to open \(s)") }
+        if activate {
+            let ok = await MainActor.run { NSWorkspace.shared.open(url) }
+            guard ok else { throw NaviError.other("open_url: macOS refused to open \(s)") }
+        } else {
+            // Background mode: the handler app must not come forward over the user's work.
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            do { _ = try await NSWorkspace.shared.open(url, configuration: config) } catch {
+                throw NaviError.other("open_url: macOS refused to open \(s)")
+            }
+        }
         try? await Task.sleep(for: .milliseconds(500))
         return "Opened \(s)"
     }
