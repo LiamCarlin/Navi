@@ -405,14 +405,21 @@ struct JevDriverTests {
         // Jev's start_from head decides between the open tab and a fresh search.
         #expect(TaskSurface.startURL(task: "archive all", frontmost: front, start: .currentTab) == "https://mail.google.com/")
         #expect(TaskSurface.startURL(task: "find the cheapest john summit tickets", frontmost: front, start: .webSearch)
-                == "https://www.google.com/search?hl=en&q=find%20the%20cheapest%20john%20summit%20tickets")
+                == "https://www.google.com/search?hl=en&q=the%20cheapest%20john%20summit%20tickets")
         // Without a Jev answer: the tab only when the task refers to it or names its domain.
         #expect(TaskSurface.startURL(task: "archive everything on this page", frontmost: front) == "https://mail.google.com/")
         #expect(TaskSurface.startURL(task: "find the cheapest tickets", frontmost: front)?.hasPrefix("https://www.google.com/search?") == true)
         // Named sites and launcher chatter.
         #expect(TaskSurface.startURL(task: "go to google flights and book zurich to london", frontmost: front) == "https://www.google.com/travel/flights?hl=en")
-        #expect(UltrafastBridge.searchURL(for: "go to browser and find the cheapest john summit tickets in boston")
-                == "https://www.google.com/search?hl=en&q=find%20the%20cheapest%20john%20summit%20tickets%20in%20boston")
+        #expect(UltrafastBridge.searchQuery(for: "go to browser and find the cheapest john summit tickets in boston")
+                == "the cheapest john summit tickets in boston")
+        #expect(UltrafastBridge.searchQuery(for: "open chrome, search for the weather in boston and click the first result")
+                == "the weather in boston")
+        #expect(UltrafastBridge.searchQuery(for: "Search Google for best ramen in sf") == "best ramen in sf")
+        #expect(UltrafastBridge.searchQuery(for: "in safari look up how tall is mount fuji") == "how tall is mount fuji")
+        #expect(UltrafastBridge.searchQuery(for: "book a table at nopa for 2 tonight") == "book a table at nopa for 2 tonight")
+        #expect(UltrafastBridge.searchURL(for: "open chrome and search for jev then click the first result")
+                == "https://www.google.com/search?hl=en&q=jev")
         // No browser open → a search page, never nil (the runner needs somewhere to start).
         let native = FrontmostProbe.Info(bundleID: "com.apple.finder", appName: "Finder", windowTitle: nil, url: nil)
         #expect(TaskSurface.startURL(task: "make a folder", frontmost: native)?.hasPrefix("https://www.google.com/search?") == true)

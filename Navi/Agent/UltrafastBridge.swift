@@ -310,19 +310,42 @@ enum UltrafastBridge {
     // MARK: Helpers
 
     /// A Google search for the task, with launcher chatter stripped
-    /// ("go to browser and find X" → "find X").
+    /// ("open chrome, search for X and click the first result" → "X").
     static func searchURL(for task: String) -> String {
+        "https://www.google.com/search?hl=en&q=" + (searchQuery(for: task)
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? "")
+    }
+
+    /// The part of the task worth typing into a search engine.
+    static func searchQuery(for task: String) -> String {
         var q = task.trimmingCharacters(in: .whitespacesAndNewlines)
-        let chatter = ["go to the browser and", "go to browser and", "open the browser and", "open browser and", "open chrome and",
-                       "in chrome,", "in chrome", "in the browser,", "in the browser", "use the browser to", "online,", "online",
-                       "on the web,", "on the web", "search the web for", "search for", "search", "look up", "google", "please"]
-        var lower = q.lowercased()
-        for c in chatter where lower.hasPrefix(c + " ") || lower.hasPrefix(c) {
-            q = String(q.dropFirst(c.count)).trimmingCharacters(in: .whitespaces)
-            lower = q.lowercased()
+        // Leading launcher clauses: "open chrome,", "go to the browser and", "in safari", "online", …
+        let leading = [
+            #"^(please\s+)?(open|launch|go to|use|switch to)\s+(the\s+)?(browser|chrome|google chrome|safari|a browser|the web|the internet)\s*(,|and|then|to|;)?\s*"#,
+            #"^(in|on|using|with)\s+(the\s+)?(browser|chrome|google chrome|safari|the web|the internet)\s*(,|and|then)?\s*"#,
+            #"^(online|on the web|on the internet)\s*,?\s*"#,
+            #"^(search|google|look up|look for|find me|find|search for|search the web for|search google for)\s+(for\s+)?"#,
+            #"^(please\s+)?"#,
+        ]
+        var changed = true
+        while changed {
+            changed = false
+            for pat in leading {
+                if let r = q.range(of: pat, options: [.regularExpression, .caseInsensitive]), !r.isEmpty {
+                    q.removeSubrange(r); q = q.trimmingCharacters(in: .whitespaces); changed = true
+                }
+            }
         }
-        let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? ""
-        return "https://www.google.com/search?hl=en&q=\(encoded)"
+        // Trailing "and click/open the first result", "then …" — instructions for the agent, not the search.
+        let trailing = [
+            #"\s*(,|and|then|;)?\s*(click|open|tap|choose|select)\s+(on\s+)?(the\s+)?(first|top|best|1st)\s+(result|link|one|option|listing)\b.*$"#,
+            #"\s*(,|and|then|;)\s*(click|open|tap|choose|select|book|buy|add)\b.*$"#,
+        ]
+        for pat in trailing {
+            if let r = q.range(of: pat, options: [.regularExpression, .caseInsensitive]) { q.removeSubrange(r) }
+        }
+        q = q.trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        return q.isEmpty ? task : q
     }
 
     /// A well-known site named in the task, if any.
