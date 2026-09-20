@@ -26,6 +26,14 @@ protocol AnswerProviding: AnyObject, Sendable {
 /// Runs a multi-step computer-use task.
 protocol ComputerAgentRunning: AnyObject, Sendable {
     @MainActor func run(task: String, context: QueryContext) -> AgentRunHandle
+    /// Optional: the router calls this as soon as a query routes to a computer
+    /// task, before the user presses ⏎, so the agent can do speculative work
+    /// (classify the task surface, warm connections) off the critical path.
+    @MainActor func prepare(task: String, context: QueryContext)
+}
+
+extension ComputerAgentRunning {
+    @MainActor func prepare(task: String, context: QueryContext) {}
 }
 
 /// Background screen-memory: capture → OCR → digest → Obsidian vault.

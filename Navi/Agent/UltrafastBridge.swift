@@ -217,7 +217,10 @@ enum UltrafastBridge {
         let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
-        FileManager.default.createFile(atPath: logURL.path, contents: Data("{\"event\":\"start\",\"url\":\"\(url)\",\"task\":\(String(data: (try? JSONSerialization.data(withJSONObject: task)) ?? Data("\"\"".utf8), encoding: .utf8) ?? "\"\"")}\n".utf8))
+        // A dictionary, not a bare string: NSJSONSerialization raises an ObjC exception
+        // (uncatchable by `try?`) for a top-level string without `.fragmentsAllowed`.
+        let startLine = (try? JSONSerialization.data(withJSONObject: ["event": "start", "url": url, "task": task])) ?? Data("{\"event\":\"start\"}".utf8)
+        FileManager.default.createFile(atPath: logURL.path, contents: startLine + Data("\n".utf8))
         let logHandle = try? FileHandle(forWritingTo: logURL)
         logHandle?.seekToEndOfFile()
         defer { try? logHandle?.close() }

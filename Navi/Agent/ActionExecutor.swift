@@ -184,6 +184,58 @@ enum TaskSurface {
         var start: Start?          // only when a browser tab was open
     }
 
+    // MARK: Prefetch (router → agent, before ⏎)
+
+    private struct Prefetched: Sendable {
+        var task: String
+        var frontmost: FrontmostProbe.Info
+        var classification: Classification
+        var at: Date
+    }
+    private static let prefetchLock = NSLock()
+    nonisolated(unsafe) private static var prefetched: Prefetched?
+    nonisolated(unsafe) private static var inflight: Task<Void, Never>?
+    /// A prefetched answer older than this is ignored (screen may have changed).
+    static let prefetchTTL: TimeInterval = 90
+
+    /// Classifies `task` in the background and remembers the answer for
+    /// `classifyUsingPrefetch`. Cheap to call repeatedly: identical tasks
+    /// coalesce, and `JevClient` caches identical requests anyway.
+    @MainActor
+    static func prefetch(task: String, jev: JevClient) {
+        prefetchLock.lock()
+        if let p = prefetched, p.task == task, Date().timeIntervalSince(p.at) < prefetchTTL { prefetchLock.unlock(); return }
+        inflight?.cancel()
+        prefetchLock.unlock()
+        let front = FrontmostProbe.current(includeURL: true)
+        let t = Task.detached(priority: .userInitiated) {
+            let cls = await classify(task: task, frontmost: front, jev: jev)
+            guard !Task.isCancelled else { return }
+            prefetchLock.lock()
+            prefetched = Prefetched(task: task, frontmost: front, classification: cls, at: Date())
+            prefetchLock.unlock()
+        }
+        prefetchLock.lock(); inflight = t; prefetchLock.unlock()
+    }
+
+    /// The prefetched classification for `task` when there is a fresh one
+    /// (waiting for an in-flight prefetch if needed); otherwise classifies now.
+    static func classifyUsingPrefetch(task: String, jev: JevClient) async -> (FrontmostProbe.Info, Classification) {
+        prefetchLock.lock()
+        let t = inflight
+        prefetchLock.unlock()
+        if let t { await t.value }
+        prefetchLock.lock()
+        let hit = prefetched
+        prefetchLock.unlock()
+        if let hit, hit.task == task, Date().timeIntervalSince(hit.at) < prefetchTTL {
+            Log.agent.debug("TaskSurface: using prefetched classification (\(hit.classification.surface.rawValue, privacy: .public))")
+            return (hit.frontmost, hit.classification)
+        }
+        let front = await MainActor.run { FrontmostProbe.current(includeURL: true) }
+        return (front, await classify(task: task, frontmost: front, jev: jev))
+    }
+
     /// Never throws; unknown ⇒ `.unsure` so the native driver runs.
     static func classify(task: String, frontmost: FrontmostProbe.Info, jev: JevClient) async -> Classification {
         guard jev.isConfigured else { return Classification(surface: .unsure, confidence: 0, start: nil) }
