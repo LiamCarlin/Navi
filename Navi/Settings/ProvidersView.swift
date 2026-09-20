@@ -8,6 +8,7 @@ struct ProvidersView: View {
 
     var body: some View {
         FormPage(title: "AI Providers", subtitle: "Keys are stored in the macOS Keychain and never leave this Mac except to call the provider.") {
+            KeychainStateBanner()
             Section {
                 APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "System One — intent routing, agent safety gating, memory triage. Direct API.",
                           placeholder: "ts-…", optional: settings.jevProvider == .vercelGateway, test: ProviderTests.jev)
@@ -174,11 +175,6 @@ struct APIKeyRow: View {
             testState = .failed(error.localizedDescription)
         }
     }
-}
-
-extension Notification.Name {
-    /// Posted (object: Keychain.Key.rawValue) after a key is saved or removed.
-    static let naviKeysChanged = Notification.Name("navi.keysChanged")
 }
 
 // MARK: - Connection tests
@@ -355,6 +351,34 @@ struct JevTransportStatus: View {
         case .typesafe: return "Active: TypeSafe API (api.typesafe.ai)"
         case .vercelGateway: return "Active: Vercel AI Gateway (ai-gateway.vercel.sh · typesafe-ai/jev)"
         case nil: return "No Jev key yet — Navi routes with local heuristics until one is added."
+        }
+    }
+}
+
+
+/// Shown while the one-time Keychain read is pending (macOS may be showing an
+/// "Allow" prompt behind other windows) or if it failed.
+struct KeychainStateBanner: View {
+    @State private var state = Keychain.loadState
+    var body: some View {
+        Group {
+            switch state {
+            case .loading, .notLoaded:
+                Label("Reading keys from the Keychain… If macOS asks whether Navi may access “Navi API keys”, click **Always Allow** — this happens once per Navi update.",
+                      systemImage: "key.horizontal").font(.callout)
+            case .failed(let code):
+                Label("Keychain read failed (\(code)). Keys will work for this session only after you re-enter them.", systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange)
+            case .loaded:
+                EmptyView()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .naviKeysChanged)) { _ in state = Keychain.loadState }
+        .task {
+            while state == .loading || state == .notLoaded {
+                try? await Task.sleep(for: .milliseconds(500))
+                state = Keychain.loadState
+            }
         }
     }
 }

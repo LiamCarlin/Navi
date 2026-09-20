@@ -11,9 +11,12 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     MACOSX_DEPLOYMENT_TARGET: "26.0"
-    CODE_SIGN_IDENTITY: "-"
+    # Sign with the local "Apple Development" identity so the code signature is
+    # stable across builds: Keychain ACLs and TCC grants (Accessibility, Screen
+    # Recording) then survive updates. Falls back to ad-hoc ("-") if absent.
+    CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Manual
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "M8ZP994J4T"
     ENABLE_HARDENED_RUNTIME: NO
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     SWIFT_EMIT_LOC_STRINGS: NO

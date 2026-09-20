@@ -180,11 +180,12 @@ final class AgentRun: @unchecked Sendable {
             // Step 0 — task surface. Only worth a Jev call when someone can take browser tasks.
             if let runner = ComputerAgent.browserRunner, jev.isConfigured {
                 let front = await MainActor.run { FrontmostProbe.current(includeURL: true) }
-                let (surface, confidence) = await TaskSurface.classify(task: task, frontmost: front, jev: jev)
+                let cls = await TaskSurface.classify(task: task, frontmost: front, jev: jev)
                 try checkCancelled()
-                if surface == .browser {
-                    handle.emit(.status("Jev · browser task \(Int(confidence * 100))% — using the browser runner"))
-                    await runner(task, TaskSurface.startURL(task: task, frontmost: front), handle)
+                if cls.surface == .browser {
+                    let startURL = TaskSurface.startURL(task: task, frontmost: front, start: cls.start)
+                    handle.emit(.status("Jev · browser task \(Int(cls.confidence * 100))%\(cls.start.map { " · start: \($0.rawValue)" } ?? "") — using the browser runner"))
+                    await runner(task, startURL, handle)
                     return
                 }
             }

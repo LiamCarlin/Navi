@@ -158,17 +158,35 @@ enum UltrafastBridge {
     /// Runs one browser task, streaming events into `handle`. Returns when the
     /// runner exits. Cancellation kills the subprocess.
     static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool) async {
+        let search = searchURL(for: task)
+        let first = startURL ?? search
+        let outcome = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                                    allowEarlyBlockRetry: first != search)
+        if outcome == .blockedBeforeActing {
+            // Jev found nothing useful on the starting page (e.g. an unrelated tab).
+            // Start over from a search-results page for the task.
+            handle.emit(.status("Nothing actionable on \(first) — retrying from a Google search"))
+            _ = await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                              allowEarlyBlockRetry: false)
+        }
+    }
+
+    enum RunOutcome: Equatable { case completed, failed, cancelled, blockedBeforeActing }
+
+    @discardableResult
+    static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
+                        allowEarlyBlockRetry: Bool) async -> RunOutcome {
         guard let vendor = vendorDir, let runner = runnerScript,
               case let python = vendor.appendingPathComponent(".venv/bin/python").path,
               FileManager.default.isExecutableFile(atPath: python) else {
             handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
-            return
+            return .failed
         }
         guard let env = environment() else {
             handle.emit(.failed(NaviError.missingAPIKey(.typesafe).localizedDescription))
-            return
+            return .failed
         }
-        let url = startURL ?? "https://www.google.com/?hl=en"
+        var outcome: RunOutcome = .failed
         let proc = Process()
         // The venv's interpreter directly: no uv resolution, no lockfile check per task.
         proc.executableURL = URL(fileURLWithPath: python)
@@ -185,7 +203,7 @@ enum UltrafastBridge {
         handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)"))
         do { try proc.run() } catch {
             handle.emit(.failed("Could not start runner: \(error.localizedDescription)"))
-            return
+            return .failed
         }
         Log.agent.info("ultrafast runner started pid=\(proc.processIdentifier)")
 
@@ -195,9 +213,18 @@ enum UltrafastBridge {
         var finished = false
         var stepIndex = 0
         var lastDecision = ""
+        // Keep the raw event stream of the last run for debugging (local only).
+        let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
+        FileManager.default.createFile(atPath: logURL.path, contents: Data("{\"event\":\"start\",\"url\":\"\(url)\",\"task\":\(String(data: (try? JSONSerialization.data(withJSONObject: task)) ?? Data("\"\"".utf8), encoding: .utf8) ?? "\"\"")}\n".utf8))
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        logHandle?.seekToEndOfFile()
+        defer { try? logHandle?.close() }
         do {
             for try await line in out.fileHandleForReading.bytes.lines {
                 if Task.isCancelled { break }
+                logHandle?.write(Data((line + "\n").utf8))
                 guard let data = line.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let event = json["event"] as? String else { continue }
@@ -238,12 +265,23 @@ enum UltrafastBridge {
                     let summary = json["summary"] as? String ?? ""
                     let ms = json["elapsed_ms"] as? Int ?? 0
                     switch status {
-                    case "done": handle.emit(.completed(summary: "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
-                    case "cancelled": handle.emit(.cancelled)
-                    default: handle.emit(.failed("Blocked: \(summary)"))
+                    case "done":
+                        outcome = .completed
+                        handle.emit(.completed(summary: "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
+                    case "cancelled":
+                        outcome = .cancelled
+                        handle.emit(.cancelled)
+                    default:
+                        if stepIndex == 0, allowEarlyBlockRetry {
+                            outcome = .blockedBeforeActing
+                        } else {
+                            outcome = .failed
+                            handle.emit(.failed("Blocked: \(summary)"))
+                        }
                     }
                 case "error":
                     finished = true
+                    outcome = .failed
                     handle.emit(.failed(json["message"] as? String ?? "Runner error"))
                 default: break
                 }
@@ -255,19 +293,57 @@ enum UltrafastBridge {
             proc.interrupt()
             try? await Task.sleep(for: .milliseconds(400))
             if proc.isRunning { proc.terminate() }
-            if !finished { handle.emit(.cancelled); finished = true }
+            if !finished { handle.emit(.cancelled); finished = true; outcome = .cancelled }
         }
         proc.waitUntilExit()
         let stderr = await stderrTask.value
         if !finished {
             let tail = stderr.split(separator: "\n").suffix(4).joined(separator: " · ")
             handle.emit(.failed("Runner exited (\(proc.terminationStatus)). \(tail)"))
+            outcome = .failed
         } else if !stderr.isEmpty {
             Log.agent.debug("ultrafast stderr: \(stderr.suffix(600))")
         }
+        return outcome
     }
 
     // MARK: Helpers
+
+    /// A Google search for the task, with launcher chatter stripped
+    /// ("go to browser and find X" → "find X").
+    static func searchURL(for task: String) -> String {
+        var q = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chatter = ["go to the browser and", "go to browser and", "open the browser and", "open browser and", "open chrome and",
+                       "in chrome,", "in chrome", "in the browser,", "in the browser", "use the browser to", "online,", "online",
+                       "on the web,", "on the web", "search the web for", "search for", "search", "look up", "google", "please"]
+        var lower = q.lowercased()
+        for c in chatter where lower.hasPrefix(c + " ") || lower.hasPrefix(c) {
+            q = String(q.dropFirst(c.count)).trimmingCharacters(in: .whitespaces)
+            lower = q.lowercased()
+        }
+        let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? ""
+        return "https://www.google.com/search?hl=en&q=\(encoded)"
+    }
+
+    /// A well-known site named in the task, if any.
+    static func knownSiteURL(in task: String) -> String? {
+        let lower = task.lowercased()
+        let sites: [(String, String)] = [
+            ("google flights", "https://www.google.com/travel/flights?hl=en"), ("flights", "https://www.google.com/travel/flights?hl=en"),
+            ("youtube", "https://www.youtube.com"), ("amazon", "https://www.amazon.com"), ("wikipedia", "https://en.wikipedia.org/wiki/Main_Page"),
+            ("github", "https://github.com"), ("gmail", "https://mail.google.com"), ("google maps", "https://www.google.com/maps"),
+            ("twitter", "https://x.com"), (" x.com", "https://x.com"), ("linkedin", "https://www.linkedin.com"), ("reddit", "https://www.reddit.com"),
+            ("hacker news", "https://news.ycombinator.com"), ("airbnb", "https://www.airbnb.com"), ("booking.com", "https://www.booking.com"),
+            ("google docs", "https://docs.google.com"), ("notion", "https://www.notion.so"), ("chatgpt", "https://chatgpt.com"),
+            ("ticketmaster", "https://www.ticketmaster.com"), ("stubhub", "https://www.stubhub.com"), ("seatgeek", "https://seatgeek.com"),
+            ("eventbrite", "https://www.eventbrite.com"), ("expedia", "https://www.expedia.com"), ("kayak", "https://www.kayak.com"),
+            ("yelp", "https://www.yelp.com"), ("doordash", "https://www.doordash.com"), ("uber eats", "https://www.ubereats.com"),
+            ("netflix", "https://www.netflix.com"), ("spotify", "https://open.spotify.com"), ("ebay", "https://www.ebay.com"),
+            ("craigslist", "https://www.craigslist.org"), ("zillow", "https://www.zillow.com"), ("instagram", "https://www.instagram.com"),
+        ]
+        for (name, url) in sites where lower.contains(name) { return url }
+        return nil
+    }
 
     /// Picks a start URL for a browser task: explicit URL in the task, a known
     /// site name, or the current browser tab when a browser is frontmost.
@@ -275,6 +351,7 @@ enum UltrafastBridge {
         if let m = task.range(of: #"https?://[^\s"'<>]+"#, options: .regularExpression) {
             return String(task[m])
         }
+        if let site = knownSiteURL(in: task) { return site }
         let lower = task.lowercased()
         let sites: [(String, String)] = [
             ("google flights", "https://www.google.com/travel/flights?hl=en"), ("flights", "https://www.google.com/travel/flights?hl=en"),

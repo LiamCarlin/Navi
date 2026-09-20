@@ -13,3 +13,23 @@ enum Log {
     static let memory = Logger(subsystem: subsystem, category: "memory")
     static let settings = Logger(subsystem: subsystem, category: "settings")
 }
+
+#if DEBUG
+/// Debug-only file trace (`~/Library/Logs/Navi/debug.log`) for when `log stream`
+/// isn't practical. Never compiled into Release.
+enum DebugTrace {
+    private static let url: URL = {
+        let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("debug.log")
+    }()
+    private static let queue = DispatchQueue(label: "navi.debugtrace")
+    static func log(_ message: @autoclosure () -> String) {
+        let line = "\(Date()) \(message())\n"
+        queue.async {
+            if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+            else { FileManager.default.createFile(atPath: url.path, contents: Data(line.utf8)) }
+        }
+    }
+}
+#endif

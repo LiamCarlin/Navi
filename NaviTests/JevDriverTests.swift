@@ -402,8 +402,22 @@ struct JevDriverTests {
         #expect(json["frontmost_is_browser"] as? Bool == true)
         #expect(Set(TaskSurface.criteria.keys) == ["browser", "native_app", "unsure"])
         #expect(TaskSurface.startURL(task: "open github.com and star it", frontmost: front) == "https://github.com")
-        #expect(TaskSurface.startURL(task: "archive all", frontmost: front) == "https://mail.google.com/")
+        // Jev's start_from head decides between the open tab and a fresh search.
+        #expect(TaskSurface.startURL(task: "archive all", frontmost: front, start: .currentTab) == "https://mail.google.com/")
+        #expect(TaskSurface.startURL(task: "find the cheapest john summit tickets", frontmost: front, start: .webSearch)
+                == "https://www.google.com/search?hl=en&q=find%20the%20cheapest%20john%20summit%20tickets")
+        // Without a Jev answer: the tab only when the task refers to it or names its domain.
+        #expect(TaskSurface.startURL(task: "archive everything on this page", frontmost: front) == "https://mail.google.com/")
+        #expect(TaskSurface.startURL(task: "find the cheapest tickets", frontmost: front)?.hasPrefix("https://www.google.com/search?") == true)
+        // Named sites and launcher chatter.
+        #expect(TaskSurface.startURL(task: "go to google flights and book zurich to london", frontmost: front) == "https://www.google.com/travel/flights?hl=en")
+        #expect(UltrafastBridge.searchURL(for: "go to browser and find the cheapest john summit tickets in boston")
+                == "https://www.google.com/search?hl=en&q=find%20the%20cheapest%20john%20summit%20tickets%20in%20boston")
+        // No browser open → a search page, never nil (the runner needs somewhere to start).
         let native = FrontmostProbe.Info(bundleID: "com.apple.finder", appName: "Finder", windowTitle: nil, url: nil)
-        #expect(TaskSurface.startURL(task: "make a folder", frontmost: native) == nil)
+        #expect(TaskSurface.startURL(task: "make a folder", frontmost: native)?.hasPrefix("https://www.google.com/search?") == true)
+        // start_from head is only added when a tab is open.
+        #expect(TaskSurface.questions(currentTab: nil)["start_from"] == nil)
+        #expect(TaskSurface.questions(currentTab: ("Inbox", "https://mail.google.com/"))["start_from"] != nil)
     }
 }

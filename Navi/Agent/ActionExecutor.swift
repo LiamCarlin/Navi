@@ -146,9 +146,26 @@ enum TaskSurface {
         Surface.unsure.rawValue: "Cannot tell from the task alone",
     ]
 
+    enum Start: String, Sendable { case currentTab = "current_tab", webSearch = "web_search" }
+
     static let questions: [String: JevClient.Question] = [
         "surface": .choice(instructions: "Where does this task have to be carried out?", criteria: criteria),
     ]
+
+    /// Same call, second head: for browser tasks with no URL/site in the text,
+    /// should the run start on the tab that's open now, or from a web search?
+    static func questions(currentTab: (title: String, url: String)?) -> [String: JevClient.Question] {
+        var q = questions
+        if let t = currentTab {
+            q["start_from"] = .choice(
+                instructions: "The task will run in the browser. Should it start on the tab that is open right now, or from a fresh web search for the task?",
+                criteria: [
+                    Start.currentTab.rawValue: "The task is about, or continues work on, the page currently open: “\(t.title)” (\(t.url))",
+                    Start.webSearch.rawValue: "The task needs to find something elsewhere on the web; the open page is unrelated",
+                ])
+        }
+        return q
+    }
 
     static func formatState(task: String, frontmost: FrontmostProbe.Info) -> String {
         JevDriver.serialize([
@@ -156,26 +173,54 @@ enum TaskSurface {
             "frontmost_app": frontmost.appName ?? frontmost.bundleID ?? "unknown",
             "bundle": frontmost.bundleID ?? "",
             "window_title": frontmost.windowTitle ?? "",
+            "url": frontmost.url ?? "",
             "frontmost_is_browser": frontmost.bundleID.map(AXSnapshotter.isBrowser) ?? false,
         ])
     }
 
+    struct Classification: Sendable {
+        var surface: Surface
+        var confidence: Double
+        var start: Start?          // only when a browser tab was open
+    }
+
     /// Never throws; unknown ⇒ `.unsure` so the native driver runs.
-    static func classify(task: String, frontmost: FrontmostProbe.Info, jev: JevClient) async -> (Surface, Double) {
-        guard jev.isConfigured else { return (.unsure, 0) }
+    static func classify(task: String, frontmost: FrontmostProbe.Info, jev: JevClient) async -> Classification {
+        guard jev.isConfigured else { return Classification(surface: .unsure, confidence: 0, start: nil) }
+        var tab: (String, String)? = nil
+        if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
+            tab = (frontmost.windowTitle ?? "", u)
+        }
         do {
-            let r = try await jev.ask(state: formatState(task: task, frontmost: frontmost), questions: questions)
-            guard let a = r["surface"], let c = a.choice, let s = Surface(rawValue: c) else { return (.unsure, 0) }
-            return (s, a.confidence)
+            let r = try await jev.ask(state: formatState(task: task, frontmost: frontmost), questions: questions(currentTab: tab))
+            guard let a = r["surface"], let c = a.choice, let s = Surface(rawValue: c) else {
+                return Classification(surface: .unsure, confidence: 0, start: nil)
+            }
+            let start = r["start_from"]?.choice.flatMap(Start.init(rawValue:))
+            return Classification(surface: s, confidence: a.confidence, start: start)
         } catch {
-            return (.unsure, 0)
+            return Classification(surface: .unsure, confidence: 0, start: nil)
         }
     }
 
-    /// First URL in the task, else the current browser tab, else nil.
-    static func startURL(task: String, frontmost: FrontmostProbe.Info) -> String? {
+    /// Where a browser task should start:
+    ///   1. a URL written in the task;
+    ///   2. a well-known site named in the task ("google flights", "amazon", …);
+    ///   3. the current tab when Jev's `start_from` head chose it (or, without a
+    ///      Jev answer, when the task refers to "this page"/"here" or names the tab's domain);
+    ///   4. otherwise a Google search for the task, so Jev's first observation is a
+    ///      results page full of relevant links rather than an unrelated tab.
+    static func startURL(task: String, frontmost: FrontmostProbe.Info, start: Start? = nil) -> String? {
         if let u = TextCandidates.urls(in: task).first { return u.contains("://") ? u : "https://" + u }
-        if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, !u.isEmpty { return u }
-        return nil
+        if let site = UltrafastBridge.knownSiteURL(in: task) { return site }
+        let lower = task.lowercased()
+        if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
+            if let start { return start == .currentTab ? u : UltrafastBridge.searchURL(for: task) }
+            let refersToTab = ["this page", "this tab", "current page", "current tab", "here", "on this site", "this site"].contains { lower.contains($0) }
+            let host = URL(string: u)?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
+            let namesHost = !host.isEmpty && !host.hasPrefix("localhost") && lower.contains(host.split(separator: ".").first.map(String.init) ?? "\u{0}")
+            if refersToTab || namesHost { return u }
+        }
+        return UltrafastBridge.searchURL(for: task)
     }
 }

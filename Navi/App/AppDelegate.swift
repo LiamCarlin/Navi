@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         NSApp.setActivationPolicy(.accessory)
+        Keychain.preload()   // background; UI never blocks on the Keychain ACL prompt
 
         services = NaviServices.bootstrap()
         panelController = PanelController(services: services)

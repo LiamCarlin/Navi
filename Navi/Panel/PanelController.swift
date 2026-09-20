@@ -48,6 +48,10 @@ final class PanelController {
     func toggle() { isVisible ? hide() : show() }
 
     func show(prefill: String? = nil, submit: Bool = false) {
+        Log.panel.info("show(prefill: \(prefill ?? "-", privacy: .public), submit: \(submit))")
+        #if DEBUG
+        DebugTrace.log("show prefill=\(prefill ?? "-") submit=\(submit)")
+        #endif
         previousApp = NSWorkspace.shared.frontmostApplication
         let ctx = ContextProbe.current(recent: [])
         viewModel.willShow(prefill: prefill, context: ctx)
@@ -62,15 +66,17 @@ final class PanelController {
         }
         installMonitors()
         if submit, let prefill, !prefill.isEmpty {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(350))
-                viewModel.performSelected()
-            }
+            // Perform once Jev has routed (≈0.5 s), not on a fixed timer.
+            viewModel.submitAfterRouting = true
         }
     }
 
     func hide() {
         guard panel.isVisible else { return }
+        Log.panel.info("hide()")
+        #if DEBUG
+        DebugTrace.log("hide() isKey=\(panel.isKeyWindow) active=\(NSApp.isActive)")
+        #endif
         removeMonitors()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.1
@@ -194,6 +200,9 @@ final class NaviPanel: NSPanel {
 
     override func resignKey() {
         super.resignKey()
+        #if DEBUG
+        DebugTrace.log("panel resignKey; key window now: \(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil")")
+        #endif
         onResignKey?()
     }
 }

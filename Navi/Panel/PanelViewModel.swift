@@ -38,6 +38,8 @@ final class PanelViewModel: ObservableObject {
     /// Called by the root view whenever its rendered height changes so the
     /// NSPanel can resize/re-center. Set by `PanelController`.
     var onContentHeightChange: ((CGFloat) -> Void)?
+    /// Set by `navi://run?q=…`: perform the top row as soon as routing finishes.
+    var submitAfterRouting = false
 
     enum Mode: Equatable { case results, answer, agent }
 
@@ -130,6 +132,15 @@ final class PanelViewModel: ObservableObject {
             self.results = Self.merge(instant: self.services.router.instantResults(for: q, context: self.context), routed: full, decision: d)
             self.selectedIndex = min(self.selectedIndex, max(0, self.results.count - 1))
             self.isRouting = false
+            if self.submitAfterRouting {
+                Log.panel.info("submitAfterRouting → \(d.intent.rawValue, privacy: .public), \(self.results.count) rows")
+                #if DEBUG
+                DebugTrace.log("submitAfterRouting → \(d.intent.rawValue) \(self.results.count) rows")
+                #endif
+                self.submitAfterRouting = false
+                self.selectedIndex = 0
+                self.performSelected()
+            }
         }
     }
 
@@ -168,6 +179,10 @@ final class PanelViewModel: ObservableObject {
     }
 
     func perform(_ result: SearchResult) {
+        Log.panel.info("perform \(result.kind.rawValue, privacy: .public): \(result.title, privacy: .public)")
+        #if DEBUG
+        DebugTrace.log("perform \(result.kind.rawValue): \(result.title)")
+        #endif
         let q = query
         if !q.isEmpty { recentQueries = Array(([q] + recentQueries).prefix(20)) }
         Task { @MainActor in

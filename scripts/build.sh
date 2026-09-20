@@ -8,7 +8,6 @@ mkdir -p "$DD"
 xcodegen generate --quiet
 xcodebuild -project Navi.xcodeproj -scheme Navi -configuration "$CONFIG" \
   -derivedDataPath "$DD" -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
-  build 2>&1 | tee "$DD.build.log" | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+    build 2>&1 | tee "$DD.build.log" | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " || true
 grep -q "BUILD SUCCEEDED" "$DD.build.log"
 echo "App: $DD/Build/Products/$CONFIG/Navi.app"
