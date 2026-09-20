@@ -46,7 +46,7 @@ computer-use agent after every step (`is_irreversible`, `task_complete`,
 
 - **Launcher** — apps, files, URLs, web search, calculator / unit / currency / time-zone math, system commands (sleep, lock, dark mode, Wi-Fi, empty trash).
 - **Answers** — Claude streams into the panel; the frontmost app, window title and clipboard are passed as context.
-- **Do it for me** — Claude computer use (`computer_toolset_20260801`) drives the Mac through ScreenCaptureKit + CGEvent/Accessibility; Jev gates risky steps; you choose *ask always*, *ask for risky only*, or *autonomous*.
+- **Do it for me** — Claude plans the task into single-surface steps (browser tab / one app); Jev drives each step one decision at a time from the Accessibility tree (or the DOM via jev-ultrafast in Chrome), ~200 ms per step; when Jev flails Claude diagnoses once and coaches it, and only takes the wheel if Jev says it needs vision. Jev gates risky steps; you choose *ask always*, *ask for risky only*, or *autonomous*. ⌘Space reopens a running task; the floating pill has Stop/Show.
 - **Screen Memory** — every 30 s (configurable) a frame is captured, OCR'd on-device with Vision, triaged by Jev, and — only if important and not sensitive — digested by a cheap vision model into an Obsidian vault of wiki-linked daily notes. Ask "what was I doing yesterday?" from the panel.
 - **The Navi app** — a proper macOS window (menu bar ✦ → *Navi App & Settings…*): Home with green/amber/red status cards and one-click fixes, hotkey recorder, API keys in Keychain with per-provider connection tests, permissions with live status, memory controls, agent approval mode, usage and cost estimates.
 
