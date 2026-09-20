@@ -277,7 +277,11 @@ enum UltrafastBridge {
                     case "WAIT": desc = "Wait for the page"
                     default: desc = "\(kind.capitalized) \(action)"
                     }
-                    if let changed = json["page_changed"] as? Bool, !changed, kind != "WAIT" { desc += " (no change)" }
+                    if let note = json["note"] as? String, !note.isEmpty {
+                        desc += " (\(note))"      // e.g. "could not be clicked (covered or off-screen); no longer offered"
+                    } else if let changed = json["page_changed"] as? Bool, !changed, kind != "WAIT" {
+                        desc += " (no change)"
+                    }
                     handle.emit(.step(index: stepIndex, description: desc))
                 case "screenshot":
                     if let b64 = json["jpeg_base64"] as? String, let d = Data(base64Encoded: b64), let img = NSImage(data: d) {

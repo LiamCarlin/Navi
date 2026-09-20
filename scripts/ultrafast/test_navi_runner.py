@@ -118,3 +118,64 @@ assert seen["body"]["state"]["guidance"] == coach.guidance
 assert seen["body"]["questions"]["operation"]["instructions"]["guidance"] == coach.guidance
 assert seen["body"]["questions"]["operation"]["instructions"]["goal"] == "g"
 print("coach OK")
+
+# --- rejected clicks (adaptation 8) ---
+def fake_state(node_ids, status="ready", url="https://a.example/"):
+    return {"status": status, "started_at": None, "decisions": [], "history": [],
+            "page": {"url": url, "page_key": [1234.5, url], "actions":
+                     [{"id": f"e{n}", "node": n, "kind": "click", "label": f"Link {n}"} for n in node_ids]}}
+rc = nr.RejectedClicks()
+st = fake_state([1, 2, 3])
+def rejected_tick(st, choice):
+    """What upstream's tick leaves behind when act() raised StalePage: one more decision, no step."""
+    d0, h0 = len(st["decisions"]), len(st["history"])
+    st["decisions"].append({"choice": choice, "operation": "CLICK", "target": choice[1:], "fingerprint": "f"})
+    return rc.after_tick(st, d0, h0)
+assert rejected_tick(st, "e2") is None                     # first rejection: just counted
+assert rc.filter(st["page"]) is st["page"]                 # nothing hidden yet
+assert rejected_tick(st, "e2") == "Link 2"                 # second: failed step + hidden
+assert st["history"][-1]["page_changed"] is False and "could not be clicked" in st["history"][-1]["note"]
+assert [a["id"] for a in rc.filter(st["page"])["actions"]] == ["e1", "e3"]
+assert st["status"] == "ready"
+# A real step (history grew) is never a rejection.
+d0, h0 = len(st["decisions"]), len(st["history"])
+st["decisions"].append({"choice": "e1", "operation": "CLICK", "target": "1", "fingerprint": "f"})
+st["history"].append({"step": 2, "action": "Link 1", "kind": "click", "page_changed": True})
+assert rc.after_tick(st, d0, h0) is None
+# DONE/BLOCKED re-asked after a stale page is not a rejection either.
+d0, h0 = len(st["decisions"]), len(st["history"])
+st["decisions"].append({"choice": "DONE", "operation": "DONE", "target": None, "fingerprint": "f"})
+assert rc.after_tick(st, d0, h0) is None
+# Three failed steps in a row → upstream's stuck rule fires (→ coach).
+st["history"][-1]["page_changed"] = False
+rejected_tick(st, "e3"); assert rejected_tick(st, "e3") == "Link 3"
+assert st["status"] == "blocked"
+# A new document (different page_key[0]) starts clean: node 2 there is a different element.
+other = {"url": "https://b.example/", "page_key": [999.0, "https://b.example/"],
+         "actions": [{"id": "e2", "node": 2, "kind": "click", "label": "Other 2"}]}
+assert rc.filter(other) is other
+print("rejected clicks OK")
+
+# --- canvas (adaptation 9) ---
+js = nr.patched_snapshot_js()
+assert "summary,canvas," in js and "if (e.tagName==='CANVAS') return 'button';" in js and "Game canvas " in js
+assert "r.width<120 || r.height<120" in js
+cs = {"status": "blocked", "history": [
+    {"step": 1, "action": "Game canvas 800×600 (click to interact / play)", "kind": "click", "choice": "e1", "page_changed": False},
+    {"step": 2, "action": "Game canvas 800×600 (click to interact / play)", "kind": "click", "choice": "e1", "page_changed": False},
+    {"step": 3, "action": "Game canvas 800×600 (click to interact / play)", "kind": "click", "choice": "e1", "page_changed": False}],
+    "page": {"actions": [{"id": "e1", "node": 1, "kind": "click", "canvas": True, "label": "Game canvas 800×600 (click to interact / play)"}]}}
+nr.soften_canvas_step(cs, 2)
+assert cs["history"][-1]["page_changed"] is None and cs["status"] == "ready"
+assert nr.Coach.flailing(cs["history"]) and "3 times in a row" in nr.Coach.flailing(cs["history"])  # repetition still reaches the coach
+# An ordinary link that changed nothing is left alone.
+ls = {"status": "ready", "history": [{"step": 1, "action": "Link", "kind": "click", "choice": "e9", "page_changed": False}],
+      "page": {"actions": [{"id": "e9", "node": 9, "kind": "click", "label": "Link"}]}}
+nr.soften_canvas_step(ls, 0)
+assert ls["history"][-1]["page_changed"] is False
+print("canvas OK")
+
+# --- click point (adaptation 7) ---
+assert nr.browser_module.browser_operation is nr.browser_operation_navi
+assert "getClientRects" in nr.CLICK_POINT_JS and "e.contains(t)" in nr.CLICK_POINT_JS
+print("click point OK")

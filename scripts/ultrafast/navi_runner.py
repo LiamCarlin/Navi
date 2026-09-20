@@ -28,6 +28,22 @@ Speed adaptations (measured on a Boston → us-west-2 path):
   5. Speculative TYPE_TEXT: when a page has one obvious text field, ask the
      text helper for its value *while* Jev is deciding, so a TYPE_TEXT step
      costs one round trip instead of two.
+
+Reliability adaptations (from failed runs, see git log):
+  7. Click where the element actually is: upstream clicks the centre of the
+     bounding box and refuses if that point hit-tests to something else. An
+     inline link that wraps (every Google result: site name line + title line)
+     has its bounding-box centre in the gap between the lines, so the click was
+     rejected every time. Try each line box first, then the centre, then the
+     corners.
+  8. A rejected click is not silent: upstream swallows the rejection and asks
+     Jev again from the identical page — 57 times in one run. After two
+     rejections the element becomes a failed step Jev can see and is dropped
+     from the table for that document; three failed steps reach the coach.
+  9. <canvas> is a click target: games and drawing apps had nothing in the
+     table, so "play" could only flail on the nav links. A canvas click's
+     effect is not visible in the DOM, so it is recorded as page_changed=null
+     rather than a no-change failure.
 """
 
 import argparse
@@ -42,8 +58,11 @@ from concurrent.futures import Future
 
 import httpx
 
+from browser_harness.helpers import cdp
+
 from jev_ultrafast import Agent, model as jev_model
-from jev_ultrafast.browser import Browser
+from jev_ultrafast import browser as browser_module
+from jev_ultrafast.browser import Browser, StalePage
 from jev_ultrafast.model import field_context
 from jev_ultrafast.questions import TEXT_VALUE
 
@@ -417,6 +436,177 @@ class Coach:
         jev_model.post_json = post_json
 
 
+# --- Adaptation 7: click where the element actually is ----------------------
+
+# Same visibility/enabled checks as upstream's act(); differs only in which point is
+# clicked: each line box (largest first), the bounding-box centre, then points just
+# inside the corners. The first point whose hit-test lands inside the element wins,
+# so a covered control is still refused exactly as upstream refuses it.
+CLICK_POINT_JS = """(action => {
+  const e=window.__jevFast?.nodes.get(action.node);
+  if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
+      !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
+  if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
+  const b=e.getBoundingClientRect();
+  if (!b.width || !b.height) return null;
+  const rects=[...e.getClientRects()].filter(r=>r.width>0 && r.height>0)
+    .sort((p,q)=>q.width*q.height-p.width*p.height);
+  const points=rects.map(r=>[r.x+r.width/2,r.y+r.height/2]);
+  points.push([b.x+b.width/2,b.y+b.height/2]);
+  const dx=Math.min(8,b.width/4), dy=Math.min(8,b.height/4);
+  points.push([b.x+dx,b.y+dy],[b.right-dx,b.y+dy],[b.x+dx,b.bottom-dy],[b.right-dx,b.bottom-dy]);
+  for (const [x,y] of points) {
+    if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const t=document.elementFromPoint(x,y);
+    if (t && e.contains(t)) return {x,y};
+  }
+  return null;
+})"""
+
+_upstream_browser_operation = browser_module.browser_operation
+
+
+def browser_operation_navi(request):
+    """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS."""
+    if request["operation"] != "act" or request["action"]["kind"] not in {"click", "fill"}:
+        return _upstream_browser_operation(request)
+    action, session = request["action"], request["session"]
+    if type(action["node"]) is not int:
+        raise ValueError("Invalid observed node")
+
+    def call(method, **params):
+        return cdp(method, session_id=session, **params)
+
+    result = call("Runtime.evaluate", expression=CLICK_POINT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+    if result.get("exceptionDetails"):
+        raise StalePage("Document changed during evaluation")
+    target = result.get("result", {}).get("value")
+    if target is None:
+        raise StalePage("Target changed or is covered. Observe again.")
+    x, y = target["x"], target["y"]
+    for event in ("mousePressed", "mouseReleased"):
+        call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
+    if action["kind"] == "fill":
+        modifiers = 4 if sys.platform == "darwin" else 2
+        call("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=modifiers, commands=["selectAll"])
+        call("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", modifiers=modifiers)
+        call("Input.insertText", text=request["text"])
+    return {"executed": action["id"]}
+
+
+# --- Adaptation 8: a rejected click is a visible failure ----------------------
+
+REJECTIONS_BEFORE_EXCLUDING = 2
+
+
+class RejectedClicks:
+    """Upstream's `tick` catches the StalePage a rejected click raises, re-observes
+    and asks Jev again — from the same page, so Jev picks the same element again,
+    indefinitely. Track rejections per (document, node): after two, append a
+    failed step to the history (Jev's `recent_actions` then shows it changed
+    nothing) and hide the element from every later decision on that document."""
+
+    def __init__(self):
+        self.rejections = {}
+        self.excluded = set()
+
+    @staticmethod
+    def document(page):
+        return (page.get("page_key") or [None])[0]
+
+    def filter(self, page):
+        """The page Jev decides from: without the elements it cannot click here."""
+        if not self.excluded:
+            return page
+        doc = self.document(page)
+        actions = [a for a in page["actions"] if (doc, a.get("node")) not in self.excluded]
+        return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+    def after_tick(self, state, decisions_before, history_before):
+        """Returns the label of an element just given up on, else None."""
+        decisions, history = state["decisions"], state["history"]
+        if len(decisions) != decisions_before + 1 or len(history) != history_before or state["status"] != "ready":
+            return None
+        decision = decisions[-1]
+        if decision["operation"] not in {"CLICK", "TYPE_TEXT", "SELECT"}:
+            return None
+        page = state["page"]
+        action = next((a for a in page["actions"] if a["id"] == decision["choice"]), None)
+        if action is None or action.get("kind") not in {"click", "fill", "select"}:
+            return None
+        key = (self.document(page), action["node"])
+        self.rejections[key] = self.rejections.get(key, 0) + 1
+        if self.rejections[key] < REJECTIONS_BEFORE_EXCLUDING:
+            return None
+        self.excluded.add(key)
+        elapsed = round((time.perf_counter() - state["started_at"]) * 1000) if state.get("started_at") else 0
+        history.append({
+            "step": len(history) + 1, "action": action["label"], "kind": action["kind"], "choice": action["id"],
+            "text": None, "page_changed": False, "url": page["url"], "elapsed_ms": elapsed,
+            "note": "could not be clicked (covered or off-screen); no longer offered",
+        })
+        # Upstream's stuck rule, re-evaluated with the failed step included.
+        last = history[-3:]
+        if len(last) == 3 and all(h.get("page_changed") is False and h.get("kind") != "wait" for h in last):
+            state["status"] = "blocked"
+        return action["label"]
+
+
+# --- Adaptation 9: <canvas> is a click target --------------------------------
+
+SNAPSHOT_PATCHES = [
+    # Observe canvases along with the interactive elements.
+    ("const selector='a[href],button,input,textarea,select,summary,[contenteditable=\"true\"],'",
+     "const selector='a[href],button,input,textarea,select,summary,canvas,[contenteditable=\"true\"],'"),
+    # A canvas has no ARIA role; treat it as a button so it gets the CLICK operation.
+    ("if (roles.includes(explicit)) return explicit;",
+     "if (roles.includes(explicit)) return explicit;\n    if (e.tagName==='CANVAS') return 'button';"),
+    # Skip decorative canvases (sparklines, icons); label the rest by size and purpose.
+    ("const base={node:identity(e),role:rname,label:name(e)||rname,",
+     "if (e.tagName==='CANVAS' && (r.width<120 || r.height<120)) continue;\n"
+     "    const base={node:identity(e),role:rname,canvas:e.tagName==='CANVAS',"
+     "label:e.tagName==='CANVAS' ? (e.getAttribute('aria-label')||'Game canvas '+Math.round(r.width)+'×'+Math.round(r.height)+' (click to interact / play)') : name(e)||rname,"),
+]
+
+
+_upstream_snapshot_js = browser_module.READ_STATE
+
+
+def patched_snapshot_js():
+    js = _upstream_snapshot_js
+    for old, new in SNAPSHOT_PATCHES:
+        if old not in js:
+            raise RuntimeError("upstream snapshot.js changed; the canvas patch in navi_runner.py needs updating")
+        js = js.replace(old, new)
+    return js
+
+
+def is_canvas_action(page, entry):
+    action = next((a for a in page.get("actions", []) if a["id"] == entry.get("choice")), None)
+    if action is not None:
+        return bool(action.get("canvas"))
+    return str(entry.get("action", "")).startswith("Game canvas ")
+
+
+def soften_canvas_step(state, history_before):
+    """A click on a canvas changes pixels, not the DOM. Upstream would count it
+    as a no-change action and stop after three; record the effect as unknown
+    (null) instead so the run can keep playing until Jev says DONE or the
+    coach is consulted for repeating itself."""
+    history = state["history"]
+    if len(history) != history_before + 1:
+        return
+    entry = history[-1]
+    if entry.get("kind") != "click" or entry.get("page_changed") is not False or not is_canvas_action(state["page"], entry):
+        return
+    entry["page_changed"] = None
+    entry["note"] = "canvas: effect is not visible in the DOM"
+    if state["status"] == "blocked":
+        last = history[-3:]
+        if not (len(last) == 3 and all(h.get("page_changed") is False and h.get("kind") != "wait" for h in last)):
+            state["status"] = "ready"
+
+
 def install_adaptations():
     if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         jev_model.post_json = post_json_vercel
@@ -430,14 +620,20 @@ def install_adaptations():
     # agent.py imported the names directly; patch it there too.
     agent_module.field_text = speculative
     agent_module.Browser = FastBrowser
+    browser_module.browser_operation = browser_operation_navi
+    js = patched_snapshot_js()
+    browser_module.READ_STATE = js
+    browser_module.MARKER = f"(() => {{ const state={js}; return state?.marker ?? null; }})()"
+    rejected = RejectedClicks()
     original_choose = agent_module.choose
 
     def choose(page, goal, history):
+        page = rejected.filter(page)
         speculative.speculate(goal, page, history)
         return original_choose(page, goal, history)
 
     agent_module.choose = choose
-    return speculative
+    return speculative, rejected
 
 
 # --- Run --------------------------------------------------------------------
@@ -465,7 +661,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()
 
-    speculative = install_adaptations()
+    speculative, rejected = install_adaptations()
     coach = Coach()
     coach.install()
     warm_connections()
@@ -523,7 +719,13 @@ def main():
 
         def run_until_stop():
             while agent.state["status"] not in {"done", "blocked"}:
-                yield agent.command("tick")
+                decisions_before, history_before = len(agent.state["decisions"]), len(agent.state["history"])
+                agent.command("tick")
+                soften_canvas_step(agent.state, history_before)
+                given_up = rejected.after_tick(agent.state, decisions_before, history_before)
+                if given_up:
+                    emit("status", message=f"‘{given_up[:60]}’ can't be clicked here — telling Jev and moving on")
+                yield agent.snapshot()
 
         for state in run_until_stop():
             for d in state["decisions"][seen_decisions:]:
@@ -550,6 +752,7 @@ def main():
                     elapsed_ms=h.get("elapsed_ms"),
                     text_helper=h.get("text_helper"),
                     text_latency_ms=h.get("text_latency_ms"),
+                    note=h.get("note"),
                 )
             seen_steps = len(state["history"])
             if args.screenshots and state["page"].get("screenshot"):
