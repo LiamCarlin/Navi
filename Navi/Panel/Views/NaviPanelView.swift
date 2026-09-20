@@ -5,9 +5,12 @@ import SwiftUI
 /// answer or a live agent run below it; a status/key-hint footer whenever
 /// there is content.
 ///
-/// This view is a pure renderer of `PanelViewModel`. It reports its rendered
-/// height through `vm.onContentHeightChange` so `PanelController` can size and
-/// re-anchor the transparent `NSPanel` that hosts it.
+/// This view is a pure renderer of `PanelViewModel`. The hosting `NSPanel` is
+/// a fixed-size transparent window (see `PanelController`); the card sits at
+/// its top and animates its own height, so it only ever grows downwards and
+/// the search bar never moves. The rendered height is reported through
+/// `vm.onContentHeightChange` only so the controller can tell clicks on the
+/// card from clicks on the empty window below it.
 struct NaviPanelView: View {
     @EnvironmentObject private var vm: PanelViewModel
     @EnvironmentObject private var settings: NaviSettings
@@ -50,7 +53,7 @@ struct NaviPanelView: View {
         .background(CardShadow())
         .overlay(innerHighlight)
         .overlay(alignment: .bottom) { toastOverlay }
-        .animation(PanelStyle.spring, value: layoutKey)
+        .animation(PanelStyle.resize, value: layoutKey)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
             vm.onContentHeightChange?(h)
         }
@@ -99,7 +102,9 @@ struct NaviPanelView: View {
     }
 
     /// Anything that changes the card's height. Animating on this key gives
-    /// the whole card a single, coherent spring instead of per-view jitter.
+    /// the whole card a single, coherent resize instead of per-view jitter;
+    /// a key change mid-flight retargets the running spring rather than
+    /// restarting it, so rapid typing stays smooth.
     private var layoutKey: PanelLayoutKey {
         PanelLayoutKey(mode: vm.mode,
                        hasContent: vm.hasContent,

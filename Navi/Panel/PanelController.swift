@@ -2,8 +2,16 @@ import AppKit
 import SwiftUI
 
 /// Floating, non-activating Spotlight-style panel. Centered on the screen with
-/// the mouse, sized 680×(dynamic). Dismisses on ⎋, click-outside, or after an
-/// action. The SwiftUI content lives in `Panel/Views/NaviPanelView.swift`.
+/// the mouse, 680 pt wide. Dismisses on ⎋, click-outside, or after an action.
+/// The SwiftUI content lives in `Panel/Views/NaviPanelView.swift`.
+///
+/// The window itself never resizes while the panel is open: it is a fixed,
+/// fully transparent rectangle whose top edge sits at ~22 % of the screen and
+/// which reaches down to the bottom of the visible frame. The glass card is
+/// top-aligned inside it and animates its own height, so it can only ever
+/// grow downwards and the search bar never moves. (Resizing an `NSWindow` on
+/// every frame of a SwiftUI animation is not frame-synced with the content
+/// and produced visible jumps of the top edge.)
 @MainActor
 final class PanelController {
     let panel: NaviPanel
@@ -24,24 +32,28 @@ final class PanelController {
         viewModel = PanelViewModel(services: services)
         panel = NaviPanel(contentRect: NSRect(x: 0, y: 0,
                                              width: Self.width + Self.shadowInsets.left + Self.shadowInsets.right,
-                                             height: 64 + Self.shadowInsets.top + Self.shadowInsets.bottom))
+                                             height: PanelStyle.barHeight + Self.shadowInsets.top + Self.shadowInsets.bottom))
         let root = NaviPanelView()
             .environmentObject(viewModel)
             .environmentObject(NaviSettings.shared)
         let host = NSHostingView(rootView: root)
-        // The SwiftUI root measures its own height (`onContentHeightChange`) and
-        // we size the panel from that, so AppKit must not also fight over the
-        // frame via intrinsic-size constraints (which would grow it upwards).
+        // The window has a fixed frame (see `position()`); the card sizes
+        // itself inside it, so AppKit must not impose intrinsic-size
+        // constraints (which would grow the window upwards).
         host.sizingOptions = []
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         viewModel.onDismiss = { [weak self] in self?.hide() }
-        viewModel.onContentHeightChange = { [weak self] h in self?.position(contentHeight: h) }
+        viewModel.onContentHeightChange = { [weak self] h in self?.contentHeight = max(PanelStyle.barHeight, h) }
         panel.onResignKey = { [weak self] in self?.hide() }
+        panel.cardRect = { [weak self] in self?.cardRectInWindow() ?? .zero }
+        panel.onClickOutsideCard = { [weak self] in self?.hide() }
     }
 
     /// Last height reported by the SwiftUI root (the glass card), in points.
-    private var contentHeight: CGFloat = 64
+    /// Only used to tell clicks on the card from clicks on the transparent
+    /// part of the window below it.
+    private var contentHeight: CGFloat = PanelStyle.barHeight
 
     var isVisible: Bool { panel.isVisible }
 
@@ -106,30 +118,30 @@ final class PanelController {
         }
     }
 
-    /// Re-center after content height changes (results/answer expand).
+    /// Places the fixed-size window on the screen under the mouse: 680 pt
+    /// wide (plus shadow margins), its top edge at ~22 % from the top of the
+    /// screen, reaching down to the bottom of the visible frame. Called once
+    /// per `show()`; never while the panel is open.
     func position() {
-        position(contentHeight: contentHeight)
-    }
-
-    /// Sizes the panel to `contentHeight` (as measured by the SwiftUI root) and
-    /// keeps its top edge pinned at ~22 % from the top of the screen under the
-    /// mouse. Called on every frame of the card's spring animation, so it must
-    /// stay cheap and must not animate on its own.
-    func position(contentHeight newHeight: CGFloat) {
-        contentHeight = max(64, newHeight.rounded(.up))
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
         let vis = screen.visibleFrame
         let ins = Self.shadowInsets
-        let cardH = min(contentHeight, vis.height * 0.78)
         let w = Self.width + ins.left + ins.right
-        let h = cardH + ins.top + ins.bottom
         let x = (vis.midX - Self.width / 2 - ins.left).rounded()
         // Spotlight sits at ~ 1/5 from the top (that is where the card's top edge goes).
         let cardTop = (vis.maxY - vis.height * 0.22).rounded()
-        let y = cardTop + ins.top - h
-        let frame = NSRect(x: x, y: max(vis.minY - ins.bottom, y), width: w, height: h)
+        let y = vis.minY
+        let frame = NSRect(x: x, y: y, width: w, height: cardTop + ins.top - y)
         guard frame != panel.frame else { return }
         panel.setFrame(frame, display: true, animate: false)
+    }
+
+    /// The glass card's rectangle in window coordinates (origin bottom-left).
+    private func cardRectInWindow() -> NSRect {
+        let ins = Self.shadowInsets
+        let h = panel.frame.height
+        let cardH = min(contentHeight, h - ins.top - ins.bottom)
+        return NSRect(x: ins.left, y: h - ins.top - cardH, width: Self.width, height: cardH)
     }
 
     private func installMonitors() {
@@ -176,6 +188,12 @@ final class PanelController {
 /// never becomes the main window and never shows in the Dock/⌘Tab.
 final class NaviPanel: NSPanel {
     var onResignKey: (() -> Void)?
+    /// The glass card's frame in window coordinates; everything else in the
+    /// window is transparent.
+    var cardRect: (() -> NSRect)?
+    /// A mouse-down landed on the transparent part of the window (below or
+    /// beside the card). Treated like a click outside the panel.
+    var onClickOutsideCard: (() -> Void)?
 
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
@@ -197,6 +215,18 @@ final class NaviPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            if let rect = cardRect?(), !rect.contains(event.locationInWindow) {
+                onClickOutsideCard?()
+                return
+            }
+        default: break
+        }
+        super.sendEvent(event)
+    }
 
     override func resignKey() {
         super.resignKey()
