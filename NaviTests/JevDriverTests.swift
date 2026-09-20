@@ -292,6 +292,32 @@ struct JevDriverTests {
         #expect(TextCandidates.domain(of: "https://x.y.com/a/b") == "x.y.com")
     }
 
+    // MARK: FieldText.obviousField (speculative helper target)
+
+    @Test func obviousFieldIsTheOnlyEmptyTextField() {
+        let snap = AXSnapshot(elements: [
+            Self.el("e1", "AXButton", "Search"),
+            Self.el("e2", "AXTextField", "Where from?"),
+        ])
+        #expect(FieldText.obviousField(in: snap)?.id == "e2")
+    }
+
+    @Test func obviousFieldPrefersTheFocusedOne() {
+        var from = Self.el("e1", "AXTextField", "Where from?")
+        var to = Self.el("e2", "AXTextField", "Where to?")
+        #expect(FieldText.obviousField(in: AXSnapshot(elements: [from, to])) == nil)   // two candidates: don't guess
+        to.isFocused = true
+        #expect(FieldText.obviousField(in: AXSnapshot(elements: [from, to]))?.id == "e2")
+        from.value = "Zurich"; to.isFocused = false
+        #expect(FieldText.obviousField(in: AXSnapshot(elements: [from, to]))?.id == "e2")   // filled fields drop out
+    }
+
+    @Test func obviousFieldNeverPicksSecureOrFilledFields() {
+        let secure = AXElement(id: "e1", role: "AXSecureTextField", label: "Password", frame: CGRect(x: 0, y: 0, width: 100, height: 20), isFocused: true)
+        #expect(FieldText.obviousField(in: AXSnapshot(elements: [secure])) == nil)
+        #expect(FieldText.obviousField(in: AXSnapshot(elements: [Self.el("e1", "AXTextField", "Search", value: "jev")])) == nil)
+    }
+
     @Test func extractsAppNames() {
         #expect(TextCandidates.appNames(in: "open chrome, search for jev") == ["chrome"])
         #expect(TextCandidates.appNames(in: "switch to Google Chrome and go to github.com").contains("Google Chrome"))

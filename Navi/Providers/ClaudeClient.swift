@@ -29,6 +29,22 @@ final class ClaudeClient: @unchecked Sendable {
 
     var isConfigured: Bool { Keychain.has(.anthropic) }
 
+    /// Opens the TCP+TLS connection to the API host ahead of the first real
+    /// call (`GET /v1/models`, free). Saves ~300 ms on the first answer,
+    /// agent fallback or text-helper request. Fire-and-forget; never throws.
+    func warm() {
+        guard let key = Keychain.get(.anthropic), !key.isEmpty else { return }
+        var req = URLRequest(url: baseURL.deletingLastPathComponent().appendingPathComponent("models"))
+        req.setValue(key, forHTTPHeaderField: "x-api-key")
+        req.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
+        req.timeoutInterval = 5
+        Task.detached(priority: .userInitiated) { [session] in
+            let start = Date()
+            _ = try? await session.data(for: req)
+            Log.claude.debug("Claude connection warmed in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+        }
+    }
+
     /// `output_config.effort` + adaptive thinking exist on Opus/Sonnet 4.6+ and 5;
     /// Haiku 4.5 rejects them.
     static func supportsEffort(_ model: String) -> Bool { !model.contains("haiku") }

@@ -122,6 +122,19 @@ enum FieldText {
     If a required value is missing, return {"text": null}. Otherwise return {"text": "the field value"}.
     """
 
+    /// The one field a TYPE_TEXT step would obviously target, if the screen has
+    /// exactly one: the focused empty text field, else the only empty text field.
+    /// Secure fields never qualify. Drives the speculative helper call that runs
+    /// in parallel with Jev's decision; nil ⇒ don't speculate.
+    static func obviousField(in snapshot: AXSnapshot) -> AXElement? {
+        let empty = snapshot.elements.filter { e in
+            e.isTextInput && !e.isSecure && (e.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let focused = empty.filter(\.isFocused)
+        if focused.count == 1 { return focused[0] }
+        return empty.count == 1 ? empty[0] : nil
+    }
+
     /// jev-ultrafast `field_context`.
     static func context(goal: String, field: AXElement, pageTitle: String?, pageText: String,
                         recentActions: [[String: Any]]) -> [String: Any] {

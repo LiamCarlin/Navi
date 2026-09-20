@@ -30,6 +30,15 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
 
     init(jev: JevClient, claude: ClaudeClient) { self.jev = jev; self.claude = claude }
 
+    /// Called by the router the moment a query routes to `.computerTask` —
+    /// typically hundreds of milliseconds before ⏎. Classifies the task
+    /// surface now so `run` doesn't spend a serial Jev round trip on it.
+    @MainActor
+    func prepare(task: String, context: QueryContext) {
+        guard ComputerAgent.browserRunner != nil, jev.isConfigured else { return }
+        TaskSurface.prefetch(task: task, jev: jev)
+    }
+
     @MainActor
     func run(task: String, context: QueryContext) -> AgentRunHandle {
         let s = NaviSettings.shared
@@ -178,9 +187,9 @@ final class AgentRun: @unchecked Sendable {
 
         do {
             // Step 0 — task surface. Only worth a Jev call when someone can take browser tasks.
+            // Usually already answered by `prepare` while the user was still typing.
             if let runner = ComputerAgent.browserRunner, jev.isConfigured {
-                let front = await MainActor.run { FrontmostProbe.current(includeURL: true) }
-                let cls = await TaskSurface.classify(task: task, frontmost: front, jev: jev)
+                let (front, cls) = await TaskSurface.classifyUsingPrefetch(task: task, jev: jev)
                 try checkCancelled()
                 if cls.surface == .browser {
                     let startURL = TaskSurface.startURL(task: task, frontmost: front, start: cls.start)
@@ -259,7 +268,7 @@ final class AgentRun: @unchecked Sendable {
         let t0 = Date()
         var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar)
         handle.emit(.planned("Jev-driven · \(snapshot.elements.count) candidates on screen · walk \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
-        await emitThumbnailIfEnabled(handle)
+        emitThumbnailIfEnabled(handle)
 
         var history: [JevDriver.HistoryEntry] = []
         var humanLog: [String] = []
@@ -317,6 +326,25 @@ final class AgentRun: @unchecked Sendable {
 
             let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates)
+
+            // Text the task spells out (one obvious quote) that hasn't been typed yet.
+            let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
+                history.contains { $0.kind == "type_text" && $0.text == o } ? nil : o
+            }
+            // Speculative text helper: when the screen has one obvious field to type
+            // into, ask Haiku for its value *while* Jev decides. Used only if Jev then
+            // picks that very field; otherwise cancelled.
+            var speculative: (elementID: String, task: Task<String?, Never>)?
+            if textHelperAvailable, obviousText == nil, let field = FieldText.obviousField(in: snapshot) {
+                let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
+                                            pageText: snapshot.visibleText, recentActions: history.map(\.json))
+                let claude = self.claude
+                speculative = (field.id, Task.detached(priority: .userInitiated) {
+                    (try? await FieldText.generate(claude: claude, context: ctx))?.text ?? nil
+                })
+            }
+            defer { speculative?.task.cancel() }
+
             let verdict: JevDriver.Verdict
             let request: JevDriver.Request
             do {
@@ -357,9 +385,14 @@ final class AgentRun: @unchecked Sendable {
             // TYPE_TEXT: Jev chose the field; the text comes from the task (one obvious quote) or Haiku.
             var text: String?
             if case .typeText(let id) = action, let field = snapshot.element(id) {
-                if let obvious = TextCandidates.obviousText(in: task),
-                   !history.contains(where: { $0.kind == "type_text" && $0.text == obvious }) {
+                if let obvious = obviousText {
                     text = obvious
+                } else if let spec = speculative, spec.elementID == id {
+                    let t0 = Date()
+                    text = await spec.task.value
+                    speculative = nil
+                    let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                    handle.emit(.status(text == nil ? "Text helper returned no value" : "Haiku wrote the field value in parallel · waited \(ms) ms"))
                 } else if textHelperAvailable {
                     let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
                                                 pageText: snapshot.visibleText, recentActions: history.map(\.json))
@@ -427,7 +460,7 @@ final class AgentRun: @unchecked Sendable {
             humanLog.append(human)
             if let targetFrame { lastActedFrame = targetFrame }
             snapshot = next
-            if step % 3 == 0 { await emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
+            if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
         }
         handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
     }
@@ -441,11 +474,14 @@ final class AgentRun: @unchecked Sendable {
     }
 
     /// Cheap 400 px thumbnail for the panel timeline (never sent to Jev).
-    private func emitThumbnailIfEnabled(_ handle: AgentRunHandle) async {
+    /// Fire-and-forget: ScreenCaptureKit takes 100–300 ms and the loop must not wait for it.
+    private func emitThumbnailIfEnabled(_ handle: AgentRunHandle) {
         guard config.showOverlay, ScreenCapture.hasPermission else { return }
-        guard let frame = try? await ScreenCapture.captureMainDisplay() else { return }
-        let (thumb, _) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.thumbnailMaxLongEdge)
-        handle.emit(.screenshot(NSImage(cgImage: thumb, size: NSSize(width: thumb.width, height: thumb.height))))
+        Task.detached(priority: .utility) {
+            guard let frame = try? await ScreenCapture.captureMainDisplay() else { return }
+            let (thumb, _) = ScreenCapture.downscale(frame.image, maxLongEdge: Self.thumbnailMaxLongEdge)
+            handle.emit(.screenshot(NSImage(cgImage: thumb, size: NSSize(width: thumb.width, height: thumb.height))))
+        }
     }
 
     // MARK: - Claude fallback (bounded) and takeover

@@ -346,6 +346,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         case .computerTask:
             let mode = NaviSettings.shared.agentApprovalMode.label
             let agent = self.agent
+            agent.prepare(task: q, context: context)   // speculative: surface classification before ⏎
             let riskNote = decision.isRisky ? " · may be hard to undo" : ""
             rows.append(SearchResult(id: "task:\(q)", kind: .task, title: "Do it: \(q)",
                                      subtitle: "Navi will control your Mac · \(mode)\(riskNote)",
