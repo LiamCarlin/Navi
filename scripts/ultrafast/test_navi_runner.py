@@ -179,3 +179,93 @@ print("canvas OK")
 assert nr.browser_module.browser_operation is nr.browser_operation_navi
 assert "getClientRects" in nr.CLICK_POINT_JS and "e.contains(t)" in nr.CLICK_POINT_JS
 print("click point OK")
+
+# --- page settle (adaptation 10) ---
+class FakeBrowser:
+    """Observations scripted as (readyState, page) pairs."""
+    def __init__(self, script): self.script = list(script); self.observed = 0
+    def evaluate(self, expr): return self.script[0][0] if self.script else "complete"
+    def observe(self, screenshot=False):
+        self.observed += 1
+        ready, page = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        return page
+class FakeAgent:
+    screenshots = False
+    def __init__(self, page, browser): self.state = {"page": page, "browser": browser, "started_at": time.perf_counter()}
+def pg(fp, n, url="https://maps.example/dir"):
+    return {"url": url, "fingerprint": fp, "actions": [{"id": f"e{i}", "node": i, "kind": "click", "label": f"L{i}"} for i in range(n)]}
+nr.SETTLE_POLL_S = 0.001
+# A blank document (0 interactive elements) is re-observed until it renders and holds still.
+blank = pg("f0", 0)
+fb = FakeBrowser([("loading", pg("f1", 3)), ("complete", pg("f2", 12)), ("complete", pg("f2", 12))])
+ag = FakeAgent(blank, fb)
+assert nr.settle_page(ag) == 3 and ag.state["page"]["fingerprint"] == "f2"
+# A page that already has controls and did not just navigate is not touched.
+fb2 = FakeBrowser([("complete", pg("x", 5))]); ag2 = FakeAgent(pg("f9", 5), fb2)
+assert nr.settle_page(ag2) == 0 and fb2.observed == 0
+# A navigation (URL changed) is settled even if the first frame has a few controls.
+fb3 = FakeBrowser([("complete", pg("g1", 4)), ("complete", pg("g1", 4))]); ag3 = FakeAgent(pg("g0", 2), fb3)
+assert nr.settle_page(ag3, previous_url="https://www.google.com/search?q=x") == 2
+assert nr.looks_unsettled(pg("a", 3, "https://a.example/p?x=1"), previous_url="https://a.example/p?x=2") is False  # same document
+# The deadline bounds a page that never settles.
+fb4 = FakeBrowser([("loading", pg("h", 0))]); ag4 = FakeAgent(pg("h", 0), fb4)
+t0 = time.monotonic(); nr.settle_page(ag4, max_s=0.02); assert time.monotonic() - t0 < 0.5
+print("settle OK")
+
+# --- tentative BLOCKED (adaptation 11) ---
+assert nr.blocked_is_tentative({"operation": "BLOCKED", "confidence": 0.31, "operation_probabilities": {"BLOCKED": 0.54, "WAIT": 0.38}})
+assert nr.blocked_is_tentative({"operation": "BLOCKED", "confidence": 0.9, "operation_probabilities": {"BLOCKED": 0.6, "WAIT": 0.3}})  # WAIT close
+assert not nr.blocked_is_tentative({"operation": "BLOCKED", "confidence": 0.9, "operation_probabilities": {"BLOCKED": 0.95, "WAIT": 0.02}})
+assert not nr.blocked_is_tentative({"operation": "CLICK", "confidence": 0.2, "operation_probabilities": {"CLICK": 0.5}})
+assert not nr.blocked_is_tentative(None)
+class TickAgent:
+    """Scripted decisions; records what the loop did with them."""
+    screenshots = False
+    def __init__(self, decisions):
+        self.decisions = list(decisions); self.acted = []
+        self.state = {"page": pg("p1", 3), "browser": FakeBrowser([("complete", pg("p2", 3))]), "decision": None,
+                      "status": "ready", "started_at": time.perf_counter(), "elapsed_ms": 0}
+    def command(self, name, body=None):
+        if name == "predict":
+            self.state["decision"] = self.decisions.pop(0); self.state["status"] = "predicted"
+        elif name == "act":
+            self.acted.append(self.state["decision"]); self.state["decision"] = None
+            self.state["status"] = "blocked" if self.acted[-1]["operation"] == "BLOCKED" else "ready"
+nr.TENTATIVE_BLOCKED_WAIT_S = 0.001
+weak = {"operation": "BLOCKED", "confidence": 0.31, "operation_probabilities": {"BLOCKED": 0.54, "WAIT": 0.38}}
+click = {"operation": "CLICK", "confidence": 0.9, "operation_probabilities": {"CLICK": 0.9}}
+ta = TickAgent([weak, click]); retried = set()
+assert nr.tick(ta, retried) == "retried" and ta.acted == [] and ta.state["status"] == "ready" and retried == {"p1"}
+assert ta.state["page"]["fingerprint"] == "p2"          # re-observed before deciding again
+assert nr.tick(ta, retried) == "acted" and ta.acted == [click]
+# The same weak BLOCKED again on an already-retried page is final.
+tb = TickAgent([weak, weak]); r2 = set()
+assert nr.tick(tb, r2) == "retried"
+tb.state["page"] = pg("p1", 3)                            # page did not change after the wait
+assert nr.tick(tb, r2) == "acted" and tb.state["status"] == "blocked"
+# A confident BLOCKED is acted on immediately.
+sure = {"operation": "BLOCKED", "confidence": 0.9, "operation_probabilities": {"BLOCKED": 0.95, "WAIT": 0.02}}
+tc = TickAgent([sure]); assert nr.tick(tc, set()) == "acted" and tc.state["status"] == "blocked"
+print("tentative BLOCKED OK")
+
+# --- coaching per document (adaptation 12) ---
+c = nr.Coach()
+assert c.may_ask("https://www.google.com/search?q=a")
+c.used = True; c.count = 1; c.url = "https://www.google.com/search?q=a"; c.current_url = c.url
+c.guidance = "Click 'Directions' (index 26)."
+assert not c.may_ask("https://www.google.com/search?q=b")          # same document (query ignored)
+assert c.may_ask("https://www.google.com/maps/dir/Olin/Northeastern")  # Jev moved on: Claude may look again
+c.count = nr.MAX_COACHINGS
+assert not c.may_ask("https://elsewhere.example/")                  # budget
+c.count = 1
+assert c.guidance_for(c.url) == c.guidance
+stale = c.guidance_for("https://www.google.com/maps/dir/x")
+assert stale.startswith("(Written on the previous page") and c.guidance in stale
+seen = {}
+jev_model.post_json = lambda url, key, body: seen.update(body=body) or {"answers": {}}
+c.install()
+c.current_url = "https://www.google.com/maps/dir/x"
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest", "state": {"page": {}},
+    "questions": {"operation": {"type": "choice", "criteria": {"CLICK": "c"}, "instructions": {"goal": "g"}}}})
+assert seen["body"]["state"]["guidance"].startswith("(Written on the previous page")
+print("coach per document OK")

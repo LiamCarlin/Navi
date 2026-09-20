@@ -167,6 +167,24 @@ struct JevDriverTests {
         #expect(JevDriver.decide(v, request: req, threshold: 0.25) == .act(.click(elementID: "e2")))
     }
 
+    @Test func weakBlockedIsTentative() {
+        let req = JevDriver.request(for: Self.input())
+        // Unsure BLOCKED (31%) → wait and look again rather than coach/fail.
+        var v = Self.verdict(op: "BLOCKED", confidence: 0.31, request: req)
+        #expect(JevDriver.blockedIsTentative(v))
+        // Confident BLOCKED with WAIT a close second → still tentative (the screen may be loading).
+        v = Self.verdict(op: "BLOCKED", confidence: 0.9, request: req)
+        v.operation?.probabilities["WAIT"] = 0.3
+        #expect(JevDriver.blockedIsTentative(v))
+        // Confident BLOCKED with WAIT negligible → final.
+        v = Self.verdict(op: "BLOCKED", confidence: 0.9, request: req)
+        v.operation?.probabilities["WAIT"] = 0.02
+        #expect(!JevDriver.blockedIsTentative(v))
+        // Other operations are never "tentative BLOCKED".
+        #expect(!JevDriver.blockedIsTentative(Self.verdict(op: "CLICK", confidence: 0.2, request: req, target: ("click_target", "2"))))
+        #expect(!JevDriver.blockedIsTentative(JevDriver.Verdict()))
+    }
+
     @Test func decideNeedVisionAndInvalidHeadsFallBack() {
         let req = JevDriver.request(for: Self.input())
         if case .fallbackToClaude = JevDriver.decide(Self.verdict(op: "NEED_VISION", request: req), request: req, threshold: 0.5) {} else { Issue.record("NEED_VISION should fall back") }

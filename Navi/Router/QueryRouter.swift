@@ -117,7 +117,14 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
             }
             Log.router.warning("jev returned no usable intent; falling back to heuristics")
         } catch {
-            Log.router.warning("jev routing failed (\(error.localizedDescription)); falling back to heuristics")
+            // The next keystroke superseding this call is routine, not a failure.
+            let ns = error as NSError
+            let superseded = error is CancellationError
+                || (ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled)
+                || { if case .cancelled = error as? NaviError { return true }; return false }()
+            if !superseded {
+                Log.router.warning("jev routing failed (\(error.localizedDescription, privacy: .public)); falling back to heuristics")
+            }
         }
         return heuristicRoute(query: q, local: local)
     }
