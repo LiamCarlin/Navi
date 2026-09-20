@@ -10,11 +10,16 @@ import Combine
 ///   2. After a 120 ms debounce, Jev routes the query; results for the decided
 ///      intent are merged in, ranked, and the default (⏎) row is chosen.
 ///   3. ⏎ performs the selected row. Outcomes may stream an answer, start an
-///      agent run, or replace the list.
+///      agent run, replace the list, or ask a follow-up (`.clarify`): the
+///      panel shows the question with selectable interpretations and a
+///      free-text box; the answer becomes a refined query that is routed
+///      again (clarification suppressed) and run.
 @MainActor
 final class PanelViewModel: ObservableObject {
     // Input
-    @Published var query: String = "" { didSet { queryChanged() } }
+    /// Only real edits re-route: the bar's NSTextField re-commits the same
+    /// string whenever it loses focus (e.g. to the clarify text box).
+    @Published var query: String = "" { didSet { if query != oldValue { queryChanged() } } }
 
     // Output
     @Published private(set) var results: [SearchResult] = []
@@ -29,6 +34,15 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var pendingApproval: (id: UUID, description: String, risk: String)?
     @Published private(set) var toast: String?
     @Published private(set) var errorMessage: String?
+    // Clarification (mode == .clarify)
+    @Published private(set) var clarification: ClarificationPrompt?
+    @Published private(set) var isClarifying = false
+    /// Free-text answer; typing anything selects the text box (see `clarifySelection`).
+    @Published var clarifyAnswer: String = "" {
+        didSet { if !clarifyAnswer.isEmpty, let c = clarification { clarifySelection = c.options.count } }
+    }
+    /// 0..<options.count selects an option; options.count selects the text box.
+    @Published var clarifySelection: Int = 0
     @Published private(set) var statusLine: String = ""   // e.g. "Jev · openApp 92% · 140ms"
     @Published private(set) var isRouting = false
 
@@ -40,8 +54,11 @@ final class PanelViewModel: ObservableObject {
     var onContentHeightChange: ((CGFloat) -> Void)?
     /// Set by `navi://run?q=…`: perform the top row as soon as routing finishes.
     var submitAfterRouting = false
+    /// With `submitAfterRouting`, prefer the first row of this kind over row 0
+    /// (after a clarification the refined task must win over an incidental app match).
+    var submitPreferredKind: ResultKind?
 
-    enum Mode: Equatable { case results, answer, agent }
+    enum Mode: Equatable { case results, answer, agent, clarify }
 
     let services: NaviServices
     var onDismiss: (() -> Void)?
@@ -49,6 +66,7 @@ final class PanelViewModel: ObservableObject {
     private var routeTask: Task<Void, Never>?
     private var answerTask: Task<Void, Never>?
     private var agentTask: Task<Void, Never>?
+    private var clarifyTask: Task<Void, Never>?
     private var context: QueryContext = .empty
     private var recentQueries: [String] = []
 
@@ -90,12 +108,13 @@ final class PanelViewModel: ObservableObject {
     }
 
     func reset() {
-        routeTask?.cancel(); answerTask?.cancel()
+        routeTask?.cancel(); answerTask?.cancel(); clarifyTask?.cancel()
         query = ""
         results = []
         decision = nil
         answerText = ""
         isAnswering = false
+        clearClarification()
         mode = .results
         statusLine = ""
         errorMessage = nil
@@ -142,7 +161,9 @@ final class PanelViewModel: ObservableObject {
                 DebugTrace.log("submitAfterRouting → \(d.intent.rawValue) \(self.results.count) rows")
                 #endif
                 self.submitAfterRouting = false
-                self.selectedIndex = 0
+                let preferred = self.submitPreferredKind
+                self.submitPreferredKind = nil
+                self.selectedIndex = preferred.flatMap { k in self.results.firstIndex { $0.kind == k } } ?? 0
                 self.performSelected()
             }
         }
@@ -169,11 +190,18 @@ final class PanelViewModel: ObservableObject {
     // MARK: - Actions
 
     func moveSelection(_ delta: Int) {
+        if mode == .clarify {
+            guard let c = clarification else { return }
+            let n = c.options.count + 1   // options + the text box
+            clarifySelection = (clarifySelection + delta + n) % n
+            return
+        }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
     }
 
     func performSelected() {
+        if mode == .clarify { submitClarification(); return }
         guard !results.isEmpty, results.indices.contains(selectedIndex) else {
             // Nothing matched yet: treat ⏎ as "ask Navi".
             if !query.isEmpty { askNavi(query) }
@@ -208,6 +236,8 @@ final class PanelViewModel: ObservableObject {
             startAgent(handle)
         case .showResults(let rs):
             results = rs; selectedIndex = 0; mode = .results
+        case .clarify(let req):
+            startClarification(req)
         case .error(let msg):
             errorMessage = msg
         }
@@ -261,6 +291,68 @@ final class PanelViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Clarification
+
+    func startClarification(_ req: ClarificationRequest) {
+        clarifyTask?.cancel()
+        clearClarification()
+        isClarifying = true
+        mode = .clarify
+        clarifyTask = Task { [weak self] in
+            do {
+                let prompt = try await req.load()
+                guard let self, !Task.isCancelled, self.mode == .clarify else { return }
+                Log.panel.info("clarification ready: \(prompt.options.count) options")
+                #if DEBUG
+                DebugTrace.log("clarification ready: \(prompt.question) | \(prompt.options)")
+                #endif
+                self.clarification = prompt
+                self.clarifySelection = 0
+            } catch is CancellationError {
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                Log.panel.error("clarification failed: \(error.localizedDescription, privacy: .public)")
+                #if DEBUG
+                DebugTrace.log("clarification failed: \(error.localizedDescription)")
+                #endif
+                self.errorMessage = error.localizedDescription
+                self.mode = .results
+                self.requestFocus()
+            }
+            self?.isClarifying = false
+        }
+    }
+
+    /// Runs the chosen interpretation (or the typed answer) as a refined query:
+    /// routed once more with clarification suppressed, then performed.
+    func submitClarification() {
+        guard let c = clarification else { return }
+        let refined: String?
+        if clarifySelection >= c.options.count {
+            refined = c.refinedQuery(typed: clarifyAnswer)
+        } else {
+            refined = c.refinedQuery(option: clarifySelection)
+        }
+        guard let refined else { return }
+        let intent = decision?.intent ?? .computerTask
+        Log.panel.info("clarified (\(intent.rawValue, privacy: .public)) → \(refined, privacy: .public)")
+        services.router.didClarify(query: refined, intent: intent)
+        clearClarification()
+        mode = .results
+        submitAfterRouting = true
+        submitPreferredKind = intent == .computerTask ? .task : nil
+        requestFocus()
+        query = refined
+    }
+
+    private func clearClarification() {
+        clarifyTask?.cancel()
+        clarification = nil
+        isClarifying = false
+        clarifyAnswer = ""
+        clarifySelection = 0
+    }
+
     func approvePending(_ approve: Bool) {
         guard let p = pendingApproval, let run = agentRun else { return }
         run.respond(approve ? .approve(p.id) : .deny(p.id))
@@ -280,6 +372,7 @@ final class PanelViewModel: ObservableObject {
         if mode != .results {
             answerTask?.cancel()
             isAnswering = false
+            if mode == .clarify { clearClarification(); requestFocus() }
             mode = .results
             return
         }
@@ -303,6 +396,8 @@ extension PanelViewModel {
                         agentEvents: [AgentEvent] = [],
                         agentScreenshot: NSImage? = nil,
                         pendingApproval: (id: UUID, description: String, risk: String)? = nil,
+                        clarification: ClarificationPrompt? = nil,
+                        isClarifying: Bool = false,
                         toast: String? = nil,
                         error: String? = nil,
                         statusLine: String? = nil,
@@ -327,6 +422,8 @@ extension PanelViewModel {
         vm.agentEvents = agentEvents
         vm.agentScreenshot = agentScreenshot
         vm.pendingApproval = pendingApproval
+        vm.clarification = clarification
+        vm.isClarifying = isClarifying
         vm.toast = toast
         vm.errorMessage = error
         vm.isRouting = isRouting

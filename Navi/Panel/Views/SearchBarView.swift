@@ -72,11 +72,12 @@ struct SearchBarView: View {
     }
 
     private func focus() {
+        guard vm.mode != .clarify else { return }   // the follow-up's text box owns focus
         isFocused = true
         // The panel becomes key a run-loop turn after `willShow`; ask again then.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(40))
-            isFocused = true
+            if vm.mode != .clarify { isFocused = true }
         }
     }
 

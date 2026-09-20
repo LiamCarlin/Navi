@@ -20,6 +20,9 @@ enum PanelStyle {
 
     // Motion
     static let spring = Animation.spring(response: 0.34, dampingFraction: 0.84)
+    /// Card height changes: fast and critically damped. Any overshoot on a
+    /// height change reads as the bottom edge bouncing, so no bounce here.
+    static let resize = Animation.spring(duration: 0.26, bounce: 0)
     static let quickSpring = Animation.spring(response: 0.22, dampingFraction: 0.9)
     static let pillSpring = Animation.spring(response: 0.38, dampingFraction: 0.68)
 

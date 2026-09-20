@@ -21,15 +21,43 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
         return stream(system: system, user: query, maxTokens: 4000, effort: "medium")
     }
 
-    /// Streams a single clarifying question for an ambiguous request.
-    func streamClarification(query: String, context: QueryContext) -> AsyncThrowingStream<String, Error> {
-        let system = Self.systemPrompt(query: query, context: context, memory: []) + """
+    /// One structured follow-up for an ambiguous request: a question plus 2–4
+    /// likely interpretations, each a complete request Navi can run as-is.
+    func clarification(query: String, context: QueryContext) async throws -> ClarificationPrompt {
+        guard claude.isConfigured else { throw NaviError.missingAPIKey(.anthropic) }
+        let system = Self.systemPrompt(query: query, context: context, memory: []) + "\n\n" + Self.clarificationInstructions
+        let model = await MainActor.run { NaviSettings.shared.answerModel }
+        let text = try await claude.complete(model: model, system: system, prompt: query, maxTokens: 400, effort: "low")
+        guard let prompt = Self.parseClarification(text, query: query) else {
+            throw NaviError.decoding("Clarification was not valid JSON: \(text.prefix(120))")
+        }
+        return prompt
+    }
 
+    static let clarificationInstructions = """
+    The request below is too ambiguous to carry out. Do NOT answer or perform it. Instead reply with ONLY a JSON \
+    object, no prose and no code fence:
+    {"question": "<one short question, one sentence>", "options": ["<interpretation 1>", "<interpretation 2>", ...]}
+    Rules for options:
+    - 2 to 4 options, most likely first.
+    - Each option is the user's request rewritten as a COMPLETE, specific instruction Navi could run with no further \
+      questions, in the user's voice (e.g. "Email Bob Smith to move tomorrow's lunch to 1 pm").
+    - Keep each under 14 words. No "other" / "something else" option — the user can type their own.
+    """
 
-        The request below is ambiguous. Do NOT answer it. Instead, ask exactly ONE short clarifying question \
-        (one sentence) that would let you act on it, optionally followed by 2–3 likely interpretations as a bullet list.
-        """
-        return stream(system: system, user: query, maxTokens: 300, effort: "low")
+    /// Parses the JSON Claude returns for `clarification` (tolerates code fences and surrounding prose).
+    static func parseClarification(_ text: String, query: String) -> ClarificationPrompt? {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end else { return nil }
+        let json = String(text[start...end])
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let question = (obj["question"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !question.isEmpty else { return nil }
+        var seen = Set<String>()
+        let options = ((obj["options"] as? [Any]) ?? [])
+            .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        return ClarificationPrompt(originalQuery: query, question: question,
+                                   options: Array(options.prefix(ClarificationPrompt.maxOptions)))
     }
 
     /// One-shot completion for other modules (e.g. clarification text, titles).

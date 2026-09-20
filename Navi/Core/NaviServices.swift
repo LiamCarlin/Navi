@@ -16,6 +16,15 @@ protocol QueryRouting: AnyObject, Sendable {
 
     /// Full results for a decided intent (may hit Spotlight index, memory, etc.).
     @MainActor func results(for query: String, decision: RouteDecision, context: QueryContext) async -> [SearchResult]
+
+    /// The panel calls this with the refined query after a follow-up: routing
+    /// it keeps `intent` (the user already chose an interpretation) and never
+    /// asks again.
+    func didClarify(query: String, intent: Intent)
+}
+
+extension QueryRouting {
+    func didClarify(query: String, intent: Intent) {}
 }
 
 /// Streams a text answer for a question (Claude).

@@ -45,6 +45,9 @@ struct PanelFooterView: View {
         case .results:
             if !vm.statusLine.isEmpty { return vm.statusLine }
             return vm.isRouting ? "Jev is deciding…" : "Navi"
+        case .clarify:
+            if vm.clarification == nil { return "Navi · \(settings.answerModel) · one question" }
+            return "Jev flagged this as ambiguous · pick one or type"
         }
     }
 
@@ -76,6 +79,10 @@ struct PanelFooterView: View {
                     KeyHint(keys: "⌘⌫", label: "deny")
                 }
                 KeyHint(keys: "esc", label: vm.agentRun != nil ? "hide" : "back")
+            case .clarify:
+                KeyHint(keys: "↑↓", label: "choose")
+                KeyHint(keys: "⏎", label: "answer")
+                KeyHint(keys: "esc", label: "back")
             }
         }
     }
