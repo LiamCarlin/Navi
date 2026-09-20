@@ -122,6 +122,9 @@ struct JevDriver: Sendable {
         var history: [HistoryEntry]
         var appCandidates: [String] = []     // OPEN_APP targets (from TextCandidates)
         var urlCandidates: [String] = []     // OPEN_URL targets
+        /// Claude's coaching after Jev kept failing (`JevCoach`); rides along in
+        /// the state and in every question's instructions for the rest of the step.
+        var guidance: String? = nil
     }
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
@@ -149,7 +152,7 @@ struct JevDriver: Sendable {
             if e.role == "AXTab", let v = e.value { d["selected"] = (v == "1" || v.lowercased() == "true") }
             return d
         }
-        return [
+        var state: [String: Any] = [
             "app": snap.appName ?? "unknown",
             "bundle": snap.bundleID ?? "",
             "window": snap.windowTitle ?? "",
@@ -159,6 +162,8 @@ struct JevDriver: Sendable {
             "elements": elements,
             "recent_actions": input.history.suffix(historyInState).map(\.json),
         ]
+        if let g = input.guidance { state["guidance"] = g }
+        return state
     }
 
     static func serialize(_ obj: Any) -> String {
@@ -178,9 +183,13 @@ struct JevDriver: Sendable {
         let snap = input.snapshot
         let goal = input.task
         typealias J = JevClient.JSONValue
-        let operationInstructions = J(any: ["goal": goal, "rules": nextActionRules])
+        var opInstr: [String: Any] = ["goal": goal, "rules": nextActionRules]
+        if let g = input.guidance { opInstr["guidance"] = g }
+        let operationInstructions = J(any: opInstr)
         func targetInstructions(_ op: Operation) -> J {
-            J(any: ["goal": goal, "operation": op.rawValue, "rules": [nextActionRules, targetRules]])
+            var d: [String: Any] = ["goal": goal, "operation": op.rawValue, "rules": [nextActionRules, targetRules]]
+            if let g = input.guidance { d["guidance"] = g }
+            return J(any: d)
         }
         func criteria(_ e: AXElement) -> J {
             var d: [String: Any] = ["element": "[\(e.index)] \(e.label)", "current_value": e.value ?? "", "role": e.role]
@@ -393,6 +402,30 @@ struct JevDriver: Sendable {
         case .scrollDown: return .act(.scroll(up: false))
         case .wait: return .act(.wait)
         default: return .fallbackToClaude(reason: "unhandled operation \(op.rawValue)")
+        }
+    }
+
+    /// Turns the coach's suggested `next_operation`/`next_target` into an
+    /// action, validating the target against the request's offered ids. nil ⇒
+    /// nothing usable (Jev decides as usual, with the guidance).
+    static func coachAction(operation: String?, target: String?, request: Request) -> AgentAction? {
+        guard let operation, let op = Operation(rawValue: operation) else { return nil }
+        let t = target ?? ""
+        let index = t.hasPrefix("e") ? String(t.dropFirst()) : t
+        switch op {
+        case .click where (request.heads["click_target"] ?? []).contains(index): return .click(elementID: "e\(index)")
+        case .typeText where (request.heads["type_text_target"] ?? []).contains(index): return .typeText(elementID: "e\(index)")
+        case .select:
+            if let s = request.selectTargets[t] { return .select(elementID: s.element, option: s.option) }
+            if let match = request.selectTargets.first(where: { $0.value.option == t }) { return .select(elementID: match.value.element, option: match.value.option) }
+            return nil
+        case .key where keyCombos.contains(where: { $0.0.lowercased() == t.lowercased() }): return .key(keyCombos.first { $0.0.lowercased() == t.lowercased() }!.0)
+        case .openApp where !t.isEmpty: return .openApp(t)
+        case .openURL where t.contains("."): return .openURL(t)
+        case .scrollUp: return .scroll(up: true)
+        case .scrollDown: return .scroll(up: false)
+        case .wait: return .wait
+        default: return nil
         }
     }
 
