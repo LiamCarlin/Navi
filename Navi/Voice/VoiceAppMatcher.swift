@@ -51,6 +51,16 @@ enum VoiceAppMatcher {
         for n in stride(from: min(3, words.count), through: 1, by: -1) {
             for i in 0...(words.count - n) {
                 let window = Array(words[i..<(i + n)])
+                // Speech splits camel-cased names ("text edit" → TextEdit, "x code" → Xcode):
+                // the glued window naming an app exactly beats every fuzzy match, stop words or not.
+                if n >= 2 {
+                    let glued = window.joined()
+                    if let e = index.entries.first(where: { $0.lowerName.filter { !$0.isWhitespace } == glued }) {
+                        let phrase = window.joined(separator: " ")
+                        if (best[e.key]?.1 ?? 0) < 1.05 { best[e.key] = (e, 1.05, phrase) }
+                        continue
+                    }
+                }
                 // A window made only of stop words can't be an app name.
                 let meaningful = window.filter { !stopWords.contains($0) || (ambiguousNames.contains($0) && hasOpeningVerb) }
                 guard !meaningful.isEmpty else { continue }

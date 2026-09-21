@@ -75,7 +75,7 @@ struct UtteranceSegmenter: Equatable {
     @discardableResult
     mutating func update(finalized: String, volatile: String = "", at now: Date = Date()) -> Bool {
         let joined = finalized.trimmingCharacters(in: .whitespaces) + " " + volatile.trimmingCharacters(in: .whitespaces)
-        words = joined.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).map(String.init)
+        words = Self.tokenize(joined)
         realign()
         let pendingText = words[dispatched...].joined(separator: " ")
         guard pendingText != lastPendingText else { return false }
@@ -105,9 +105,46 @@ struct UtteranceSegmenter: Equatable {
         if dispatched > words.count { dispatched = words.count }
     }
 
+    /// Splits a transcript into words. The recognizer sometimes finalizes a
+    /// stretch of audio as punctuation alone ("....." or ", ." after a flush);
+    /// those marks are glued onto the word before them so they keep their
+    /// meaning as a sentence end but never sit at the cursor as a "word" with
+    /// nothing in it — that jammed the cursor for good.
+    static func tokenize(_ text: String) -> [String] {
+        var out: [String] = []
+        for raw in text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            let w = String(raw)
+            if core(w).isEmpty {
+                guard let last = out.last else { continue }   // leading marks belong to nobody
+                out[out.count - 1] = last + w
+            } else {
+                out.append(w)
+            }
+        }
+        return out
+    }
+
     /// Forgets everything (new session).
     mutating func reset() {
         words = []; dispatched = 0; ignoredBoundaries = []; anchor = []; history = []; lastPendingText = ""; lastChangeAt = .distantPast
+    }
+
+    /// The recognizer was restarted and its transcript begins again at zero:
+    /// forget the old words and cursor but keep what was already carried out.
+    mutating func restartTranscript() {
+        words = []; dispatched = 0; ignoredBoundaries = []; anchor = []; lastPendingText = ""
+    }
+
+    /// Keeps only the last `keepLast` pending words (while paused, so the
+    /// transcript doesn't pile up behind a "resume" that can't be seen).
+    mutating func trimPending(keepLast: Int) {
+        let excess = words.count - dispatched - keepLast
+        if excess > 0 { advance(to: dispatched + excess) }
+    }
+
+    /// The last few words heard, cleaned (for control phrases while paused).
+    func tailWords(_ n: Int) -> [String] {
+        Array(words.suffix(n).map(Self.core)).filter { !$0.isEmpty }
     }
 
     // MARK: Pending clause
@@ -115,8 +152,8 @@ struct UtteranceSegmenter: Equatable {
     /// The next clause to decide on, or nil when nothing actionable is pending.
     func pending() -> Clause? {
         var start = dispatched
-        // Skip fillers and stray connectors at the front.
-        while start < words.count, Self.leadingFillers.contains(Self.core(words[start])) { start += 1 }
+        // Skip fillers, stray connectors and bare punctuation at the front.
+        while start < words.count, Self.core(words[start]).isEmpty || Self.leadingFillers.contains(Self.core(words[start])) { start += 1 }
         guard start < words.count else { return nil }
 
         var end = words.count

@@ -46,6 +46,8 @@ final class SpeechListener {
     private var fileTask: Task<Void, Never>?
     private var configObserver: NSObjectProtocol?
     private var finalized = ""
+    /// The last volatile text shown for the audio that is not yet finalized.
+    private var lastVolatile = ""
     private(set) var isRunning = false
 
     // MARK: Permission
@@ -117,6 +119,7 @@ final class SpeechListener {
         self.transcriber = transcriber
         self.analyzer = analyzer
         self.finalized = ""
+        self.lastVolatile = ""
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         resultsTask = Task { [weak self] in
@@ -129,11 +132,18 @@ final class SpeechListener {
                     #endif
                     if result.isFinal {
                         self.append(final: text)
+                        self.lastVolatile = ""
                         self.onEvent?(.transcript(finalized: self.finalized, volatile: ""))
                     } else {
+                        self.lastVolatile = text
                         self.onEvent?(.transcript(finalized: self.finalized, volatile: text))
                     }
                 }
+                // The stream ended on its own (it never does while the analyzer is
+                // healthy): the session restarts the recognizer.
+                guard let self, self.isRunning, !Task.isCancelled else { return }
+                Log.voice.error("speech results stream ended unexpectedly")
+                self.onEvent?(.failed("Speech recognition stopped"))
             } catch is CancellationError {
             } catch {
                 guard let self, self.isRunning else { return }
@@ -286,12 +296,24 @@ final class SpeechListener {
     // MARK: Transcript bookkeeping
 
     private func append(final text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A flush mid-utterance can finalize the audio as punctuation alone
+        // ("....." for "Make a new document."): the words the user already saw
+        // must not vanish, so the last volatile text stands in for them.
+        if Self.wordCount(t) == 0, Self.wordCount(lastVolatile) > 0 {
+            Log.voice.info("final result had no words (\(t, privacy: .public)); keeping the volatile text")
+            t = lastVolatile.trimmingCharacters(in: .whitespacesAndNewlines) + t
+        }
         guard !t.isEmpty else { return }
         if finalized.isEmpty { finalized = t }
         else { finalized += " " + t }
         // Keep the running transcript bounded; the segmenter only needs the tail.
         if finalized.count > 4000 { finalized = String(finalized.suffix(3000)) }
+    }
+
+    /// Words with at least one letter or digit.
+    nonisolated static func wordCount(_ s: String) -> Int {
+        s.split(whereSeparator: { $0.isWhitespace }).filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }.count
     }
 }
 

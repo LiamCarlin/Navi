@@ -100,7 +100,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     (no planner round trip, no overlay pill), questions stream from Claude into the
     island; "stop", "undo", "yes/no", "pause", "stop listening" are `control_navi`.
     Voice runs are foreground by default (`voiceBringsAppsForward`): the user is
-    watching. Debug: `navi://voice?file=/path.aiff` replays a recording
+    watching. The recognizer is not trusted to be tidy: a flush can finalize a
+    stretch of speech as punctuation alone ("....."), so `SpeechListener` keeps
+    the volatile words when a final has none, `UtteranceSegmenter.tokenize` glues
+    stray marks onto the previous word (a punctuation-only word at the cursor once
+    jammed it for good), and `VoiceSession` runs a watchdog: pending words older
+    than ~1.2 s with no decision in flight get one, whatever the bookkeeping says.
+    Debug: `navi://voice?file=/path.aiff` replays a recording
     (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`.
 - Always pass **structured state** (labelled sections, not prose) — Jev is trained on program state.
 - Cache identical requests (JevClient does this) and never block the UI on Jev: instant

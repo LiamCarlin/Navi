@@ -118,6 +118,60 @@ import Testing
         #expect(s.pending()?.head == "make the title hello")
     }
 
+    /// Straight from a trace: after a flush the recognizer finalized the audio of
+    /// "Make a new document." as "....." — a punctuation-only word at the cursor
+    /// left `pending()` nil for good, and every later instruction piled up behind it.
+    @Test func punctuationOnlyFinalNeverJamsTheCursor() {
+        var s = UtteranceSegmenter()
+        s.update(finalized: "Navi, open text edit.")
+        s.commit(s.pending()!)
+        s.update(finalized: "Navi, open text edit. .....")
+        #expect(s.pending() == nil)
+        s.update(finalized: "Navi, open text edit. .....", volatile: "Type hello world")
+        let c = s.pending()
+        #expect(c?.head == "Type hello world")
+        s.update(finalized: "Navi, open text edit. ..... , you. Type goodbye, on a new line. . Now, type one more line that says done.")
+        #expect(s.pending()?.head == "you")
+        s.drop(s.pending()!)
+        #expect(s.pending()?.head == "Type goodbye")
+        s.commit(s.pending()!)
+        #expect(s.pending()?.head == "on a new line")
+        s.commit(s.pending()!)
+        #expect(s.pending()?.head == "type one more line that says done")
+    }
+
+    @Test func strayPunctuationGluesOntoThePreviousWord() {
+        #expect(UtteranceSegmenter.tokenize("open notes . and then , type hi .....") == ["open", "notes.", "and", "then,", "type", "hi....."])
+        #expect(UtteranceSegmenter.tokenize("..... hello") == ["hello"])
+        #expect(UtteranceSegmenter.tokenize("...") == [])
+        var s = UtteranceSegmenter()
+        s.update(finalized: "make a new document", volatile: ".")
+        let c = s.pending()
+        #expect(c?.head == "make a new document")
+        #expect(c?.connector == ".")
+    }
+
+    @Test func restartForgetsTheTranscriptButNotTheHistory() {
+        var s = UtteranceSegmenter()
+        s.update(finalized: "open notes and then write hello")
+        s.commit(s.pending()!)
+        s.restartTranscript()
+        #expect(s.pending() == nil)
+        #expect(s.history == ["open notes"])
+        s.update(finalized: "", volatile: "type goodbye")
+        #expect(s.pending()?.head == "type goodbye")
+    }
+
+    @Test func trimAndTailKeepTheLastWordsWhilePaused() {
+        var s = UtteranceSegmenter()
+        s.update(finalized: "one two three four five six seven eight")
+        s.trimPending(keepLast: 3)
+        #expect(s.pendingText == "six seven eight")
+        #expect(s.tailWords(2) == ["seven", "eight"])
+        s.update(finalized: "one two three four five six seven eight", volatile: "resume.")
+        #expect(s.tailWords(1) == ["resume"])
+    }
+
     @Test func leadingConnectorAfterACommitIsSkipped() {
         var s = seg("", "open notes")
         s.commit(s.pending()!)
@@ -348,6 +402,16 @@ import Testing
         #expect(VoiceAppMatcher.candidates(in: "open the calculatorcul app", index: index).first?.entry.name == "Calculator")
         #expect(VoiceAppMatcher.nameGuess(in: "open the calculatorcul app") == "calculatorcul")
         #expect(VoiceAppMatcher.nameGuess(in: "open it") == nil)
+    }
+
+    @Test func spokenCamelCaseNamesMatchExactly() {
+        // "text" is a stop word, so "text edit" used to fall through to a fuzzy "edit" → Script Editor.
+        let index = AppIndex(entries: RouterFakes.apps + [
+            AppEntry(name: "TextEdit", path: "/System/Applications/TextEdit.app", bundleID: "com.apple.TextEdit"),
+            AppEntry(name: "Script Editor", path: "/System/Applications/Utilities/Script Editor.app", bundleID: "com.apple.ScriptEditor2"),
+        ])
+        #expect(VoiceAppMatcher.candidates(in: "navi open text edit", index: index).first?.entry.name == "TextEdit")
+        #expect(VoiceAppMatcher.candidates(in: "open x code", index: index).first?.entry.name == "Xcode")
     }
 
     @Test func dedupesPerAppAndCapsAtFive() {

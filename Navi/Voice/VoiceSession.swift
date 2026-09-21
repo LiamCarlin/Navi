@@ -62,7 +62,14 @@ final class VoiceSession: ObservableObject {
     private var segmenter = UtteranceSegmenter()
     private var startTask: Task<Void, Never>?
     private var decideTask: Task<Void, Never>?
+    /// Bumped by every `scheduleDecision`; a decision only applies (and only
+    /// clears `inflightHead` / `decideTask`) if it is still the latest one.
+    private var decideGeneration = 0
     private var inflightHead: String?
+    /// The pending text a decision last answered "wait" for with nothing to
+    /// retry — the watchdog leaves that alone until the words change.
+    private var waitedForText: String?
+    private var watchdog: Task<Void, Never>?
     private var restarts = 0
     private var outcomeTimer: Task<Void, Never>?
     private var browserURL: (bundle: String, title: String, url: String?)?
@@ -80,6 +87,13 @@ final class VoiceSession: ObservableObject {
 
     static let maxCommittedShown = 3
     static let jevTimeoutMs = 1800
+    /// How often the watchdog checks that pending words have a decision coming.
+    static let watchdogMs = 500
+    /// Pending words older than this with no decision in flight get one, whatever
+    /// the bookkeeping says — nothing the user said may sit there for good.
+    static let watchdogStaleMs = 1200
+    /// While paused, only the last few words are kept (enough for "resume").
+    static let pausedTailWords = 6
     static let flushAfterMs = 350
     /// Level above the running noise floor that counts as speech.
     static let speechAboveFloor: Float = 0.16
@@ -107,7 +121,9 @@ final class VoiceSession: ObservableObject {
         restarts = 0
         lastLoudAt = .distantPast; heardSpeech = false; noiseFloor = 0.06; spokeSinceFlush = false
         flushTask?.cancel(); flushTask = nil
+        waitedForText = nil
         executor.foreground = settings.voiceBringsAppsForward
+        startWatchdog()
         // Open the model connections now, so the first decision skips the TLS handshake.
         services.jev.warm()
         services.claude.warm()
@@ -136,7 +152,10 @@ final class VoiceSession: ObservableObject {
         guard phase != .off else { return }
         startTask?.cancel(); startTask = nil
         decideTask?.cancel(); decideTask = nil
+        decideGeneration &+= 1
+        inflightHead = nil
         flushTask?.cancel(); flushTask = nil
+        watchdog?.cancel(); watchdog = nil
         browserURLTask?.cancel()
         phase = .off
         hint = ""
@@ -206,6 +225,13 @@ final class VoiceSession: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(300))
                     do {
                         let locale = await SpeechListener.resolveLocale(preferred: NaviSettings.shared.voiceLocale)
+                        // The new recognizer's transcript starts from nothing: the cursor must too.
+                        self.decideTask?.cancel(); self.decideTask = nil
+                        self.decideGeneration &+= 1
+                        self.inflightHead = nil
+                        self.segmenter.restartTranscript()
+                        self.pendingText = ""
+                        self.waitedForText = nil
                         try await l.start(locale: locale, audioFile: self.audioFile)
                     } catch {
                         self.phase = .error((error as? NaviError)?.errorDescription ?? error.localizedDescription)
@@ -257,11 +283,20 @@ final class VoiceSession: ObservableObject {
         DebugTrace.log("voice transcript | final=“\(finalized.suffix(60))” volatile=“\(volatile)” pending=“\(pendingText)”")
         #endif
         if phase == .paused {
-            // Only "resume" / "stop listening" get through while paused.
-            let head = segmenter.pending()?.head.lowercased() ?? ""
-            if let ctl = VoiceDecider.heuristicControl(head), ctl == .resume || ctl == .stopListening {
+            // Only "resume" / "stop listening" get through while paused — looked for
+            // in the last few words, so it is heard however much was said before it.
+            let tail = segmenter.tailWords(4)
+            var ctl: VoiceDecider.Control?
+            for n in stride(from: min(4, tail.count), through: 1, by: -1) {
+                if let c = VoiceDecider.heuristicControl(tail.suffix(n).joined(separator: " ")), c == .resume || c == .stopListening { ctl = c; break }
+            }
+            if let ctl {
                 segmenter.discardPending()
+                pendingText = ""
                 ctl == .resume ? resume() : stop()
+            } else {
+                // Don't let the transcript pile up behind the cursor while paused.
+                segmenter.trimPending(keepLast: Self.pausedTailWords)
             }
             return
         }
@@ -273,14 +308,52 @@ final class VoiceSession: ObservableObject {
     private func scheduleDecision(after ms: Int) {
         decideTask?.cancel()
         inflightHead = nil
+        decideGeneration &+= 1
+        let gen = decideGeneration
         decideTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(max(0, ms)))
-            guard !Task.isCancelled, let self else { return }
-            await self.decideNow()
+            guard !Task.isCancelled, let self, gen == self.decideGeneration else { return }
+            await self.decideNow(generation: gen)
         }
     }
 
-    private func decideNow() async {
+    /// Nothing the user said may sit behind the cursor with no decision on the
+    /// way. Every bookkeeping path above tries to guarantee that; this is the
+    /// backstop for the ones that don't (a decision discarded because the
+    /// recognizer revised the clause under it, a cancelled task racing a new
+    /// one, an unexpected throw). It leaves a clause alone only while a decision
+    /// is in flight or scheduled, or when the last answer for exactly these
+    /// words was "wait for more words".
+    private func startWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(Self.watchdogMs))
+                guard !Task.isCancelled, let self else { return }
+                self.watchdogTick()
+            }
+        }
+    }
+
+    private func watchdogTick() {
+        guard phase == .listening, decideTask == nil, let clause = segmenter.pending() else { return }
+        let text = segmenter.pendingText
+        if let waited = waitedForText, waited == text { return }
+        let age = Int(Date().timeIntervalSince(segmenter.lastChangeAt) * 1000)
+        guard age >= Self.watchdogStaleMs else { return }
+        Log.voice.warning("watchdog: “\(clause.head, privacy: .public)” had no decision for \(age) ms — deciding now")
+        #if DEBUG
+        DebugTrace.log("voice watchdog | head=“\(clause.head)” idle \(age)ms → decide")
+        #endif
+        scheduleDecision(after: 0)
+    }
+
+    private func decideNow(generation gen: Int) async {
+        defer {
+            // Only the latest decision owns the bookkeeping; a superseded one must
+            // not clear the state of the one that replaced it.
+            if gen == decideGeneration { inflightHead = nil; decideTask = nil }
+        }
         guard phase == .listening, let clause = segmenter.pending() else {
             if phase == .listening { hint = "" }
             return
@@ -290,7 +363,6 @@ final class VoiceSession: ObservableObject {
         var decision: VoiceDecider.Decision
         if services.jev.isConfigured {
             inflightHead = clause.head
-            defer { inflightHead = nil }
             let jev = services.jev
             let state = JevClient.JSONValue(any: VoiceDecider.stateJSON(input))
             let questions = VoiceDecider.questions(input)
@@ -319,12 +391,19 @@ final class VoiceSession: ObservableObject {
             jevStatus = "No Jev key · local rules"
             decision = VoiceDecider.heuristicDecision(input)
         }
+        guard gen == decideGeneration, phase == .listening else { return }
         // The user kept talking: the answer only applies if the head is unchanged.
-        guard phase == .listening, let now = segmenter.pending(), now.head == clause.head, now.start == clause.start else { return }
+        // Otherwise the new clause needs a decision of its own — right away.
+        guard let now = segmenter.pending() else { return }
+        guard now.head == clause.head, now.start == clause.start else {
+            scheduleDecision(after: 60)
+            return
+        }
         apply(decision, to: now)
     }
 
     private func apply(_ decision: VoiceDecider.Decision, to clause: UtteranceSegmenter.Clause) {
+        waitedForText = nil
         switch decision {
         case .commit(let command):
             #if DEBUG
@@ -350,7 +429,7 @@ final class VoiceSession: ObservableObject {
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
         case .wait(let reason, let retry):
             hint = reason
-            if let retry { scheduleDecision(after: retry) }
+            if let retry { scheduleDecision(after: retry) } else { waitedForText = segmenter.pendingText }
         }
     }
 
