@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var panelController: PanelController!
     private(set) var hotKey: HotKeyManager!
     private(set) var services: NaviServices!
+    /// Voice control: the notch island + its session. Created lazily on first use.
+    private(set) var voice: VoiceIslandController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -18,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         services = NaviServices.bootstrap()
         panelController = PanelController(services: services)
+        panelController.viewModel.onVoiceRequested = { [weak self] in self?.toggleVoice() }
         hotKey = HotKeyManager()
         hotKey.onActivate = { [weak self] in self?.togglePanel() }
         hotKey.register(settings: NaviSettings.shared)
@@ -59,12 +62,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if DebugPlanProbe.handle(url, claude: services.claude) { continue }   // navi://debug-plan?q=…
             #endif
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            if url.host == "voice" {
+                // navi://voice toggles voice control; navi://voice?file=/path.aiff feeds a recording (debug).
+                if let f = comps?.queryItems?.first(where: { $0.name == "file" })?.value, !f.isEmpty {
+                    voiceController.start(audioFile: URL(fileURLWithPath: f))
+                } else {
+                    toggleVoice()
+                }
+                continue
+            }
             let q = comps?.queryItems?.first(where: { $0.name == "q" })?.value ?? ""
             panelController.show(prefill: q, submit: url.host == "run")
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        voice?.stop()
         services.stopBackgroundServices()
     }
 
@@ -72,6 +85,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func togglePanel() {
         panelController.toggle()
+    }
+
+    var voiceController: VoiceIslandController {
+        if let voice { return voice }
+        let v = VoiceIslandController(session: VoiceSession(services: services))
+        voice = v
+        return v
+    }
+
+    /// Start (or stop) live voice control: the island drops out of the notch
+    /// and Navi acts on each instruction as it is spoken.
+    func toggleVoice() {
+        if panelController.isVisible { panelController.hide() }
+        voiceController.toggle()
     }
 
     /// Brings the panel up on the running (or just-finished) agent task.

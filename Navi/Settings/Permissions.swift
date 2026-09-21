@@ -27,10 +27,11 @@ enum Permissions {
     }
 
     enum Pane {
-        case accessibility, screenRecording, automation, notifications, loginItems, keyboardShortcuts
+        case accessibility, screenRecording, automation, notifications, loginItems, keyboardShortcuts, microphone
 
         var url: String {
             switch self {
+            case .microphone: return "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
             case .accessibility: return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
             case .screenRecording: return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
             case .automation: return "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
@@ -50,6 +51,22 @@ enum Permissions {
     static func requestAccessibility() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         AXIsProcessTrustedWithOptions(opts)
+    }
+
+    // MARK: Microphone (voice control)
+
+    static var microphone: State {
+        switch SpeechListener.microphoneStatus {
+        case .authorized: return .granted
+        case .denied, .restricted: return .denied
+        case .notDetermined: return .notDetermined
+        @unknown default: return .unknown
+        }
+    }
+
+    static func requestMicrophone() async -> State {
+        _ = await SpeechListener.requestMicrophone()
+        return microphone
     }
 
     // MARK: Screen Recording
@@ -121,12 +138,14 @@ final class PermissionsModel: ObservableObject {
     @Published var screenRecording: Permissions.State = .unknown
     @Published var automation: Permissions.State = .unknown
     @Published var notifications: Permissions.State = .unknown
+    @Published var microphone: Permissions.State = .unknown
 
     func refresh() async {
         accessibility = Permissions.accessibility
         screenRecording = Permissions.screenRecording
         automation = Permissions.automation
         notifications = await Permissions.notifications()
+        microphone = Permissions.microphone
     }
 
     /// Poll every `interval` seconds until the task is cancelled (tie to `.task`).
