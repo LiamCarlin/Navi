@@ -49,8 +49,9 @@ final class VoiceCommandExecutor {
     private(set) var current: Item?
     private var currentTask: Task<Void, Never>?
     private var currentRun: AgentRunHandle?
-    /// The run the deadline timer stopped, so its cancellation reads as "too long" rather than "stop".
+    /// The run the idle watchdog stopped, so its cancellation reads as "stalled" rather than "stop".
     private var timedOutRun: UUID?
+    private var lastRunEventAt = Date()
     /// Approval the current command is waiting for: the agent's or a system action's.
     private(set) var pendingApproval: (description: String, risk: String, respond: (Bool) -> Void)?
     /// The app the last command opened or worked in, for follow-up clauses.
@@ -60,11 +61,11 @@ final class VoiceCommandExecutor {
     private(set) var recent: [String] = []
     private let input = InputController()
 
-    static let maxRecent = 5
-    /// A spoken instruction never occupies the queue longer than this: the
-    /// agent's own step budget and coaching normally end a run well before, but
-    /// a stall here would freeze every instruction behind it.
-    static let taskDeadlineMs = 45_000
+    static let maxRecent = 8
+    /// A task may run as long as it keeps working — minutes, if that's what it
+    /// takes — but one that reports nothing at all for this long has stalled,
+    /// and a stall here would freeze every instruction behind it.
+    static let taskIdleMs = 120_000
 
     init(services: NaviServices) { self.services = services }
 
@@ -254,21 +255,29 @@ final class VoiceCommandExecutor {
             context.frontmostApp = bid
             context.frontmostAppName = last.name
         }
-        let maxSteps = min(max(NaviSettings.shared.agentMaxSteps, 4), 20)
+        // The full step budget from Settings: a spoken task can be as long as a typed one.
+        let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
         let options = ComputerAgent.RunOptions(background: !foreground, showOverlay: false, maxSteps: maxSteps,
                                                planWithClaude: false, surface: surface, useCurrentTab: useCurrentTab)
         let handle = services.agent.run(task: task, context: context, options: options)
         currentRun = handle
         var outcome: Outcome = .failed("The task ended without a result")
-        let deadline = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(Self.taskDeadlineMs))
-            guard !Task.isCancelled, let self else { return }
-            Log.voice.warning("voice task exceeded \(Self.taskDeadlineMs) ms — cancelling: \(task.prefix(80), privacy: .public)")
-            self.timedOutRun = handle.id
-            handle.cancel()
+        lastRunEventAt = Date()
+        let idleWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self else { return }
+                let idle = Int(Date().timeIntervalSince(self.lastRunEventAt) * 1000)
+                guard idle >= Self.taskIdleMs else { continue }
+                Log.voice.warning("voice task silent for \(idle) ms — cancelling: \(task.prefix(80), privacy: .public)")
+                self.timedOutRun = handle.id
+                handle.cancel()
+                return
+            }
         }
-        defer { deadline.cancel() }
+        defer { idleWatch.cancel() }
         for await ev in handle.events {
+            lastRunEventAt = Date()
             switch ev {
             case .step(_, let d): onEvent?(.progress(item, d))
             case .status(let s): onEvent?(.progress(item, s))
@@ -279,7 +288,7 @@ final class VoiceCommandExecutor {
                 onEvent?(.needsApproval(item, description: d, risk: r))
             case .completed(let s): outcome = .done(s)
             case .failed(let m): outcome = .failed(m)
-            case .cancelled: outcome = timedOutRun == handle.id ? .failed("Took too long and was stopped") : .cancelled
+            case .cancelled: outcome = timedOutRun == handle.id ? .failed("Stalled with no progress for \(Self.taskIdleMs / 1000) s and was stopped") : .cancelled
             }
         }
         if case .done = outcome, let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID {
