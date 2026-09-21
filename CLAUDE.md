@@ -114,7 +114,8 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     asks `replaces_current`: a correction ("no, I mean…") aborts the running
     command (`Decision.replace`) instead of queuing behind it. Heads made of
     function words ("you", "to the") or 1–2 words Jev can't classify are dropped
-    locally — each used to cost a 2 s agent run. A spoken task is capped at 45 s.
+    locally — each used to cost a 2 s agent run. A spoken task may run for as long
+    as it keeps reporting steps (minutes); only one silent for 2 min is stopped.
     Debug: `navi://voice?file=/path.aiff` replays a recording
     (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`.
 - Always pass **structured state** (labelled sections, not prose) — Jev is trained on program state.
