@@ -180,6 +180,33 @@ assert nr.browser_module.browser_operation is nr.browser_operation_navi
 assert "getClientRects" in nr.CLICK_POINT_JS and "e.contains(t)" in nr.CLICK_POINT_JS
 print("click point OK")
 
+# --- Google Docs body (adaptation 15) ---
+assert ".kix-appview-editor,[contenteditable" in js and "docs_body:docsBody" in js and "return 'textbox';" in js
+assert "Document body — the page itself" in js
+calls = []
+real_cdp = nr.cdp
+def fake_cdp(method, **params):
+    calls.append((method, params))
+    if method == "Runtime.evaluate":
+        return {"result": {"value": {"x": 400, "y": 300}}}
+    return {}
+nr.cdp = fake_cdp
+try:
+    nr.browser_operation_navi({"operation": "act", "session": "s", "text": "Patriots 20, Steelers 3",
+                               "action": {"id": "e5", "node": 5, "kind": "fill", "docs_body": True, "label": "Document body"}})
+    kinds = [m for m, _ in calls]
+    assert kinds == ["Runtime.evaluate", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent",
+                     "Input.dispatchKeyEvent", "Input.dispatchKeyEvent", "Input.insertText"], kinds
+    assert all("commands" not in p for m, p in calls if m == "Input.dispatchKeyEvent")   # no select-all in a document
+    assert calls[3][1]["key"] in {"ArrowDown", "End"} and calls[-1][1]["text"] == "Patriots 20, Steelers 3"
+    calls.clear()
+    nr.browser_operation_navi({"operation": "act", "session": "s", "text": "Q3 report",
+                               "action": {"id": "e2", "node": 2, "kind": "fill", "label": "Rename"}})
+    assert [p.get("commands") for m, p in calls if m == "Input.dispatchKeyEvent"] == [["selectAll"], None]   # ordinary fields still replace
+finally:
+    nr.cdp = real_cdp
+print("docs body OK")
+
 # --- page settle (adaptation 10) ---
 class FakeBrowser:
     """Observations scripted as (readyState, page) pairs."""
@@ -195,14 +222,21 @@ class FakeAgent:
 def pg(fp, n, url="https://maps.example/dir"):
     return {"url": url, "fingerprint": fp, "actions": [{"id": f"e{i}", "node": i, "kind": "click", "label": f"L{i}"} for i in range(n)]}
 nr.SETTLE_POLL_S = 0.001
+nr.GROWTH_CHECK_S = 0.001
 # A blank document (0 interactive elements) is re-observed until it renders and holds still.
 blank = pg("f0", 0)
 fb = FakeBrowser([("loading", pg("f1", 3)), ("complete", pg("f2", 12)), ("complete", pg("f2", 12))])
 ag = FakeAgent(blank, fb)
 assert nr.settle_page(ag) == 3 and ag.state["page"]["fingerprint"] == "f2"
-# A page that already has controls and did not just navigate is not touched.
+# A page that already has controls and did not just navigate (same document) is not touched.
 fb2 = FakeBrowser([("complete", pg("x", 5))]); ag2 = FakeAgent(pg("f9", 5), fb2)
-assert nr.settle_page(ag2) == 0 and fb2.observed == 0
+assert nr.settle_page(ag2, previous_url="https://maps.example/dir?z=1") == 0 and fb2.observed == 0
+# The start page gets one growth check: a shell whose table is still filling in (Drive's
+# sidebar before its file grid) keeps settling until it holds still; a stable one costs one look.
+fb5 = FakeBrowser([("complete", pg("s1", 12)), ("complete", pg("s2", 30)), ("complete", pg("s2", 30))]); ag5 = FakeAgent(pg("s0", 5), fb5)
+assert nr.settle_page(ag5) == 3 and ag5.state["page"]["fingerprint"] == "s2" and len(ag5.state["page"]["actions"]) == 30
+fb6 = FakeBrowser([("complete", pg("t1", 6))]); ag6 = FakeAgent(pg("t0", 5), fb6)
+assert nr.settle_page(ag6) == 1 and fb6.observed == 1 and ag6.state["page"]["fingerprint"] == "t1"
 # A navigation (URL changed) is settled even if the first frame has a few controls.
 fb3 = FakeBrowser([("complete", pg("g1", 4)), ("complete", pg("g1", 4))]); ag3 = FakeAgent(pg("g0", 2), fb3)
 assert nr.settle_page(ag3, previous_url="https://www.google.com/search?q=x") == 2
@@ -269,3 +303,112 @@ jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-
     "questions": {"operation": {"type": "choice", "criteria": {"CLICK": "c"}, "instructions": {"goal": "g"}}}})
 assert seen["body"]["state"]["guidance"].startswith("(Written on the previous page")
 print("coach per document OK")
+
+# --- web-app playbooks (adaptation 14) ---
+skills = [
+    {"app": "Google Drive", "hosts": ["drive.google.com"],
+     "how_it_works": ["Left sidebar: My Drive, Shared with me."],
+     "recipes": [{"goal": "find a file shared by someone", "keywords": ["shared", "find", "by"], "steps": ["Open shared-with-me", "Read the rows"]},
+                 {"goal": "create a doc", "keywords": ["create", "new"], "steps": ["CLICK '+ New'"]}],
+     "done_when": ["the file is open"], "avoid": ["Do not click Shared with me again."], "field_hints": ["Search takes words only."]},
+    {"app": "Google Search", "hosts": ["google.com", "www.google.com"], "how_it_works": ["Results are links."], "recipes": []},
+    {"app": "Google Maps", "hosts": ["google.com/maps"], "how_it_works": ["Directions view."], "recipes": []},
+]
+pb = nr.Playbook(skills=skills, goal="Find the report shared with me by Heesung")
+assert pb.skill_for("https://drive.google.com/drive/shared-with-me")["app"] == "Google Drive"
+assert pb.skill_for("https://www.google.com/search?q=x")["app"] == "Google Search"
+assert pb.skill_for("https://www.google.com/maps/dir/a/b")["app"] == "Google Maps"     # path-scoped host wins
+assert pb.skill_for("https://example.com/") is None and pb.skill_for(None) is None
+book = pb.playbook_for("https://drive.google.com/drive/my-drive")
+assert book["app"] == "Google Drive" and book["done_when"] == ["the file is open"] and book["avoid"]
+assert [r["goal"] for r in book["recipes"]] == ["find a file shared by someone"]      # only the matching recipe
+assert "how_it_works" in book and "field_hints" not in book                            # hints go to the text helper, not Jev
+assert pb.field_hints_for("https://drive.google.com/x") == ["Search takes words only."]
+assert nr.Playbook(skills=skills, goal="do something").playbook_for("https://drive.google.com/").get("recipes") is None
+seen = {}
+jev_model.post_json = lambda url, key, body: seen.update(body=body) or {"answers": {}}
+pb.install()
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest",
+    "state": {"page": {"url": "https://drive.google.com/drive/shared-with-me"}},
+    "questions": {"operation": {"type": "choice", "criteria": {"CLICK": "c"}, "instructions": {"goal": "g"}},
+                  "click_target": {"type": "choice", "criteria": {"1": {}}, "instructions": {"goal": "g"}}}})
+assert seen["body"]["state"]["playbook"]["app"] == "Google Drive"
+assert seen["body"]["questions"]["operation"]["instructions"]["playbook"] == nr.PLAYBOOK_RULE
+assert "playbook" not in seen["body"]["questions"]["click_target"]["instructions"]
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest",
+    "state": {"page": {"url": "https://example.com/"}}, "questions": {"operation": {"type": "choice", "criteria": {}, "instructions": {}}}})
+assert "playbook" not in seen["body"]["state"]                                         # unknown site: untouched
+os.environ["NAVI_PLAYBOOKS_JSON"] = json.dumps(skills)
+assert len(nr.Playbook.from_env()) == 3
+os.environ["NAVI_PLAYBOOKS_JSON"] = "not json"
+assert nr.Playbook.from_env() == []
+print("web playbooks OK")
+
+# --- the tab is the deliverable (adaptation 13) ---
+for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
+    os.environ.pop(var, None)
+assert nr.tab_policy() == "keep"
+os.environ["NAVI_TAB_POLICY"] = "reveal"; assert nr.tab_policy() == "reveal"
+os.environ["NAVI_TAB_POLICY"] = "close"; assert nr.tab_policy() == "close"
+os.environ["NAVI_TAB_POLICY"] = "bogus"; os.environ["NAVI_KEEP_TAB"] = "1"; assert nr.tab_policy() == "keep"
+assert not nr.should_close_tab("keep", "done", 3)        # a completed effect task keeps its tab
+assert not nr.should_close_tab("reveal", "done", 3)
+assert nr.should_close_tab("close", "done", 3)           # a background lookup: answer is in the panel
+assert not nr.should_close_tab("close", "blocked", 2)    # failures keep the tab so the user can take over
+assert not nr.should_close_tab("keep", "cancelled", 1)
+assert nr.should_close_tab("keep", "blocked", 0)         # nothing happened on it
+assert nr.should_close_tab("reveal", "error", 0)
+print("tab policy OK")
+
+# --- a helper with no value is a failed step (adaptation 16) ---
+class NoTextAgent:
+    def __init__(self):
+        self.screenshots = False
+        self.pending_text = ("ctx", None, None)
+        self.state = {"status": "ready", "decision": None, "decisions": [], "history": [], "started_at": time.perf_counter(),
+                      "page": {"url": "https://drive.google.com/drive/shared-with-me", "page_key": [1.0, "u"], "fingerprint": "f1",
+                               "actions": [{"id": "e2", "node": 2, "kind": "fill", "label": "Search in Drive"},
+                                           {"id": "e2c", "node": 2, "kind": "click", "label": "Open Search in Drive"},
+                                           {"id": "e3", "node": 3, "kind": "click", "label": "Shared with me"}]}}
+    def command(self, name, body):
+        if name == "predict":
+            self.state["decision"] = {"operation": "TYPE_TEXT", "choice": "e2", "confidence": 0.8, "operation_probabilities": {"TYPE_TEXT": 0.8}}
+            self.state["decisions"].append(self.state["decision"]); self.state["status"] = "predicted"
+        elif name == "act":
+            raise ValueError("Text helper returned no valid field value; nothing typed.")
+import time
+na = NoTextAgent(); rj = nr.RejectedClicks()
+assert nr.tick(na, set(), rj) == "no_text"
+assert na.state["status"] == "ready" and na.state["decision"] is None and na.pending_text is None
+h = na.state["history"][-1]
+assert h["kind"] == "fill" and h["page_changed"] is False and "no value" in h["note"] and h["action"] == "Search in Drive"
+filtered = rj.filter(na.state["page"])
+assert [a["id"] for a in filtered["actions"]] == ["e2c", "e3"]          # TYPE_TEXT on that field is gone; its click stays
+# Any other ValueError still propagates.
+class OtherErrorAgent(NoTextAgent):
+    def command(self, name, body):
+        if name == "predict": return super().command(name, body)
+        raise ValueError("Stopped at the 60-action demo budget")
+try:
+    nr.tick(OtherErrorAgent(), set(), nr.RejectedClicks()); raise AssertionError("should raise")
+except ValueError as exc:
+    assert "budget" in str(exc)
+print("no-text step OK")
+
+# --- rows and item cards are targets (adaptation 17) ---
+js = nr.patched_snapshot_js()
+assert "const itemCell=rname==='gridcell'" in js and "rname==='row' || itemCell" in js and "'Open (double-click): '" in js
+assert '[role="row"][aria-selected]' in js and "role:rname==='row' ? 'row' : 'item'" in js
+calls = []
+nr.cdp = fake_cdp
+try:
+    nr.browser_operation_navi({"operation": "act", "session": "s", "text": None,
+                               "action": {"id": "e7", "node": 7, "kind": "click", "dblclick": True, "label": "Open (double-click): Report"}})
+    mouse = [(p["type"], p["clickCount"]) for m, p in calls if m == "Input.dispatchMouseEvent"]
+    assert mouse == [("mousePressed", 1), ("mouseReleased", 1), ("mousePressed", 2), ("mouseReleased", 2)], mouse
+    calls.clear()
+    nr.browser_operation_navi({"operation": "act", "session": "s", "text": None, "action": {"id": "e7", "node": 7, "kind": "click", "label": "Report"}})
+    assert [(p["type"], p["clickCount"]) for m, p in calls if m == "Input.dispatchMouseEvent"] == [("mousePressed", 1), ("mouseReleased", 1)]
+finally:
+    nr.cdp = real_cdp
+print("rows and items OK")

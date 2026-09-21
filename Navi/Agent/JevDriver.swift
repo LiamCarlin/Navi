@@ -37,7 +37,7 @@ struct JevDriver: Sendable {
             case .scrollUp: return "Scroll up"
             case .scrollDown: return "Scroll down"
             case .wait: return "Wait for the screen to update"
-            case .done: return "Every requirement is visibly satisfied."
+            case .done: return "Every requirement is visibly satisfied (see `playbook.done_when` when present). Not DONE while no action has been taken and the goal asks to create, send, type, compute, open or change something that is not yet on screen."
             case .blocked: return "No supported operation can progress."
             case .key: return "Press a keyboard shortcut or key (Return to submit, Escape to dismiss, ⌘L for the address bar, …)."
             case .openApp: return "Launch or switch to an application named in the goal."
@@ -74,6 +74,10 @@ struct JevDriver: Sendable {
     Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
     DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
     a matching link is not enough. BLOCKED means no supported operation can make progress.
+    When the state has a `playbook`, it describes THIS app: follow its `recipes` step by step for goals like
+    this one, use its `shortcuts` (a KEY is often the whole step: ⌘N makes the new item), respect `avoid`,
+    and judge DONE against `done_when`. `experience` lists action sequences that completed similar goals
+    here before; prefer repeating what worked. `progress.actions_taken` is how many actions this run has made.
     """
 
     static let targetRules = """
@@ -120,7 +124,7 @@ struct JevDriver: Sendable {
         }
     }
 
-    struct StepInput: Sendable {
+    struct StepInput: @unchecked Sendable {
         var task: String
         var step: Int
         var maxSteps: Int
@@ -131,6 +135,16 @@ struct JevDriver: Sendable {
         /// Claude's coaching after Jev kept failing (`JevCoach`); rides along in
         /// the state and in every question's instructions for the rest of the step.
         var guidance: String? = nil
+        /// `AppSkills.playbook` for the app on screen: layout, shortcuts, matching recipes, done_when, avoid.
+        var playbook: [String: Any]? = nil
+        /// `AgentExperience`: "goal → actions" lines that completed similar goals in this app before.
+        var experience: [String] = []
+        /// KEY candidates for this app (`AppSkills.keyCombos`); the generic list by default.
+        var keyCombos: [(String, String)] = JevDriver.keyCombos
+        /// Actions executed so far in this step (declined/coach entries excluded).
+        var actionsTaken: Int = 0
+        /// A premature DONE was already rejected once for this screen; Jev's next DONE stands.
+        var doneRejected: Bool = false
     }
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
@@ -169,6 +183,13 @@ struct JevDriver: Sendable {
             "recent_actions": input.history.suffix(historyInState).map(\.json),
         ]
         if let g = input.guidance { state["guidance"] = g }
+        if let p = input.playbook { state["playbook"] = p }
+        if !input.experience.isEmpty { state["experience"] = input.experience }
+        var progress: [String: Any] = ["actions_taken": input.actionsTaken]
+        if input.doneRejected {
+            progress["note"] = "DONE was rejected once because nothing had been done yet; choose DONE again only if the result is already visible."
+        }
+        state["progress"] = progress
         return state
     }
 
@@ -249,13 +270,13 @@ struct JevDriver: Sendable {
                 heads["select_target"] = ids
             }
         }
-        // KEY — fixed combos.
+        // KEY — the generic combos plus the app's own (`AppSkills.keyCombos`).
         do {
             operations[Operation.key.rawValue] = Operation.key.label
             var crit: [String: J] = [:]
-            for (k, d) in keyCombos { crit[k] = .string(d) }
+            for (k, d) in input.keyCombos { crit[k] = .string(d) }
             questions["key_target"] = .choiceJSON(instructions: targetInstructions(.key), criteria: crit)
-            heads["key_target"] = keyCombos.map(\.0)
+            heads["key_target"] = input.keyCombos.map(\.0)
         }
         // OPEN_APP / OPEN_URL — only when the task names something (zero-latency candidates).
         if !input.appCandidates.isEmpty {
@@ -284,7 +305,8 @@ struct JevDriver: Sendable {
         heads["operation"] = Array(operations.keys).sorted()
 
         // Safety nouls ride along in the same call (same wording as JevGate).
-        questions["task_complete"] = .noul(instructions: "The user's goal is already fully accomplished, as evidenced by the current screen (window, url, text and elements)")
+        questions["task_complete"] = .noul(instructions: "The user's goal is already fully accomplished, as evidenced by the current screen (window, url, text and elements)"
+                                           + (input.playbook?["done_when"] != nil ? " — judged against `playbook.done_when`; a fresh or empty window is not evidence" : ""))
         questions["is_irreversible"] = JevGate.questions["is_irreversible"]
         questions["is_prohibited"] = JevGate.questions["is_prohibited"]
 
@@ -366,17 +388,33 @@ struct JevDriver: Sendable {
         case act(AgentAction)
         case fallbackToClaude(reason: String)
         case blocked(reason: String)
+        /// DONE with nothing done yet on an effect goal: re-observe and ask once more.
+        case prematureDone(reason: String)
     }
 
-    static func decide(_ v: Verdict, request: Request, threshold: Double) -> Decision {
+    /// A DONE before any action, for a goal that asks for an effect, must be
+    /// this sure; otherwise it is re-asked once (`Decision.prematureDone`).
+    static let prematureDoneConfidence = 0.95
+
+    static func decide(_ v: Verdict, request: Request, threshold: Double,
+                       effectGoal: Bool = false, actionsTaken: Int = 1, doneRejected: Bool = false) -> Decision {
+        // "Compute 12 × 34" answered DONE 95 % on a Calculator showing 0: nothing
+        // had been pressed. A first-step DONE on an effect goal gets one second look.
+        func premature(_ confidence: Double) -> Bool {
+            effectGoal && actionsTaken == 0 && !doneRejected && confidence < prematureDoneConfidence
+        }
         if v.taskComplete > thresholdTaskComplete {
+            if premature(v.taskComplete) { return .prematureDone(reason: "Jev sees the goal satisfied (\(Int(v.taskComplete * 100))%) before any action") }
             return .finish(reason: "Jev sees the goal satisfied (\(Int(v.taskComplete * 100))%)")
         }
         guard validate(v.operation, ids: request.operations), let opHead = v.operation,
               let op = Operation(rawValue: opHead.choice) else {
             return .fallbackToClaude(reason: "Jev's operation answer failed validation")
         }
-        if op == .done { return .finish(reason: "Jev chose DONE (\(Int(opHead.confidence * 100))%)") }
+        if op == .done {
+            if premature(opHead.confidence) { return .prematureDone(reason: "Jev chose DONE (\(Int(opHead.confidence * 100))%) before any action") }
+            return .finish(reason: "Jev chose DONE (\(Int(opHead.confidence * 100))%)")
+        }
         if op == .needVision { return .fallbackToClaude(reason: "Jev says the accessibility tree is insufficient for this step") }
         if op == .blocked { return .blocked(reason: "Jev chose BLOCKED: no supported operation can make progress") }
         if opHead.confidence < threshold {
@@ -425,7 +463,10 @@ struct JevDriver: Sendable {
             if let s = request.selectTargets[t] { return .select(elementID: s.element, option: s.option) }
             if let match = request.selectTargets.first(where: { $0.value.option == t }) { return .select(elementID: match.value.element, option: match.value.option) }
             return nil
-        case .key where keyCombos.contains(where: { $0.0.lowercased() == t.lowercased() }): return .key(keyCombos.first { $0.0.lowercased() == t.lowercased() }!.0)
+        case .key:
+            // Only an offered combo: Claude must not smuggle in ⌘Q or ⌘⌫.
+            let offered = request.heads["key_target"] ?? []
+            return offered.first(where: { $0.lowercased() == t.lowercased() }).map { .key($0) }
         case .openApp where !t.isEmpty: return .openApp(t)
         case .openURL where t.contains("."): return .openURL(t)
         case .scrollUp: return .scroll(up: true)

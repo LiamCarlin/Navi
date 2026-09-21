@@ -332,9 +332,56 @@ MATLAB/Chrome frontmost throughout; the target app never came forward.
     { "index": 3, "role": "AXPopUpButton", "label": "Size", "value": "Medium",
       "options": ["Small", "Medium", "Large"], "operations": ["CLICK", "SELECT"] }
   ],
-  "recent_actions": [ { "action": "Click ‘Search’", "kind": "click", "text": null, "page_changed": true } ]
+  "recent_actions": [ { "action": "Click ‘Search’", "kind": "click", "text": null, "page_changed": true } ],
+  "playbook": { "app": "Messages", "how_it_works": ["…"], "shortcuts": {"cmd+n": "New message (To: field focused)"},
+                "recipes": [{"goal": "send a message / text to a person", "steps": ["KEY cmd+n", "TYPE_TEXT the name into ‘To:’", "…"]}],
+                "done_when": ["…"], "avoid": ["Do not click an existing conversation to message a DIFFERENT person — use ⌘N."] },
+  "experience": ["text Sam the address → Press ⌘N · Type ‘…’ into ‘To:’ · Press Return · Type ‘…’ into ‘iMessage’ · Press Return"],
+  "progress": { "actions_taken": 0 }
 }
 ```
+
+### Playbooks and experience — what Jev is told about the app
+
+Jev decides from labels and roles and knows nothing about the app it is in.
+From the run logs that meant: seven clicks to make a Notes note that ⌘N
+creates, `DONE 95 %` on a Calculator showing 0, and a text to *David* typed
+into *Mikey's* open conversation. TypeSafe's own guidance is the fix — "do
+not rely on knowledge stored in model weights when current information can
+come from your own knowledge base" and "the model cannot choose an omitted
+value" — so two knowledge sources ride in every request:
+
+- **`AppSkills`** (`Navi/Agent/AppSkills.swift`): a hand-written playbook per
+  app (Apple apps, Outlook, Slack, Spotify, VS Code, … and web apps by host:
+  Docs, Drive, Gmail, Google Calendar, Outlook web, YouTube, Amazon, GitHub…).
+  Each carries `how_it_works`, `shortcuts` (what ⌘N does *here*), `recipes`
+  (goal keywords → steps in Jev's operation vocabulary), `done_when`, `avoid`,
+  `field_hints` (for the Haiku text helper) and `deep_links` (for the
+  planner: "Google Drive: shared with me" → the real URL, so no more 404s from
+  invented ones). `AppSkills.playbook(for:goal:)` keeps only the recipes whose
+  keywords match the goal (≤ 3) so the state stays small; the skill's
+  shortcuts are *added to the KEY head* (Outlook's ⌘2 cannot be chosen unless
+  offered) and re-describe the generic combos. The skill is re-resolved every
+  step from the snapshot's bundle id / URL. The browser runner gets the web
+  skills as `NAVI_PLAYBOOKS_JSON` and injects the one matching the page host
+  through the same `post_json` wrapper the coach uses.
+- **`AgentExperience`** (`Navi/Agent/AgentExperience.swift`): Agent S–style
+  episodic memory. A completed step stores `(bundle id, goal, action labels)`
+  — labels only, never typed text — in
+  `~/Library/Application Support/Navi/agent-experience.json`; a later goal in
+  the same app that shares ≥ 2 content words gets up to three "goal → actions"
+  lines as `state.experience`.
+
+Measured on the failing screens (live Jev, same request shape): Messages
+with Mikey's chat open went from `CLICK Compose 42–56 %` to `KEY ⌘N 99 %`;
+Notes "create a new note" from clicking around to `KEY ⌘N`; Calculator's
+first-digit target confidence 77 % → 94 % with `task_complete` 0.08 → 0.03.
+Latency unchanged (~400–460 ms).
+
+**Premature DONE**: a first-step `DONE` / `task_complete` on a goal that asks
+for an effect (`!AgentRun.isLookup`), before any action, is not final unless
+≥ 95 % sure: the screen is re-observed once and Jev asked again with
+`progress.note`; the second answer stands (`Decision.prematureDone`).
 
 ### Questions (one call)
 
@@ -344,9 +391,9 @@ MATLAB/Chrome frontmost throughout; the target app never came forward.
 | `click_target` | choice | any element | `"<index>"` → `{element: "[i] label", current_value, role, checked?, selected?, expanded?, context}` — instructions `{goal, operation, rules: [NEXT_ACTION, TARGET]}` |
 | `type_text_target` | choice | editable, non-secure fields | same shape |
 | `select_target` | choice | pop-ups with enumerable options | `"<index>:<option>"` |
-| `key_target` | choice | always | Return, Escape, Tab, Delete, Space, arrows, ⌘L/T/W/F/A/C/V/Z/S, ⌘⏎, ⌘⇧T, ⌃Tab |
+| `key_target` | choice | always | Return, Escape, Tab, Delete, Space, arrows, ⌘L/T/W/F/A/C/V/Z/S, ⌘⏎, ⌘⇧T, ⌃Tab — plus the app skill's own shortcuts (`AppSkills.keyCombos`), generic ones re-described for the app |
 | `open_app_target` / `open_url_target` | choice | task names an app / URL (`TextCandidates`) | `{app}` / `{url}` |
-| `task_complete` | noul | always | "The user's goal is already fully accomplished, as evidenced by the current screen" |
+| `task_complete` | noul | always | "The user's goal is already fully accomplished, as evidenced by the current screen" (+ "judged against `playbook.done_when`" when a skill applies) |
 | `is_irreversible`, `is_prohibited` | noul | always | `JevGate.questions` wording — gating stays in one place |
 
 Only the head belonging to the chosen operation is read; the others are
@@ -358,6 +405,8 @@ JSON strings (see integrator notes in the handoff).
 
 ```text
 task_complete > 0.8 or operation == DONE        → .completed(summary from history)
+   … unless nothing has been done yet on an effect goal and confidence < 0.95
+                                                → .prematureDone: re-observe, ask once more
 operation head fails validate_choice            → fallback to Claude
    (choice offered, probabilities cover exactly the offered ids, all finite in [0,1],
     Σ ≈ 1 ± 0.02, chosen == argmax — same as jev-ultrafast model.validate_choice)
@@ -401,8 +450,35 @@ types via `ComputerAgentRunning.prepare`): the task is split into the fewest
 single-surface steps — a browser tab or one app — each with a self-contained
 goal, a clean search query / URL for browser steps, and `{{result}}` hand-off
 (Haiku distils the final page/screen text of a `needs_result` step into the
-next goal). Browser steps go to `ComputerAgent.browserRunner` (Chrome brought
-forward, tab activated); app steps activate the app, then run this driver.
+next goal). The planner's state carries `reference` (`AppSkills.plannerReference`:
+known app names and web deep links) so a Drive step starts on
+`/drive/shared-with-me` instead of an invented URL. Browser steps go to
+`ComputerAgent.browserRunner` (Chrome brought forward, tab activated); app
+steps activate the app, then run this driver.
+
+**What the browser runner now sees and survives** (`scripts/ultrafast/navi_runner.py`,
+adaptations 13–17): Google Drive's file cards (`role=gridcell` holding a
+"More actions" button) and list/inbox rows (`role=row`) were never in the
+element table — Jev saw a results page with nothing on it — and are now
+offered as items with an "Open (double-click): …" action; the Google Docs
+page body (a canvas editor with a hidden iframe) is offered as a textbox
+that is filled by clicking the page, ⌘↓, insert (never select-all); a text
+helper answering `{"text": null}` is a failed step that hides that field
+from TYPE_TEXT instead of ending the run; and the start page / a fresh
+navigation gets one extra look 300 ms later so a shell that is still filling
+in (Drive's sidebar before its grid) is not called BLOCKED. `decision`
+events carry the element table Jev chose from, so
+`ultrafast-last-run.jsonl` explains a wrong pick without a re-run.
+
+**The window is the deliverable.** The browser runner used to close its tab
+on exit — "make a Google Doc" ended with the doc closing. Now
+`NAVI_TAB_POLICY` (`UltrafastBridge.tabPolicy`) keeps the tab whenever
+anything happened on it; in background mode a completed *effect* task
+(`!AgentRun.isLookup`) gets `reveal` (tab fronted, Chrome activated) and a
+completed lookup gets `close` (its answer is in the panel). Failures always
+keep the tab so the user can take over. Native steps do the same:
+`AgentTarget.reveal()` brings the app forward after a completed effect task
+(`NaviSettings.agentRevealWhenDone`, default on).
 Without an Anthropic key one Jev choice (`TaskSurface`: browser / native_app
 / unsure) picks the surface instead.
 

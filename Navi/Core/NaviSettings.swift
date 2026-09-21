@@ -44,6 +44,10 @@ final class NaviSettings: ObservableObject {
     /// process, screenshots capture only its window, nothing is ever activated —
     /// so the user can keep working while a task runs.
     @Published var agentRunInBackground: Bool { didSet { d.set(agentRunInBackground, forKey: "agentRunInBackground") } }
+    /// Background mode: once a task that *makes* something (a note, an event, a
+    /// doc — not a lookup) completes, bring its app or browser tab to the front
+    /// so the result is not left hidden behind the user's windows.
+    @Published var agentRevealWhenDone: Bool { didSet { d.set(agentRevealWhenDone, forKey: "agentRevealWhenDone") } }
 
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
@@ -81,6 +85,7 @@ final class NaviSettings: ObservableObject {
             "agentJevConfidenceThreshold": 0.5,
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
+            "agentRevealWhenDone": true,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -108,6 +113,7 @@ final class NaviSettings: ObservableObject {
         agentJevConfidenceThreshold = d.double(forKey: "agentJevConfidenceThreshold")
         agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
         agentRunInBackground = d.bool(forKey: "agentRunInBackground")
+        agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")

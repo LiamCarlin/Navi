@@ -154,7 +154,21 @@ enum UltrafastBridge {
         env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
         // Coach (Claude diagnoses a failing run once): the agent model from Settings.
         env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
+        // Web-app playbooks (`AppSkills`): the runner adds the one matching each page to Jev's state.
+        env["NAVI_PLAYBOOKS_JSON"] = AppSkills.webPlaybooksJSON()
         return env
+    }
+
+    /// What happens to the runner's tab when the run ends (`NAVI_TAB_POLICY`).
+    /// The tab is the deliverable of an effect task ("make a Google Doc"), so it
+    /// stays open; in background mode it is also brought forward on completion
+    /// when Settings allow. A background *lookup* closes its tab on completion —
+    /// its answer is in the panel and the user never saw the tab. Failures always
+    /// keep the tab so the user can take over where the run stopped.
+    static func tabPolicy(task: String, background: Bool, revealWhenDone: Bool) -> String {
+        guard background else { return "keep" }
+        if AgentRun.isLookup(task) { return "close" }
+        return revealWhenDone ? "reveal" : "keep"
     }
 
     /// Runs one browser task, streaming events into `handle`. Returns when the
@@ -174,17 +188,23 @@ enum UltrafastBridge {
         } else {
             await bringBrowserForward()
         }
-        let (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+        var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
                                             allowEarlyBlockRetry: first != search, background: background)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab).
             // Start over from a search-results page for the task.
             handle.emit(.status("Nothing actionable on \(first) — retrying from a Google search"))
-            return await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                 allowEarlyBlockRetry: false, background: background).text
+            (outcome, text) = await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                                            allowEarlyBlockRetry: false, background: background)
         }
+        // The runner fronted its tab inside Chrome ("reveal"); Chrome itself may still
+        // be behind the user's windows — the tab *is* the result, so bring it forward.
+        if outcome == .completed, background, lastTabPolicy == "reveal" { await bringBrowserForward() }
         return text
     }
+
+    /// The policy of the most recent run (set in `runOnce`), for `run`'s reveal.
+    nonisolated(unsafe) private static var lastTabPolicy = "keep"
 
     /// The runner works in its own Chrome tab; make Chrome frontmost so the
     /// user watches the task happen instead of wondering what the new tab is.
@@ -215,6 +235,10 @@ enum UltrafastBridge {
             return (.failed, nil)
         }
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
+        let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true
+        let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
+        env["NAVI_TAB_POLICY"] = policy
+        lastTabPolicy = policy
         var outcome: RunOutcome = .failed
         var finalText: String?
         let proc = Process()

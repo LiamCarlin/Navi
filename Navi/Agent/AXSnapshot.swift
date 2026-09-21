@@ -39,15 +39,18 @@ struct AXElement: @unchecked Sendable {
     var pid: pid_t
     /// Enumerable options of a pop-up/combo box (SELECT targets); empty when unknown.
     var options: [String]
+    /// Inside an AXWebArea (browser page / Electron view). Chromium acknowledges
+    /// `AXPress` there and drops it, so such elements get a real click.
+    var isWebContent: Bool
     /// Live reference; nil in tests.
     var ref: AXUIElement?
 
     init(id: String = "", role: String, subrole: String? = nil, label: String, value: String? = nil,
          frame: CGRect, isFocused: Bool = false, path: String = "", actions: [String] = [],
-         pid: pid_t = 0, options: [String] = [], ref: AXUIElement? = nil) {
+         pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, ref: AXUIElement? = nil) {
         self.id = id; self.role = role; self.subrole = subrole; self.label = label; self.value = value
         self.frame = frame; self.isFocused = isFocused; self.path = path; self.actions = actions
-        self.pid = pid; self.options = options; self.ref = ref
+        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.ref = ref
     }
 
     /// Numeric index Jev sees ("e12" → 12).
@@ -171,6 +174,44 @@ struct AXSnapshot: @unchecked Sendable {
             parts.append("text changed")
         }
         return parts.isEmpty ? "no visible change" : parts.joined(separator: ", ")
+    }
+
+    // MARK: Labels (pure, testable)
+
+    /// A label for an element that exposes none: the static text drawn inside
+    /// its frame (reading order, first two pieces), else a humanised accessibility
+    /// identifier ("newNoteButton" → "new note button"), else the role description.
+    /// Jev picks targets by label; "the cell" ×40 is not a choice.
+    static func inferredLabel(for el: AXElement, texts: [(String, CGRect)], identifier: String, roleDescription: String) -> String {
+        let inside = texts.filter { t in
+            let f = t.1
+            guard !f.isEmpty, el.frame.width * el.frame.height > 0 else { return false }
+            let overlap = f.intersection(el.frame)
+            return !overlap.isNull && overlap.width * overlap.height >= 0.8 * f.width * f.height && f.width * f.height < el.frame.width * el.frame.height
+        }.sorted { a, b in
+            let ra = Int((a.1.minY / 12).rounded()), rb = Int((b.1.minY / 12).rounded())
+            return ra != rb ? ra < rb : a.1.minX < b.1.minX
+        }
+        if !inside.isEmpty {
+            var seen = Set<String>()
+            let parts = inside.map(\.0).filter { seen.insert($0).inserted }.prefix(2)
+            return String(parts.joined(separator: " · ").prefix(60))
+        }
+        let ident = identifier.trimmingCharacters(in: .whitespaces)
+        if !ident.isEmpty, !ident.hasPrefix("_"), !ident.contains(":"), ident.rangeOfCharacter(from: .letters) != nil, ident.count <= 40 {
+            // camelCase / snake_case / kebab-case → words
+            var words: [String] = []
+            var current = ""
+            for ch in ident {
+                if ch == "_" || ch == "-" || ch == "." { if !current.isEmpty { words.append(current); current = "" }; continue }
+                if ch.isUppercase, !current.isEmpty, current.last?.isLowercase == true { words.append(current); current = "" }
+                current.append(ch)
+            }
+            if !current.isEmpty { words.append(current) }
+            return words.map { $0.lowercased() }.joined(separator: " ")
+        }
+        let rd = roleDescription.trimmingCharacters(in: .whitespaces)
+        return rd.lowercased() == el.role.dropFirst(2).lowercased() ? "" : rd
     }
 
     // MARK: Ranking (pure, testable)
@@ -326,7 +367,12 @@ final class AXSnapshotter: @unchecked Sendable {
         var element: AXUIElement
         var depth: Int
         var ancestors: [String]
+        var inWebArea: Bool = false
     }
+
+    /// Chromium/Electron apps: `AXPress` on web content returns success without
+    /// doing anything, so the executor clicks those elements for real.
+    static func pressIsUnreliable(bundleID: String?) -> Bool { needsEnhancedUI(bundleID: bundleID) }
 
     static func walk(pid: pid_t, near: CGRect?, includeMenuBar: Bool) -> AXSnapshot {
         let deadline = Date().addingTimeInterval(AXSnapshot.walkBudgetSeconds)
@@ -363,7 +409,13 @@ final class AXSnapshotter: @unchecked Sendable {
         var visited = 0
         let attributes = [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
                           kAXEnabledAttribute, kAXFocusedAttribute, "AXFrame", kAXChildrenAttribute, kAXHiddenAttribute,
-                          kAXPlaceholderValueAttribute, kAXHelpAttribute, kAXTitleUIElementAttribute] as [String]
+                          kAXPlaceholderValueAttribute, kAXHelpAttribute, kAXTitleUIElementAttribute,
+                          kAXIdentifierAttribute, kAXRoleDescriptionAttribute] as [String]
+        /// Every static text with its frame, so an unlabelled cell/row/button can be
+        /// named after the text drawn inside it ("the cell" → "Mikey Ku · 9:12 PM").
+        var texts: [(String, CGRect)] = []
+        /// Candidates without a label, to be named in the post-pass.
+        var unlabelled: [(index: Int, identifier: String, roleDescription: String)] = []
 
         while let node = stack.popLast() {
             if visited >= AXSnapshot.nodeBudget || Date() > deadline { break }
@@ -389,9 +441,12 @@ final class AXSnapshotter: @unchecked Sendable {
             if label.isEmpty, isText { label = placeholder.isEmpty ? String((value ?? "").prefix(60)) : placeholder }
             if label.isEmpty, role == "AXStaticText", let v = value { label = String(v.prefix(60)) }
 
-            if role == "AXStaticText", let v = value, !v.isEmpty, textLength < AXSnapshot.visibleTextCap {
+            if role == "AXStaticText", let v = value, !v.isEmpty {
                 let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty { text.append(t); textLength += t.count + 1 }
+                if !t.isEmpty {
+                    if textLength < AXSnapshot.visibleTextCap { text.append(t); textLength += t.count + 1 }
+                    if let f, !f.isEmpty, texts.count < 600 { texts.append((String(t.prefix(60)), f)) }
+                }
             }
 
             var actions: [String] = []
@@ -411,16 +466,27 @@ final class AXSnapshotter: @unchecked Sendable {
                 let shownValue: String? = (isText || role == "AXCheckBox" || role == "AXRadioButton" || role == "AXSlider"
                                            || role == "AXPopUpButton" || role == "AXComboBox" || role == "AXTab") ? value : nil
                 let options = (role == "AXPopUpButton" || role == "AXComboBox") ? popUpOptions(el, children: elements(vals[8])) : []
+                if label.isEmpty, !isText {
+                    unlabelled.append((raw.count, (vals[13] as? String) ?? "", (vals[14] as? String) ?? ""))
+                }
                 raw.append(AXElement(role: role, subrole: vals[1] as? String, label: label,
                                      value: role == "AXSecureTextField" ? "••••" : shownValue.map { String($0.prefix(60)) },
-                                     frame: f, isFocused: focused, path: path, actions: actions, pid: pid, options: options, ref: el))
+                                     frame: f, isFocused: focused, path: path, actions: actions, pid: pid, options: options,
+                                     isWebContent: node.inWebArea || role == "AXWebArea", ref: el))
             }
 
             guard node.depth < AXSnapshot.maxDepth, let children = elements(vals[8]) else { continue }
             var ancestors = node.ancestors
             if !label.isEmpty, role != "AXStaticText", !isText { ancestors.append(String(label.prefix(30))) }
+            let inWebArea = node.inWebArea || role == "AXWebArea"
             // Push in reverse so the DFS visits children in their natural (reading) order.
-            for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors)) }
+            for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea)) }
+        }
+
+        // Name what has no name: the text inside it, else its identifier, else its role description.
+        for u in unlabelled {
+            let named = AXSnapshot.inferredLabel(for: raw[u.index], texts: texts, identifier: u.identifier, roleDescription: u.roleDescription)
+            if !named.isEmpty { raw[u.index].label = named }
         }
 
         let ranked = AXSnapshot.rank(raw, windowFrame: windowFrame, near: near)

@@ -31,17 +31,18 @@ final class ActionExecutor: @unchecked Sendable {
 
     func perform(_ action: AgentAction, text: String?, snapshot: AXSnapshot) async throws {
         aim(at: snapshot)
+        let unreliablePress = AXSnapshotter.pressIsUnreliable(bundleID: snapshot.bundleID)
         switch action {
         case .click(let id):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
-            try await click(el)
+            try await click(el, realClick: unreliablePress && el.isWebContent)
         case .typeText(let id):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
             guard let text, !text.isEmpty else { throw NaviError.other("No text to type") }
-            try await type(text, into: el)
+            try await type(text, into: el, realClick: unreliablePress && el.isWebContent)
         case .select(let id, let option):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
-            try await select(option, in: el)
+            try await select(option, in: el, realClick: unreliablePress && el.isWebContent)
         case .scroll(let up):
             let p = snapshot.focusedElement?.center ?? snapshot.windowFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
             await input.scroll(up ? .up : .down, amount: 5, at: p)
@@ -65,8 +66,12 @@ final class ActionExecutor: @unchecked Sendable {
 
     // MARK: Click
 
-    func click(_ el: AXElement) async throws {
-        if let ref = el.ref, el.hasPress {
+    /// `realClick`: skip `AXPress` and post a mouse click. Chromium and Electron
+    /// answer `AXPress` on web content with `.success` and do nothing — the
+    /// "silent no-op" every production AX engine special-cases — so a Chrome
+    /// button that "was clicked" three times without effect was never clicked.
+    func click(_ el: AXElement, realClick: Bool = false) async throws {
+        if !realClick, let ref = el.ref, el.hasPress {
             let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
             if err == .success {
                 if el.isMenuBarItem { try? await Task.sleep(for: .milliseconds(120)) }
@@ -81,14 +86,14 @@ final class ActionExecutor: @unchecked Sendable {
 
     // MARK: Type
 
-    func type(_ text: String, into el: AXElement) async throws {
+    func type(_ text: String, into el: AXElement, realClick: Bool = false) async throws {
         if el.isSecure { throw NaviError.other(Self.refuseSecure) }
         // Focus the field: AXFocused first (no pointer movement), else click it.
         var focused = false
         if let ref = el.ref {
             focused = await AXQueue.run { AXUIElementSetAttributeValue(ref, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success }
         }
-        if !focused { try await click(el) }
+        if !focused { try await click(el, realClick: realClick) }
         try? await Task.sleep(for: .milliseconds(80))
         if await focusIsSecure() { throw NaviError.other(Self.refuseSecure) }
 
@@ -134,8 +139,8 @@ final class ActionExecutor: @unchecked Sendable {
     // MARK: Select
 
     /// Opens a pop-up/combo box and presses the menu item titled `option`.
-    func select(_ option: String, in el: AXElement) async throws {
-        try await click(el)
+    func select(_ option: String, in el: AXElement, realClick: Bool = false) async throws {
+        try await click(el, realClick: realClick)
         try? await Task.sleep(for: .milliseconds(150))
         let pressed: Bool = await AXQueue.run {
             guard let ref = el.ref else { return false }

@@ -53,6 +53,11 @@ struct AgentSettingsView: View {
                      : "Navi brings the app to the front and uses the real cursor and keyboard. Best for canvas apps and menus; you'll need to keep your hands off while it works.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle("Show the result when a task finishes", isOn: $settings.agentRevealWhenDone)
+                    .disabled(!settings.agentRunInBackground)
+                Text("When a background task makes something — a note, an event, a document, a tab — Navi brings that window to the front once it's done. Lookups stay in the background; their answer is in the panel.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("While it works")
             }

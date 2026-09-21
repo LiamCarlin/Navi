@@ -65,6 +65,28 @@ struct AgentTarget: Sendable, Equatable {
 
     var isRunning: Bool { NSRunningApplication(processIdentifier: pid)?.isTerminated == false }
 
+    /// Brings the app and the window the agent worked in to the front. The one
+    /// activation background mode allows — after the run, when the window *is*
+    /// the result ("make a note", "create the event") and would otherwise stay
+    /// hidden behind whatever the user was doing. Unhides the app if the user
+    /// had it hidden; a minimised window is restored through AX.
+    func reveal() async {
+        guard isRunning else { return }
+        await AXQueue.run {
+            guard let w = Self.axWindow(pid: self.pid) else { return }
+            if (AXSnapshotter.attr(w, kAXMinimizedAttribute) as? Bool) == true {
+                AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
+            AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+        }
+        await MainActor.run {
+            guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+            if app.isHidden { app.unhide() }
+            app.activate()
+        }
+        Log.agent.info("Revealed \(appName ?? bundleID ?? "the app", privacy: .public) after the run")
+    }
+
     // MARK: Windows
 
     /// Focused → main → first window of the app, via AX. Runs on `AXQueue`.

@@ -56,6 +56,34 @@ Reliability adaptations (from failed runs, see git log):
      Jev to a different page, the guidance (which names element indexes of
      the old page) is marked stale and Claude may be consulted again there,
      up to a small budget. Failing again on the same page still ends the run.
+ 13. The tab is the deliverable: the runner used to close its tab on exit,
+     so "make a new Google Doc" ended with the doc closing in front of the
+     user. Now the tab stays open whenever anything happened on it
+     (NAVI_TAB_POLICY: keep | reveal | close), and "reveal" brings it to the
+     front on completion — the ending of a background run that made something.
+ 14. Web-app playbooks: Jev decides from labels alone and knows nothing about
+     Drive, Docs or Gmail. Navi hands the runner its web skills
+     (NAVI_PLAYBOOKS_JSON: how the app works, recipes for goals like this
+     one, what "done" looks like, wrong moves); the one matching the current
+     page's host is added to Jev's state and instructions, like coaching.
+ 15. The Google Docs page is a text target: the document body is a canvas
+     editor whose contenteditable lives in a hidden iframe, so it was never in
+     the table and "type the score into the doc" could only re-type the
+     title. The editor container is offered as a textbox; filling it clicks
+     the page, moves the caret to the end of the document (⌘↓) and inserts
+     the text — never select-all, which would replace the document.
+ 17. List rows and item cards are click targets: Google Drive's files are
+     `role="gridcell"` cards holding a "More actions" button (upstream skips
+     any gridcell with a button) and list views / Gmail use `role="row"`
+     elements the snapshot never enumerated — Jev saw a results page with
+     nothing on it and gave up. Interactive rows and cards (aria-selected /
+     tabindex / data-id / data-selectable) are offered by their label, plus
+     an "Open (double-click): …" action executed as a real double click.
+ 16. A text helper that has no value is a failed step, not the end: upstream
+     raises out of `act` when the helper answers {"text": null}, which ended
+     whole runs ("Text helper returned no valid field value"). The step is
+     now recorded as a no-change failure, the field is no longer offered for
+     TYPE_TEXT on that document, and Jev decides again from the same page.
 """
 
 import argparse
@@ -159,6 +187,9 @@ _upstream_post_json = jev_model.post_json
 
 # --- Adaptation 2: text helper on Claude Haiku ------------------------------
 
+FIELD_HINTS = {"playbook": None}   # set by main(); the helper adds the page's field hints
+
+
 def field_text_claude(context):
     """Same contract as upstream field_text, using the Anthropic Messages API."""
     key = os.environ.get("ANTHROPIC_API_KEY")
@@ -166,6 +197,11 @@ def field_text_claude(context):
         raise ValueError("TYPE_TEXT needs ANTHROPIC_API_KEY or TEXT_MODEL_API_KEY; nothing typed.")
     model = os.environ.get("NAVI_TEXT_MODEL", "claude-haiku-4-5")
     base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    playbook = FIELD_HINTS.get("playbook")
+    if playbook is not None and isinstance(context, dict):
+        hints = playbook.field_hints_for((context.get("page") or {}).get("url") or playbook.current_url)
+        if hints:
+            context = {**context, "field_hints": hints}
     started = time.perf_counter()
     for attempt in range(3):
         try:
@@ -352,7 +388,7 @@ class SpeculativeText:
 
 COACH_SYSTEM = """You are the supervisor of a fast, non-generative decision model ("Jev") that drives a web page by choosing ONE operation per step from an indexed element table: CLICK an element index, TYPE_TEXT into an element index, SELECT an option, SCROLL_UP/DOWN, WAIT, DONE, BLOCKED. Jev cannot see pixels, cannot read instructions that are not in its state, and picks the most plausible element from labels and roles.
 
-Jev is failing at the current goal. You see the goal, the page (screenshot when attached), the element table Jev sees (with indexes), and the recent actions with whether each one changed the page. Work out WHY it is failing — e.g. clicking a label or a search box instead of the right control, the control it needs is not in the table (needs scrolling, a different page, or a different search), an autocomplete or overlay is in the way, it keeps re-clicking the same thing, the goal is already satisfied, or the goal cannot be done on this page.
+Jev is failing at the current goal. You see the goal, the page (screenshot when attached), the element table Jev sees (with indexes), the site's playbook when Navi has one (`playbook`: how the app works, recipes — prefer its steps in your guidance), and the recent actions with whether each one changed the page. Work out WHY it is failing — e.g. clicking a label or a search box instead of the right control, the control it needs is not in the table (needs scrolling, a different page, or a different search), an autocomplete or overlay is in the way, it keeps re-clicking the same thing, the goal is already satisfied, or the goal cannot be done on this page.
 
 Reply ONLY with JSON:
 {"diagnosis": "one or two sentences on what is going wrong",
@@ -415,6 +451,8 @@ class Coach:
             return "‘%s’ was chosen %d times in a row" % (last[-1].get("action", "?")[:60], FAILURES_BEFORE_COACHING)
         return None
 
+    playbook = None   # set by main(): the Playbook, so the coach reads the same site knowledge
+
     def ask(self, goal, page, history, why, screenshot_b64=None):
         key = os.environ.get("ANTHROPIC_API_KEY")
         if not key:
@@ -431,6 +469,9 @@ class Coach:
             "elements": elements[:150],
             "recent_actions": [{k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-8:]],
         }
+        book = self.playbook.playbook_for(page.get("url")) if self.playbook else None
+        if book:
+            state["playbook"] = book
         content = []
         if screenshot_b64:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
@@ -477,6 +518,118 @@ class Coach:
                         q["instructions"] = {**q["instructions"], "guidance": guidance}
                     qs[name] = q
                 body["questions"] = qs
+            return inner(url, key, body)
+
+        jev_model.post_json = post_json
+
+
+# --- Adaptation 14: web-app playbooks ride in Jev's state -------------------
+
+PLAYBOOK_RULE = ("`playbook` describes THIS web app: follow its `recipes` for goals like this one, respect `avoid`, "
+                 "and judge DONE against `done_when`.")
+MAX_PLAYBOOK_RECIPES = 3
+
+
+class Playbook:
+    """Site knowledge from Navi's `AppSkills` (NAVI_PLAYBOOKS_JSON). Per request
+    the skill whose host matches the current page is trimmed to the recipes that
+    share words with the goal and added to the state (`playbook`) and to the
+    operation question's instructions — the same channel the coach uses."""
+
+    def __init__(self, skills=None, goal=""):
+        self.skills = skills if skills is not None else self.from_env()
+        self.goal = goal
+        self.current_url = None
+        self.announced = set()
+
+    @staticmethod
+    def from_env():
+        raw = os.environ.get("NAVI_PLAYBOOKS_JSON")
+        if not raw:
+            return []
+        try:
+            skills = json.loads(raw)
+        except ValueError:
+            return []
+        return [s for s in skills if isinstance(s, dict) and s.get("hosts")]
+
+    @staticmethod
+    def host_of(url):
+        if not url or "://" not in url:
+            return ""
+        rest = url.split("://", 1)[1]
+        return rest.split("/", 1)[0].split("?", 1)[0].lower()
+
+    def skill_for(self, url):
+        """Longest matching host suffix wins ("docs.google.com" over "google.com").
+        A host entry may carry a path prefix ("google.com/maps")."""
+        host = self.host_of(url)
+        if not host:
+            return None
+        path = "/" + url.split("://", 1)[1].split("/", 1)[1] if "://" in url and "/" in url.split("://", 1)[1] else "/"
+        best, best_len = None, -1
+        for skill in self.skills:
+            for h in skill.get("hosts", []):
+                h = h.lower()
+                h_host, _, h_path = h.partition("/")
+                if not (host == h_host or host.endswith("." + h_host)):
+                    continue
+                if h_path and not path.startswith("/" + h_path):
+                    continue
+                if len(h) > best_len:
+                    best, best_len = skill, len(h)
+        return best
+
+    @staticmethod
+    def recipes(skill, goal):
+        words = set(w for w in "".join(c if c.isalnum() else " " for c in goal.lower()).split())
+        lower = goal.lower()
+        scored = []
+        for r in skill.get("recipes", []):
+            hits = sum(1 for k in r.get("keywords", []) if (k in lower if " " in k else k in words))
+            if hits:
+                scored.append((hits, r))
+        scored.sort(key=lambda x: -x[0])
+        return [{"goal": r.get("goal"), "steps": r.get("steps", [])} for _, r in scored[:MAX_PLAYBOOK_RECIPES]]
+
+    def playbook_for(self, url):
+        skill = self.skill_for(url)
+        if not skill:
+            return None
+        book = {"app": skill.get("app"), "how_it_works": skill.get("how_it_works", [])}
+        recipes = self.recipes(skill, self.goal)
+        if recipes:
+            book["recipes"] = recipes
+        for key in ("done_when", "avoid"):
+            if skill.get(key):
+                book[key] = skill[key]
+        return book
+
+    def field_hints_for(self, url):
+        skill = self.skill_for(url)
+        return list(skill.get("field_hints", [])) if skill else []
+
+    def install(self):
+        """Adds the page's playbook to every Jev request."""
+        inner = jev_model.post_json
+
+        def post_json(url, key, body):
+            if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict):
+                page_url = (body["state"].get("page") or {}).get("url") or self.current_url
+                book = self.playbook_for(page_url)
+                if book:
+                    if book["app"] not in self.announced:
+                        self.announced.add(book["app"])
+                        emit("status", message=f"Using the {book['app']} playbook")
+                    body = dict(body)
+                    body["state"] = {**body["state"], "playbook": book}
+                    qs = {}
+                    for name, q in body["questions"].items():
+                        q = dict(q)
+                        if name == "operation" and isinstance(q.get("instructions"), dict):
+                            q["instructions"] = {**q["instructions"], "playbook": PLAYBOOK_RULE}
+                        qs[name] = q
+                    body["questions"] = qs
             return inner(url, key, body)
 
         jev_model.post_json = post_json
@@ -532,10 +685,22 @@ def browser_operation_navi(request):
     x, y = target["x"], target["y"]
     for event in ("mousePressed", "mouseReleased"):
         call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
+    if action.get("dblclick"):
+        # "Open (double-click)" on a selectable row: the second click of a double click.
+        for event in ("mousePressed", "mouseReleased"):
+            call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=2)
     if action["kind"] == "fill":
         modifiers = 4 if sys.platform == "darwin" else 2
-        call("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=modifiers, commands=["selectAll"])
-        call("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", modifiers=modifiers)
+        if action.get("docs_body"):
+            # Google Docs: the click placed the caret on the page; go to the end of
+            # the document (⌘↓ on Mac, Ctrl+End elsewhere) and insert. Never select
+            # all — that would replace the user's document with the text.
+            key, code, vk = ("ArrowDown", "ArrowDown", 40) if sys.platform == "darwin" else ("End", "End", 35)
+            call("Input.dispatchKeyEvent", type="keyDown", key=key, code=code, windowsVirtualKeyCode=vk, modifiers=modifiers)
+            call("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=vk, modifiers=modifiers)
+        else:
+            call("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=modifiers, commands=["selectAll"])
+            call("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", modifiers=modifiers)
         call("Input.insertText", text=request["text"])
     return {"executed": action["id"]}
 
@@ -555,18 +720,37 @@ class RejectedClicks:
     def __init__(self):
         self.rejections = {}
         self.excluded = set()
+        self.excluded_fills = set()   # (document, node): the text helper had no value for this field
 
     @staticmethod
     def document(page):
         return (page.get("page_key") or [None])[0]
 
     def filter(self, page):
-        """The page Jev decides from: without the elements it cannot click here."""
-        if not self.excluded:
+        """The page Jev decides from: without the elements it cannot click here,
+        and without TYPE_TEXT on fields the helper could not fill."""
+        if not self.excluded and not self.excluded_fills:
             return page
         doc = self.document(page)
-        actions = [a for a in page["actions"] if (doc, a.get("node")) not in self.excluded]
+        actions = [a for a in page["actions"] if (doc, a.get("node")) not in self.excluded
+                   and not (a.get("kind") == "fill" and (doc, a.get("node")) in self.excluded_fills)]
         return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+    def no_text(self, state, decision):
+        """The helper answered null for the chosen field: a visible failed step,
+        and the field is no longer a TYPE_TEXT target on this document."""
+        page = state["page"]
+        action = next((a for a in page["actions"] if a["id"] == decision["choice"]), None)
+        if action is None:
+            return None
+        self.excluded_fills.add((self.document(page), action["node"]))
+        elapsed = round((time.perf_counter() - state["started_at"]) * 1000) if state.get("started_at") else 0
+        state["history"].append({
+            "step": len(state["history"]) + 1, "action": action["label"], "kind": "fill", "choice": action["id"],
+            "text": None, "page_changed": False, "url": page["url"], "elapsed_ms": elapsed,
+            "note": "the text helper had no value for this field; no longer offered for typing",
+        })
+        return action["label"]
 
     def after_tick(self, state, decisions_before, history_before):
         """Returns the label of an element just given up on, else None."""
@@ -612,6 +796,43 @@ SNAPSHOT_PATCHES = [
      "if (e.tagName==='CANVAS' && (r.width<120 || r.height<120)) continue;\n"
      "    const base={node:identity(e),role:rname,canvas:e.tagName==='CANVAS',"
      "label:e.tagName==='CANVAS' ? (e.getAttribute('aria-label')||'Game canvas '+Math.round(r.width)+'×'+Math.round(r.height)+' (click to interact / play)') : name(e)||rname,"),
+    # Adaptation 15 — the Google Docs editor container is a textbox (its own
+    # contenteditable sits in a hidden iframe the snapshot cannot reach).
+    ("const selector='a[href],button,input,textarea,select,summary,canvas,[contenteditable=\"true\"],'",
+     "const selector='a[href],button,input,textarea,select,summary,canvas,.kix-appview-editor,[contenteditable=\"true\"],'"),
+    ("if (e.tagName==='CANVAS') return 'button';",
+     "if (e.tagName==='CANVAS') return 'button';\n    if (e.classList?.contains('kix-appview-editor')) return 'textbox';"),
+    ("const base={node:identity(e),role:rname,canvas:e.tagName==='CANVAS',",
+     "const docsBody=e.classList?.contains('kix-appview-editor');\n"
+     "    const base={node:identity(e),role:rname,canvas:e.tagName==='CANVAS',docs_body:docsBody,"),
+    ("label:e.tagName==='CANVAS' ? (",
+     "label:docsBody ? 'Document body — the page itself; type the document text here (not the title)' : e.tagName==='CANVAS' ? ("),
+    ("e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';",
+     "e.isContentEditable || rname==='combobox' || e.classList?.contains('kix-appview-editor') ? e.innerText.trim().slice(0,300) : '';"),
+    # Adaptation 17 — interactive list rows (Drive files, Gmail messages) are targets.
+    (".kix-appview-editor,[contenteditable=\"true\"],'",
+     ".kix-appview-editor,[contenteditable=\"true\"],[role=\"row\"][aria-selected],[role=\"row\"][tabindex],[role=\"row\"][data-id],'"),
+    ("if (e.classList?.contains('kix-appview-editor')) return 'textbox';",
+     "if (e.classList?.contains('kix-appview-editor')) return 'textbox';\n"
+     "    if (explicit==='row' && (e.hasAttribute('aria-selected') || e.hasAttribute('tabindex') || e.hasAttribute('data-id'))"
+     " && !e.closest('thead') && !e.querySelector('a[href],input,textarea,select,[contenteditable=\"true\"]')) return 'row';"),
+    # A gridcell that is itself an item (Drive's file cards: data-id / tabindex / data-selectable)
+    # is kept even though it holds a "More actions" button.
+    ("if (rname==='gridcell' && e.querySelector('button,[role=\"button\"]')) continue;",
+     "const itemCell=rname==='gridcell' && (e.hasAttribute('data-id') || e.hasAttribute('data-selectable') || e.hasAttribute('aria-selected') || e.hasAttribute('tabindex'));\n"
+     "    if (rname==='gridcell' && !itemCell && e.querySelector('button,[role=\"button\"]')) continue;"),
+    ("const docsBody=e.classList?.contains('kix-appview-editor');",
+     "const docsBody=e.classList?.contains('kix-appview-editor');\n"
+     "    if (rname==='row' || itemCell) {\n"
+     "      const clean=t=>String(t||'').replace(/\\b(More (info|actions)|Show more)\\b.*$/i,'').replace(/\\s+/g,' ').trim().slice(0,100);\n"
+     "      const rowText=clean(e.getAttribute('aria-label'))||clean(e.innerText);\n"
+     "      if (!rowText) continue;\n"
+     "      const rowBase={node:identity(e),role:rname==='row' ? 'row' : 'item',label:rowText,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};\n"
+     "      if (e.getAttribute('aria-selected')!==null) rowBase.selected=e.getAttribute('aria-selected');\n"
+     "      actions.push({...rowBase,kind:'click',value:''});\n"
+     "      if (itemCell || e.hasAttribute('aria-selected')) actions.push({...rowBase,kind:'click',dblclick:true,value:'',label:'Open (double-click): '+rowText});\n"
+     "      continue;\n"
+     "    }"),
 ]
 
 
@@ -673,17 +894,37 @@ def looks_unsettled(page, previous_url=None):
     return previous_url is not None and not Coach.same_document(previous_url, page.get("url"))
 
 
+GROWTH_CHECK_S = 0.3
+GROWTH_MIN_ACTIONS = 2
+
+
 def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
     """Re-observes until `document.readyState` is "complete" and two consecutive
     snapshots agree (same fingerprint), or `max_s` elapses. Returns the number of
     extra observations. Jev then decides from the page the user would see —
-    not from the blank frame an SPA shows for its first few hundred ms."""
+    not from the blank frame an SPA shows for its first few hundred ms.
+
+    A page that already has controls may still be filling in: Drive shows its
+    sidebar well before its file grid, and Jev called that shell BLOCKED. On the
+    start page and after a navigation, one extra look `GROWTH_CHECK_S` later
+    catches a table that is still growing and keeps settling until it stops."""
     page = agent.state["page"]
-    if not looks_unsettled(page, previous_url):
-        return 0
     browser = agent.state["browser"]
-    deadline = time.monotonic() + max_s
     observations = 0
+    if not looks_unsettled(page, previous_url):
+        if previous_url is not None and Coach.same_document(previous_url, page.get("url")):
+            return 0
+        time.sleep(GROWTH_CHECK_S)
+        try:
+            probe = browser.observe(screenshot=agent.screenshots)
+        except Exception:  # noqa: BLE001 — still navigating; the loop below handles it
+            return 0
+        observations = 1
+        grew = len(probe.get("actions", [])) >= len(page.get("actions", [])) + GROWTH_MIN_ACTIONS
+        agent.state["page"] = page = probe
+        if not grew:
+            return observations
+    deadline = time.monotonic() + max_s
     stable = page["fingerprint"]
     while time.monotonic() < deadline:
         time.sleep(SETTLE_POLL_S)
@@ -721,12 +962,17 @@ def blocked_is_tentative(decision):
     return probabilities.get("WAIT", 0.0) >= 0.25
 
 
-def tick(agent, retried):
+NO_TEXT_MESSAGE = "Text helper returned no valid field value"
+
+
+def tick(agent, retried, rejected=None):
     """Upstream `Agent.command("tick")` (predict → act, StalePage re-observes),
-    with one difference: a tentative BLOCKED on a page not yet retried is
+    with two differences: a tentative BLOCKED on a page not yet retried is
     discarded — the page gets a short wait and a fresh observation, and Jev
-    decides again. `retried` is the set of fingerprints already given that
-    second chance, so the same BLOCKED twice on the same page is final."""
+    decides again (`retried` is the set of fingerprints already given that
+    second chance, so the same BLOCKED twice on the same page is final) — and
+    a text helper with no value for the chosen field is a failed step
+    (`RejectedClicks.no_text`), not the end of the run."""
     state = agent.state
     try:
         agent.command("predict", {})
@@ -741,7 +987,18 @@ def tick(agent, retried):
             settle_page(agent)
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             return "retried"
-        agent.command("act", {"fingerprint": fingerprint})
+        try:
+            agent.command("act", {"fingerprint": fingerprint})
+        except ValueError as exc:
+            if NO_TEXT_MESSAGE not in str(exc) or decision is None:
+                raise
+            label = rejected.no_text(state, decision) if rejected else None
+            emit("status", message=f"No text for ‘{label or decision.get('choice')}’ — telling Jev and moving on")
+            state["decision"] = None
+            state["status"] = "ready"
+            agent.pending_text = None
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+            return "no_text"
         return "acted"
     except StalePage:
         state["decision"] = None
@@ -797,6 +1054,41 @@ def summarize(history, status):
     return verb + "; ".join(parts) + "."
 
 
+# --- Adaptation 13: the tab is the deliverable ------------------------------
+
+def tab_policy():
+    """keep (default): leave the tab unless nothing happened on it; reveal: keep and
+    bring it to the front when the task completes; close: close it on completion
+    (a background lookup whose answer Navi shows itself), keep it otherwise."""
+    policy = os.environ.get("NAVI_TAB_POLICY", "").strip().lower()
+    if policy in {"keep", "reveal", "close"}:
+        return policy
+    if os.environ.get("NAVI_KEEP_TAB"):
+        return "keep"
+    return "keep"
+
+
+def should_close_tab(policy, status, steps):
+    """Close only what would be left over: a tab nothing was done on, or a
+    completed background lookup. Failures and cancellations keep the tab so the
+    user can take over where the run stopped."""
+    if status == "done":
+        return policy == "close"
+    return steps == 0
+
+
+def reveal_tab(agent):
+    """Front the runner's tab (and Chrome) once an effect task is done."""
+    browser = agent.state.get("browser")
+    target = getattr(browser, "target", None)
+    if not target:
+        return
+    try:
+        cdp("Target.activateTarget", targetId=target)
+    except Exception:  # noqa: BLE001 — cosmetic
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
@@ -806,7 +1098,11 @@ def main():
     args = parser.parse_args()
 
     speculative, rejected = install_adaptations()
+    playbook = Playbook(goal=args.goal)
+    playbook.install()
+    FIELD_HINTS["playbook"] = playbook
     coach = Coach()
+    coach.playbook = playbook
     coach.install()
     warm_connections()
     if args.max_steps > 0:
@@ -830,6 +1126,8 @@ def main():
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, on_term)
+    policy = tab_policy()
+    final_status, final_steps = "error", 0
     try:
         # An SPA start page (Google Maps, Flights, …) is often blank at "interactive".
         settled = settle_page(agent)
@@ -837,6 +1135,7 @@ def main():
         emit("ready", elements=len(agent.snapshot()["elements"]), url=page["url"], title=page["title"],
              settle_observations=settled)
         coach.current_url = page["url"]
+        playbook.current_url = page["url"]
         if args.screenshots and page.get("screenshot"):
             emit("screenshot", jpeg_base64=page["screenshot"])
         seen_steps = 0
@@ -874,7 +1173,7 @@ def main():
             while agent.state["status"] not in {"done", "blocked"}:
                 decisions_before, history_before = len(agent.state["decisions"]), len(agent.state["history"])
                 url_before = agent.state["page"].get("url")
-                result = tick(agent, retried_blocked)
+                result = tick(agent, retried_blocked, rejected)
                 if result == "retried":
                     emit("status", message="Jev leaned BLOCKED but wasn't sure — waited for the page and asked again")
                 soften_canvas_step(agent.state, history_before)
@@ -887,6 +1186,7 @@ def main():
                     if n:
                         emit("status", message=f"Page changed — settled after {n} observation{'s' if n != 1 else ''}")
                 coach.current_url = agent.state["page"].get("url")
+                playbook.current_url = coach.current_url
                 yield agent.snapshot()
 
         for state in run_until_stop():
@@ -900,6 +1200,10 @@ def main():
                     operation_probabilities=d["operation_probabilities"],
                     target_confidence=d.get("target_confidence"),
                     usage=d.get("usage", {}),
+                    # The table Jev chose from (index → role + label), so a wrong pick can be read
+                    # back from ultrafast-last-run.jsonl without re-running the task.
+                    elements=[f"[{i}] {e.get('role', '')} {e.get('label', '')}"[:90]
+                              for i, e in enumerate(((d.get("request") or {}).get("state") or {}).get("elements") or [], 1)][:80],
                 )
             seen_decisions = len(state["decisions"])
             for h in state["history"][seen_steps:]:
@@ -936,6 +1240,9 @@ def main():
                     continue
             if state["status"] in {"done", "blocked"} or stop:
                 status = stop[0] if stop else state["status"]
+                final_status, final_steps = status, len(state["history"])
+                if status == "done" and policy == "reveal":
+                    reveal_tab(agent)
                 emit(
                     "done",
                     status=status,
@@ -952,14 +1259,18 @@ def main():
                 break
         return 0
     except KeyboardInterrupt:
+        final_status, final_steps = "cancelled", len(agent.state["history"])
         emit("done", status="cancelled", elapsed_ms=agent.state.get("elapsed_ms", 0),
-             steps=len(agent.state["history"]), summary="Cancelled.")
+             steps=final_steps, summary="Cancelled.")
         return 130
     except Exception as exc:  # noqa: BLE001
+        final_steps = len(agent.state.get("history", []))
         emit("error", message=str(exc))
         return 1
     finally:
-        if not os.environ.get("NAVI_KEEP_TAB"):
+        # The tab is what the user asked for ("make a Google Doc"): it stays open
+        # unless nothing happened on it, or a background lookup completed.
+        if should_close_tab(policy, final_status, final_steps):
             try:
                 agent.close()
             except Exception:  # noqa: BLE001

@@ -325,14 +325,50 @@ enum AgentCustomTools {
             guard let items = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: d), includingPropertiesForKeys: nil) else { continue }
             apps += items.filter { $0.pathExtension == "app" }
         }
-        let wanted = q.lowercased().replacingOccurrences(of: ".app", with: "")
-        func base(_ u: URL) -> String { u.deletingPathExtension().lastPathComponent.lowercased() }
-        if let exact = apps.first(where: { base($0) == wanted }) { return exact }
-        if let prefix = apps.first(where: { base($0).hasPrefix(wanted) }) { return prefix }
-        if let contains = apps.first(where: { base($0).contains(wanted) }) { return contains }
-        if let running = NSWorkspace.shared.runningApplications.first(where: { ($0.localizedName ?? "").lowercased() == wanted }),
-           let u = running.bundleURL { return u }
+        func base(_ u: URL) -> String { u.deletingPathExtension().lastPathComponent }
+        if let i = bestAppMatch(names: apps.map(base), wanted: q) { return apps[i] }
+        let running = NSWorkspace.shared.runningApplications
+        if let i = bestAppMatch(names: running.map { $0.localizedName ?? "" }, wanted: q), let u = running[i].bundleURL { return u }
         return nil
+    }
+
+    /// Index of the installed app `wanted` most plausibly names. Exact, then
+    /// prefix, then substring, then a typo-tolerant match — dictated tasks
+    /// arrive as "calculatorcul app" or "safar". Pure: testable.
+    static func bestAppMatch(names: [String], wanted raw: String) -> Int? {
+        var wanted = raw.lowercased().replacingOccurrences(of: ".app", with: "").trimmingCharacters(in: .whitespaces)
+        if wanted.hasSuffix(" app") { wanted = String(wanted.dropLast(4)).trimmingCharacters(in: .whitespaces) }
+        wanted = wanted.replacingOccurrences(of: "the ", with: "", options: .anchored)
+        guard wanted.count >= 2 else { return nil }
+        let lower = names.map { $0.lowercased() }
+        if let i = lower.firstIndex(of: wanted) { return i }
+        if let i = lower.firstIndex(where: { !$0.isEmpty && $0.hasPrefix(wanted) }) { return i }
+        if let i = lower.firstIndex(where: { !$0.isEmpty && $0.contains(wanted) }) { return i }
+        // The name with extra letters tacked on ("calculatorcul" → Calculator), then edit distance.
+        if wanted.count >= 4, let i = lower.indices.filter({ lower[$0].count >= 4 && wanted.hasPrefix(lower[$0]) }).max(by: { lower[$0].count < lower[$1].count }) { return i }
+        let budget = max(1, wanted.count / 4)
+        var best: (Int, Int)?
+        for (i, n) in lower.enumerated() where !n.isEmpty && abs(n.count - wanted.count) <= budget {
+            let d = editDistance(n, wanted)
+            if d <= budget, best == nil || d < best!.1 { best = (i, d) }
+        }
+        return best?.0
+    }
+
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var prev = Array(0...b.count)
+        var cur = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            cur[0] = i
+            for j in 1...b.count {
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+            swap(&prev, &cur)
+        }
+        return prev[b.count]
     }
 
     static func openURL(_ raw: String, activate: Bool = true) async throws -> String {

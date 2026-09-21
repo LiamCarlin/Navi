@@ -36,7 +36,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode) |
+| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app) |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
@@ -71,6 +71,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `JevCoach` diagnoses **once** when Jev flails and its guidance rides in
     Jev's state/instructions — Claude never drives unless Jev says NEED_VISION.
     Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
+  - **App playbooks** (`Agent/AppSkills`): Jev knows nothing about Notes, Messages,
+    Calculator, Drive… so every step's state carries `playbook` (how the app works,
+    its shortcuts — also *offered* on the KEY head —, recipes matching the goal,
+    `done_when`, `avoid`) and `experience` (`AgentExperience`: action sequences that
+    completed similar goals in this app before). Web skills reach the browser runner
+    as `NAVI_PLAYBOOKS_JSON`. When a new app misbehaves, add or fix its skill first.
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,
@@ -78,7 +84,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     app untouched), screenshots are `ScreenCapture.captureWindow` of its window, and
     browser steps run in a background Chrome tab (`NAVI_BACKGROUND_TAB`). Nothing in
     the agent may call `activate()` in this mode except `pressWithBriefActivation`
-    (⌘-shortcuts — macOS only delivers menu key equivalents to the active app).
+    (⌘-shortcuts — macOS only delivers menu key equivalents to the active app) and,
+    once the run is over, `AgentTarget.reveal()` / the runner's `NAVI_TAB_POLICY=reveal`:
+    the window a completed effect task worked in is brought forward (lookups are not).
+    The browser tab is never closed while anything happened on it.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,

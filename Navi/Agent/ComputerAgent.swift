@@ -63,7 +63,8 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
                                      driver: s.agentDriver,
                                      jevConfidenceThreshold: min(max(s.agentJevConfidenceThreshold, 0), 1),
                                      maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks),
-                                     background: s.agentRunInBackground)
+                                     background: s.agentRunInBackground,
+                                     revealWhenDone: s.agentRevealWhenDone)
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
@@ -99,6 +100,9 @@ final class AgentRun: @unchecked Sendable {
         var maxClaudeFallbacks: Int = 6
         /// Drive the target app without activating it or moving the cursor.
         var background: Bool = false
+        /// Background mode: bring the app/tab the task worked in forward once an
+        /// effect task (not a lookup) completes, so the result is in front of the user.
+        var revealWhenDone: Bool = true
     }
 
     static let screenshotMaxLongEdge = 1280
@@ -367,6 +371,13 @@ final class AgentRun: @unchecked Sendable {
             }
         }
         handle.emit(.completed(summary: plan.isMultiStep ? summaries.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n") : (summaries.first ?? "Done.")))
+        // The window the task worked in is the deliverable of an effect task ("make a
+        // note", "create the event"): a background run leaves it behind the user's
+        // windows, so bring it forward now that the run is over. Lookups stay put —
+        // their answer is in the panel. Browser steps do the same for their tab.
+        if config.background, config.revealWhenDone, !Self.isLookup(originalTask), plan.steps.last?.surface == .app, let t = target {
+            await t.reveal()
+        }
     }
 
     /// Does this goal ask for information rather than an effect? Then the
@@ -540,6 +551,20 @@ final class AgentRun: @unchecked Sendable {
         let candidates = TextCandidates.extract(task: task)
         let appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
         let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        /// Does the goal ask for an effect (create/send/type…) rather than information?
+        let effectGoal = !Self.isLookup(task)
+        /// Premature DONE already rejected on this screen key.
+        var doneRejectedOn: String?
+        /// What worked here before, for the experience store (labels only — never typed text).
+        var redactedLog: [String] = []
+        var announcedSkill: String?
+
+        /// Records a completed step in the experience store so the next similar goal
+        /// in this app starts with "what worked last time" in Jev's state.
+        func remember() {
+            guard !redactedLog.isEmpty else { return }
+            AgentExperience.shared.record(bundleID: snapshot.bundleID, appName: snapshot.appName, goal: task, actions: redactedLog)
+        }
 
         /// Runs one bounded Claude turn. Returns false when the run has ended.
         func fallback(_ reason: String, step: Int) async throws -> Bool {
@@ -587,8 +612,9 @@ final class AgentRun: @unchecked Sendable {
             await updateOverlay(step: step, status: "Asking Claude why this keeps failing")
             var png: Data?
             if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
-            let screen = JevDriver.stateJSON(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps,
-                                                                       snapshot: snapshot, history: []))
+            var screenInput = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot, history: [])
+            screenInput.playbook = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url).map { AppSkills.playbook(for: $0, goal: task) }
+            let screen = JevDriver.stateJSON(for: screenInput)
             let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
                                                       history: history.suffix(8).map(\.json), failureSummary: why, screenshotPNG: png)
             try checkCancelled()
@@ -611,6 +637,7 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.failed("Claude says this cannot be done here: \(advice.diagnosis)"))
                 return false
             } else if advice.nextOperation == "DONE" {
+                remember()
                 handle.emit(.completed(summary: Self.summary(humanLog)))
                 return false
             }
@@ -631,9 +658,23 @@ final class AgentRun: @unchecked Sendable {
                 coachedScreen == Self.screenKey(snapshot) ? c.guidance
                     : "(Written on a previous screen — element indexes there do not apply here; follow the intent only.) " + c.guidance
             }
-            let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
+            // The app's playbook (how it works, its shortcuts, the recipe for goals like
+            // this one) and what completed similar goals here before. Re-resolved every
+            // step: OPEN_APP / a web app in the browser changes the screen's skill.
+            let skill = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url)
+            if let skill, announcedSkill != skill.name {
+                announcedSkill = skill.name
+                handle.emit(.status("Using the \(skill.name) playbook"))
+            }
+            let actionsTaken = history.filter { $0.kind != "declined" && $0.kind != "coach" }.count
+            var input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
                                             guidance: guidance)
+            input.playbook = skill.map { AppSkills.playbook(for: $0, goal: task) }
+            input.experience = AgentExperience.shared.recall(bundleID: snapshot.bundleID, goal: task)
+            input.keyCombos = AppSkills.keyCombos(for: skill)
+            input.actionsTaken = actionsTaken
+            input.doneRejected = doneRejectedOn == Self.screenKey(snapshot)
 
             // Text the task spells out (one obvious quote) that hasn't been typed yet.
             let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
@@ -645,7 +686,8 @@ final class AgentRun: @unchecked Sendable {
             var speculative: (elementID: String, task: Task<String?, Never>)?
             if textHelperAvailable, obviousText == nil, let field = FieldText.obviousField(in: snapshot) {
                 let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
-                                            pageText: snapshot.visibleText, recentActions: history.map(\.json))
+                                            pageText: snapshot.visibleText, recentActions: history.map(\.json),
+                                            hints: skill?.fieldHints ?? [])
                 let claude = self.claude
                 speculative = (field.id, Task.detached(priority: .userInitiated) {
                     (try? await FieldText.generate(claude: claude, context: ctx))?.text ?? nil
@@ -674,13 +716,26 @@ final class AgentRun: @unchecked Sendable {
                     return
                 }
                 try checkCancelled()
-                let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold)
+                let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold,
+                                                effectGoal: effectGoal, actionsTaken: actionsTaken, doneRejected: input.doneRejected)
                 handle.emit(.status(JevDriver.statusLine(verdict)))
                 switch decision {
                 case .finish(let reason):
                     handle.emit(.status(reason))
+                    remember()
                     handle.emit(.completed(summary: Self.summary(humanLog)))
                     return
+                case .prematureDone(let reason):
+                    // Nothing has been done yet and the goal asks for an effect: the
+                    // screen may still be settling, or Jev mistook a fresh window for the
+                    // result. Look again once; the next DONE is final.
+                    handle.emit(.status("\(reason) — looking again before accepting"))
+                    doneRejectedOn = Self.screenKey(snapshot)
+                    try? await Task.sleep(for: .milliseconds(400))
+                    try checkCancelled()
+                    snapshot = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
+                    _ = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
+                    continue
                 case .blocked(let reason):
                     // A BLOCKED Jev isn't sure about (or where WAIT is a close second) usually
                     // means the screen isn't ready yet: wait, re-walk, ask again. Only the
@@ -719,7 +774,8 @@ final class AgentRun: @unchecked Sendable {
                     handle.emit(.status(text == nil ? "Text helper returned no value" : "Haiku wrote the field value in parallel · waited \(ms) ms"))
                 } else if textHelperAvailable {
                     let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
-                                                pageText: snapshot.visibleText, recentActions: history.map(\.json))
+                                                pageText: snapshot.visibleText, recentActions: history.map(\.json),
+                                                hints: skill?.fieldHints ?? [])
                     do {
                         let (t, ms) = try await FieldText.generate(claude: claude, context: ctx)
                         text = t
@@ -785,6 +841,7 @@ final class AgentRun: @unchecked Sendable {
             history.append(entry)
             if !action.isReadOnly { tracker.record(action: human, changed: entry.pageChanged, error: actionError) }
             humanLog.append(human)
+            if actionError == nil, !action.isReadOnly { redactedLog.append(action.human(in: snapshot, text: nil)) }
             if let targetFrame { lastActedFrame = targetFrame }
             snapshot = next
             if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
@@ -1297,6 +1354,20 @@ final class AgentRun: @unchecked Sendable {
             The user typed the task below into Navi's ⌘Space panel and has gone back to their own work: you are running **in the background**. Your screenshots show only the window of the target app (not the whole screen), your clicks and keystrokes are delivered to that app without bringing it forward, and the mouse cursor never moves. Consequences: you cannot click the menu bar, the Dock, Mission Control or anything outside the target window. Prefer in-window controls; ⌘-shortcuts still work (they bring the app forward for a split second), so use them sparingly. `open_app` switches which app you are working in (it opens behind the user's windows).
             """
 
+        // The app's playbook, so Claude's few steps use the shortcuts and recipes Jev has.
+        var notes = ""
+        if let skill = AppSkills.skill(bundleID: frontmost.bundleID ?? context.frontmostApp, url: frontmost.url) {
+            notes = "\n\n# About \(skill.name)\n" + skill.howItWorks.map { "- \($0)" }.joined(separator: "\n")
+            if !skill.shortcuts.isEmpty {
+                notes += "\nShortcuts: " + skill.shortcuts.sorted { $0.key < $1.key }.map { "\($0.key) = \($0.value)" }.joined(separator: "; ")
+            }
+            let recipes = AppSkills.recipes(for: skill, goal: task)
+            if !recipes.isEmpty {
+                notes += "\nRecipes: " + recipes.map { "\($0.goal): " + $0.steps.joined(separator: " → ") }.joined(separator: "\n")
+            }
+            if !skill.avoid.isEmpty { notes += "\nAvoid: " + skill.avoid.joined(separator: " ") }
+        }
+
         return """
         You are Navi, a computer-use agent running locally on the user's Mac (macOS 26). You see the screen through screenshots and act through the `computer` toolset plus a few helper tools. \(mode)
 
@@ -1304,7 +1375,7 @@ final class AgentRun: @unchecked Sendable {
         \(task)
 
         # Context when the task was typed
-        \(ctx)
+        \(ctx)\(notes)
 
         # How to work
         - Take a screenshot first to see the current state. Take another after any action whose result you need to verify; do not assume an action worked.

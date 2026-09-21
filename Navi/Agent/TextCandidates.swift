@@ -137,8 +137,8 @@ enum FieldText {
 
     /// jev-ultrafast `field_context`.
     static func context(goal: String, field: AXElement, pageTitle: String?, pageText: String,
-                        recentActions: [[String: Any]]) -> [String: Any] {
-        [
+                        recentActions: [[String: Any]], hints: [String] = []) -> [String: Any] {
+        var ctx: [String: Any] = [
             "goal": goal,
             "field": ["label": field.label, "role": field.role, "value": field.value ?? ""] as [String: Any],
             "page": ["title": pageTitle ?? "", "text": String(pageText.prefix(6000))] as [String: Any],
@@ -146,6 +146,9 @@ enum FieldText {
                 ["action": h["action"] ?? NSNull(), "text": h["text"] ?? NSNull()] as [String: Any]
             },
         ]
+        // `AppSkill.fieldHints`: what a value looks like in this app ("the first line is the title").
+        if !hints.isEmpty { ctx["field_hints"] = hints }
+        return ctx
     }
 
     /// Parses the helper's reply. Returns nil for `{"text": null}`, extra keys,

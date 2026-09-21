@@ -58,6 +58,7 @@ enum TaskPlanner {
     Navi itself shows the user what the last step found, so a task that only asks to find, look up, get or check something is ONE step ending when the information is visible — never add a step to tell, report, show, say or explain the answer, and never route through an assistant app or site (ChatGPT, Claude, Siri, …) unless the user named it. A goal for the user's own reading ("leaving at 6pm", "for tomorrow") stays in the step's goal verbatim.
     When the user names where to do it ("go to maps", "in chrome", "on Outlook"), the work happens there and only there: one step on that surface (a named website or web app is a "browser" step with its "url"; a named macOS app is an "app" step) — never a second step that repeats or double-checks the same work elsewhere.
     {{result}} always receives the findings of the most recent step marked "needs_result": mark exactly the step that gathers what a later step uses (e.g. the step that reads the event details, not a search for the site).
+    The state's "reference" lists the macOS apps Navi knows well ("known_apps": use these exact names for "app" steps when they fit — a calendar task goes to "Calendar" unless the user names Outlook, a text goes to "Messages") and "deep_links": pages of web apps that can be opened directly (e.g. "Google Drive: shared with me", "Google Docs: new document"). When a browser step is about one of them, set that step's "url" to the deep link (append the query for links ending in "=" or "/") instead of inventing a URL or starting from a search. Dictated tasks arrive with speech-recognition slips ("dock" for "Doc", "calculatorcul" for "Calculator"): plan the obvious intent.
     Never ask for clarification, refuse, or explain: if the task is incomplete, typo-ridden or ambiguous, plan its most likely reading with what was given. Output is only the JSON object.
     """
 
@@ -71,6 +72,7 @@ enum TaskPlanner {
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
             s["open_browser_tab"] = ["title": frontmost.windowTitle ?? "", "url": u]
         }
+        s["reference"] = AppSkills.plannerReference()
         return s
     }
 
