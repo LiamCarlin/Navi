@@ -231,6 +231,21 @@ struct AppSkillsTests {
         #expect(UltrafastBridge.tabPolicy(task: "find the score of the patriots game", background: false, revealWhenDone: true) == "keep")
     }
 
+    @Test func navigationOnlyTasksAreDoneOnceOpen() {
+        for t in ["go to youtube", "Go to YouTube and open it", "open the youtube website", "pull up reddit in chrome",
+                  "navigate to github.com please", "can you open amazon for me", "take me to hacker news", "Open YouTube."] {
+            #expect(UltrafastBridge.isNavigationOnly(t), "\(t)")
+        }
+        for t in ["on youtube find the newest tj hunt video", "go to youtube and search for lo-fi", "open amazon and buy a kettle",
+                  "find the patriots score", "youtube", "go to the settings page", "open the newest email"] {
+            #expect(!UltrafastBridge.isNavigationOnly(t), "\(t)")
+        }
+        #expect(UltrafastBridge.knownSiteName(in: "Go to YouTube and open it") == "youtube")
+        #expect(VoiceDecider.knownSiteToOpen("go to youtube")?.absoluteString == "https://www.youtube.com")
+        #expect(VoiceDecider.knownSiteToOpen("go to youtube and play something") == nil)
+        #expect(VoiceDecider.knownSiteToOpen("go to my school's canvas") == nil)
+    }
+
     // MARK: Planner / helper plumbing
 
     @Test func plannerReferenceAndWebJSON() throws {

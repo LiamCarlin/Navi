@@ -137,6 +137,8 @@ final class AgentRun: @unchecked Sendable {
     static let screenshotMaxLongEdge = 1280
     static let thumbnailMaxLongEdge = 400
     static let keepRecentScreenshots = 4
+    /// How long after a foreground click the app under it needs to own the keyboard.
+    static let activationSettleMs = 250
     /// Tool-use rounds a Claude fallback turn may take before it must summarise.
     static let fallbackMaxRounds = 3
 
@@ -150,6 +152,8 @@ final class AgentRun: @unchecked Sendable {
     private let claude: ClaudeClient
     private let gate: JevGate
     private let input = InputController()
+    /// When Claude last clicked (foreground): typing right after must wait for activation.
+    private var lastClickAt: Date?
 
     // Cancellation / approval plumbing (lock-protected, touched from any thread).
     private let lock = NSLock()
@@ -624,6 +628,8 @@ final class AgentRun: @unchecked Sendable {
         let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
         /// Does the goal ask for an effect (create/send/type…) rather than information?
         let effectGoal = !Self.isLookup(task)
+        /// Does it ask for typing? Then a TYPE_TEXT Jev is only fairly sure of stays with Jev.
+        let typingGoal = JevDriver.goalAsksToType(task)
         /// Premature DONE already rejected on this screen key.
         var doneRejectedOn: String?
         /// What worked here before, for the experience store (labels only — never typed text).
@@ -790,7 +796,8 @@ final class AgentRun: @unchecked Sendable {
                 }
                 try checkCancelled()
                 let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold,
-                                                effectGoal: effectGoal, actionsTaken: actionsTaken, doneRejected: input.doneRejected)
+                                                effectGoal: effectGoal, actionsTaken: actionsTaken, doneRejected: input.doneRejected,
+                                                typingGoal: typingGoal)
                 handle.emit(.status(JevDriver.statusLine(verdict)))
                 switch decision {
                 case .finish(let reason):
@@ -990,7 +997,9 @@ final class AgentRun: @unchecked Sendable {
         let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
         messages = [["role": "user", "content": [[
             "type": "text",
-            "text": "Task: \(task)\n\nJev (the fast accessibility-tree driver) handed you this step because: \(reason)\n\nTake a screenshot first, perform at most the next 1–3 actions, then stop and summarise in one line.",
+            "text": "Task: \(task)\n\nJev (the fast accessibility-tree driver) handed you this step because: \(reason)\n\n"
+                + "Take a screenshot first, perform at most the next 1–3 actions, then stop and summarise in one line."
+                + (Self.needsTypingOrders(reason: reason, history: history) ? "\n\n" + Self.typingStepOrders : ""),
         ]]]]
         map = nil
         return try await claudeLoop(system: system, tools: tools, maxTurns: Self.fallbackMaxRounds, bounded: true,
@@ -1018,6 +1027,31 @@ final class AgentRun: @unchecked Sendable {
         return try await claudeLoop(system: system, tools: tools, maxTurns: max(1, remainingSteps), bounded: false,
                                     overlayStep: nil, handle: handle)
     }
+
+    /// Jev handed over a step whose point is typing (unsure TYPE_TEXT, or a
+    /// field value the text helper couldn't compose).
+    static func isTypingStep(_ reason: String) -> Bool {
+        reason.contains("TYPE_TEXT") || reason.contains("must be composed")
+    }
+
+    /// The orders apply while nothing has been typed in this run; once Jev has
+    /// typed (and the weak TYPE_TEXT is about the *next* thing), repeating them
+    /// would risk the text being typed and sent twice.
+    static func needsTypingOrders(reason: String, history: [JevDriver.HistoryEntry]) -> Bool {
+        isTypingStep(reason) && !history.contains { $0.kind == "type_text" && !$0.action.contains("→ error") }
+    }
+
+    /// What a typing step needs from Claude. Without this the bounded turn
+    /// often ended after the screenshot with "the text is already there" —
+    /// about a message sent earlier — and nothing was ever typed.
+    static let typingStepOrders = """
+        This step is about typing. NOTHING HAS BEEN TYPED FOR IT YET, whatever earlier messages or documents look like — text sent or written before this instruction (a bubble already in the conversation, an earlier paragraph) does not count. Do it now:
+        1. click inside the field the task names (message bar, search box, document body…),
+        2. call `type` with the text — spelled out in the task, or composed from "Earlier in this conversation" when the task says "that"/"it"/"the same",
+        3. press Return only if the task says to send/submit,
+        4. take a screenshot and confirm the text appears where it should.
+        Report the text as typed or sent only if YOU called `type` in this turn. If you are certain the field cannot be typed into, say why starting with "Stopped:".
+        """
 
     static func fallbackAddendum(reason: String, history: [JevDriver.HistoryEntry], maxRounds: Int) -> String {
         var s = "\n\n# Fallback mode\n"
@@ -1071,6 +1105,15 @@ final class AgentRun: @unchecked Sendable {
         case .stepLimit:
             handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
         }
+    }
+
+    /// The summary of a bounded turn that performed no action, whatever it claimed.
+    static func lookedOnly(_ text: String) -> String {
+        var t = text
+        for prefix in ["Done:", "Did:", "Nothing:"] where t.hasPrefix(prefix) {
+            t = String(t.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces); break
+        }
+        return "Looked only, took no action" + (t.isEmpty ? "." : " — observed: \(t)")
     }
 
     enum ClaudeOutcome {
@@ -1128,8 +1171,15 @@ final class AgentRun: @unchecked Sendable {
             if msg.stopReason == "end_turn" || calls.isEmpty {
                 Log.agent.info("Claude turn ended after \(turn) rounds (bounded=\(bounded))")
                 if bounded {
-                    if text.hasPrefix("Done:") { return .done(text) }
                     if text.hasPrefix("Stopped:") { return .failed(text) }
+                    // A turn that only looked cannot have done anything: its "Done:"/"Did:"
+                    // is an observation, recorded as such so Jev (which sees the live
+                    // tree) decides whether the goal is really met — not Claude's memory
+                    // of a bubble sent two instructions ago.
+                    if executed.isEmpty {
+                        return .paused(Self.lookedOnly(text))
+                    }
+                    if text.hasPrefix("Done:") { return .done(text) }
                     return .paused(text.isEmpty ? synthesized() : text)
                 }
                 return .done(text.isEmpty ? "Done." : text)
@@ -1274,6 +1324,7 @@ final class AgentRun: @unchecked Sendable {
             let count = call.name == "double_click" ? 2 : call.name == "triple_click" ? 3 : 1
             let p = try point(call.coordinate, required: false)
             await input.click(at: p, button: button, count: count, flags: Self.modifierFlags(call.text))
+            lastClickAt = Date()
 
         case "left_click_drag":
             guard let a = try point(call.startCoordinate, required: true), let b = try point(call.coordinate, required: true) else {
@@ -1300,9 +1351,24 @@ final class AgentRun: @unchecked Sendable {
 
         case "type":
             guard let text = call.text else { throw NaviError.other("type needs text") }
+            // Foreground: a click that just activated another app needs a moment
+            // before that app owns the keyboard; keystrokes sent sooner reach
+            // whatever was in front before.
+            if target == nil, let t = lastClickAt {
+                let since = Int(Date().timeIntervalSince(t) * 1000)
+                if since < Self.activationSettleMs { try? await Task.sleep(for: .milliseconds(Self.activationSettleMs - since)) }
+            }
             let secure = if let target { await target.focusedElementIsSecureField() } else { InputController.focusedElementIsSecureField() }
             if secure { throw NaviError.other("Refusing to type into a secure/password field") }
+            let before = await AXSnapshotter.focusedField(target: target)
             await input.type(text)
+            try? await Task.sleep(for: .milliseconds(60))
+            let after = await AXSnapshotter.focusedField(target: target)
+            if let note = AXSnapshotter.typingNote(before: before, after: after, text: text) {
+                Log.agent.notice("type: \(note, privacy: .public)")
+                handle.emit(.status("Typed, but the field may not have taken it — checking"))
+                return AgentToolResult.computer(id: call.id, text: note)
+            }
 
         case "key":
             guard let text = call.text else { throw NaviError.other("key needs text") }

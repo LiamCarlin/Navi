@@ -1068,13 +1068,17 @@ def tab_policy():
     return "keep"
 
 
-def should_close_tab(policy, status, steps):
-    """Close only what would be left over: a tab nothing was done on, or a
-    completed background lookup. Failures and cancellations keep the tab so the
-    user can take over where the run stopped."""
+def should_close_tab(policy, status, steps, background=None):
+    """Close only what would be left over: a completed background lookup, or a
+    background tab nothing was done on. Failures and cancellations keep the tab
+    so the user can take over where the run stopped. A tab opened in front of
+    the user is theirs the moment they see it — "go to YouTube" followed by
+    "stop listening" cancelled the run at 0 steps and closed YouTube."""
+    if background is None:
+        background = bool(os.environ.get("NAVI_BACKGROUND_TAB"))
     if status == "done":
         return policy == "close"
-    return steps == 0
+    return steps == 0 and background
 
 
 def reveal_tab(agent):

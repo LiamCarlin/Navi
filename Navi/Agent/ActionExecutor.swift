@@ -109,7 +109,11 @@ final class ActionExecutor: @unchecked Sendable {
         }
         // Fallback: replace existing content by typing. ⌘A is a menu shortcut,
         // which a background app drops, so select the whole value through AX there.
-        if let v = el.value, !v.isEmpty {
+        // Foreground keystrokes go to the active app: AXFocused alone does not
+        // activate one, so make sure the field's app is in front first.
+        await activate(pid: el.pid)
+        let before = await Self.currentValue(of: el)
+        if let v = before ?? el.value, !v.isEmpty {
             var selected = false
             if isBackground, let ref = el.ref {
                 selected = await AXQueue.run {
@@ -121,6 +125,27 @@ final class ActionExecutor: @unchecked Sendable {
             if !selected { await input.press(KeyCombo(keyCode: 0, flags: .maskCommand, keyName: "a")) }
         }
         await input.type(text)
+        // Verify: a field whose value is readable and did not take the text was
+        // not the one with keyboard focus. Reported as an error so the step log
+        // never says the text was typed when it wasn't.
+        guard el.isTextInput else { return }
+        try? await Task.sleep(for: .milliseconds(60))
+        if let after = await Self.currentValue(of: el), !Self.textLanded(text, before: before, after: after) {
+            throw NaviError.other("Typed, but \(el.displayName) did not take the text (keyboard focus was elsewhere)")
+        }
+    }
+
+    /// The field's live AXValue (nil when the app does not report one).
+    private static func currentValue(of el: AXElement) async -> String? {
+        guard let ref = el.ref else { return nil }
+        return await AXQueue.run { AXSnapshotter.stringValue(AXSnapshotter.attr(ref, kAXValueAttribute)) }
+    }
+
+    /// Did typing `text` change the field, or does it now hold the text?
+    static func textLanded(_ text: String, before: String?, after: String) -> Bool {
+        if after != (before ?? "") { return true }
+        let probe = String(text.split(separator: "\n", omittingEmptySubsequences: true).first?.prefix(24) ?? "")
+        return !probe.isEmpty && after.contains(probe)
     }
 
     /// Types into whatever currently has keyboard focus (used by the Claude fallback path too).
