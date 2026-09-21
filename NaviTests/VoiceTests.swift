@@ -311,6 +311,48 @@ import Testing
         guard case .drop = withFollowing else { Issue.record("expected drop, got \(withFollowing)"); return }
     }
 
+    @Test func fragmentsAreDroppedInsteadOfBecomingTasks() {
+        // From a real session: "you", "to YouTube" each became a 2 s agent run that did nothing.
+        let you = VoiceDecider.decide(verdict(boundary: ("complete", 0.7), kind: "do_in_app"), input: input(clause("you", connector: "."), silence: 900))
+        #expect({ if case .drop = you { return true }; return false }())
+        let tiny = VoiceDecider.decide(verdict(boundary: ("complete", 0.7), kind: "none"), input: input(clause("to youtube", connector: "."), silence: 900))
+        #expect({ if case .drop = tiny { return true }; return false }())
+        // Two words Jev *could* classify are a task; a question is never a fragment.
+        let sendIt = VoiceDecider.decide(verdict(boundary: ("complete", 0.7), kind: "do_in_app"), input: input(clause("send it", connector: "."), silence: 900))
+        #expect({ if case .commit(.task) = sendIt { return true }; return false }())
+        let q = VoiceDecider.decide(verdict(boundary: ("complete", 0.7), kind: "none"), input: input(clause("why?", connector: "?"), silence: 900))
+        #expect({ if case .commit = q { return true }; return false }())
+        // A long pause acts on what isn't noise — but not on what is more likely noise.
+        var v = verdict(boundary: ("not_a_command", 0.5))
+        v.boundary?.probabilities = ["complete": 0.3, "continues": 0.2, "not_a_command": 0.5]
+        let chatter = VoiceDecider.decide(v, input: input(clause("that was pretty funny honestly"), silence: 4000))
+        #expect({ if case .drop = chatter { return true }; return false }())
+    }
+
+    @Test func correctionsReplaceTheRunningCommand() {
+        var ctx = VoiceDecider.Context()
+        ctx.busyWith = "Open a new Google Doc"
+        let c = clause("I mean open a new Google Doc in Drive", connector: ".")
+        var v = verdict(boundary: ("complete", 0.9), kind: "do_in_app")
+        v.replacesCurrent = 0.85
+        let d = VoiceDecider.decide(v, input: VoiceDecider.Input(clause: c, silenceMs: 900, context: ctx))
+        #expect({ if case .replace(.task) = d { return true }; return false }())
+        // Not busy: the same answer just commits. Low probability: queued as usual. Controls never replace.
+        v.replacesCurrent = 0.85
+        let idle = VoiceDecider.decide(v, input: input(c, silence: 900))
+        #expect({ if case .commit = idle { return true }; return false }())
+        v.replacesCurrent = 0.2
+        let later = VoiceDecider.decide(v, input: VoiceDecider.Input(clause: c, silenceMs: 900, context: ctx))
+        #expect({ if case .commit = later { return true }; return false }())
+        var stop = verdict(boundary: ("complete", 0.9), kind: "control_navi", control: "stop")
+        stop.replacesCurrent = 0.95
+        let s = VoiceDecider.decide(stop, input: VoiceDecider.Input(clause: clause("stop", connector: "."), silenceMs: 900, context: ctx))
+        #expect(s == .commit(.control(.stop, text: "stop")))
+        // The question is only asked while Navi is busy.
+        #expect(VoiceDecider.questions(VoiceDecider.Input(clause: c, silenceMs: 0, context: ctx))["replaces_current"] != nil)
+        #expect(VoiceDecider.questions(input(c))["replaces_current"] == nil)
+    }
+
     @Test func kindsMapToCommands() {
         // control
         let stop = VoiceDecider.command(verdict(boundary: ("complete", 0.9), kind: "control_navi", control: "stop"), input: input(clause("stop")))

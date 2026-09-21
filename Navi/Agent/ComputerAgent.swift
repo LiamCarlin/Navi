@@ -659,7 +659,7 @@ final class AgentRun: @unchecked Sendable {
             var png: Data?
             if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
             let screen = JevDriver.stateJSON(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps,
-                                                                       snapshot: snapshot, history: []))
+                                                                       snapshot: snapshot, history: [], conversation: context.conversation))
             let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
                                                       history: history.suffix(8).map(\.json), failureSummary: why, screenshotPNG: png)
             try checkCancelled()
@@ -675,7 +675,8 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.planned("Guidance for Jev:\n\(advice.guidance)"))
             history.append(JevDriver.HistoryEntry(action: "Claude guidance: \(AgentAction.short(advice.guidance, 200))", kind: "coach", text: nil, pageChanged: true))
             let req = request ?? JevDriver.request(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
-                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates))
+                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
+                                                                            conversation: context.conversation))
             if let a = JevDriver.coachAction(operation: advice.nextOperation, target: advice.nextTarget, request: req) {
                 coachAction = a
             } else if advice.nextOperation == "BLOCKED" {
@@ -704,7 +705,7 @@ final class AgentRun: @unchecked Sendable {
             }
             let input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                            guidance: guidance)
+                                            guidance: guidance, conversation: context.conversation)
 
             // Text the task spells out (one obvious quote) that hasn't been typed yet.
             let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
@@ -1361,6 +1362,10 @@ final class AgentRun: @unchecked Sendable {
         if let b = frontmost.bundleID ?? context.frontmostApp { ctx += " (\(b))" }
         if let t = frontmost.windowTitle ?? context.frontmostWindowTitle, !t.isEmpty { ctx += "\nWindow: \(t)" }
         if let sel = context.selectedText, !sel.isEmpty { ctx += "\nSelected text: \(sel.prefix(400))" }
+        if !context.conversation.isEmpty {
+            ctx += "\n\nEarlier in this conversation (most recent last) — the task may refer to it (\"the text\", \"him\", \"that one\", \"now send it\"):\n"
+                + context.conversation.map { "- \($0)" }.joined(separator: "\n")
+        }
 
         let mode = background == nil
             ? "The user typed the task below into Navi's ⌘Space panel and is watching your progress."

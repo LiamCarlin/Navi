@@ -49,11 +49,22 @@ final class VoiceCommandExecutor {
     private(set) var current: Item?
     private var currentTask: Task<Void, Never>?
     private var currentRun: AgentRunHandle?
+    /// The run the deadline timer stopped, so its cancellation reads as "too long" rather than "stop".
+    private var timedOutRun: UUID?
     /// Approval the current command is waiting for: the agent's or a system action's.
     private(set) var pendingApproval: (description: String, risk: String, respond: (Bool) -> Void)?
     /// The app the last command opened or worked in, for follow-up clauses.
     private(set) var lastApp: (bundleID: String?, name: String)?
+    /// What was asked and what came of it, most recent last — the conversation
+    /// every later command and question is given (`QueryContext.conversation`).
+    private(set) var recent: [String] = []
     private let input = InputController()
+
+    static let maxRecent = 5
+    /// A spoken instruction never occupies the queue longer than this: the
+    /// agent's own step budget and coaching normally end a run well before, but
+    /// a stall here would freeze every instruction behind it.
+    static let taskDeadlineMs = 45_000
 
     init(services: NaviServices) { self.services = services }
 
@@ -81,6 +92,15 @@ final class VoiceCommandExecutor {
         if let p = pendingApproval { pendingApproval = nil; p.respond(false) }
         currentRun?.cancel()
         currentTask?.cancel()
+    }
+
+    /// The user corrected or restated what Navi is busy with ("no, I mean…"):
+    /// abort it and run `command` next, ahead of anything queued.
+    func replaceCurrent(with command: VoiceCommand) {
+        let item = Item(id: UUID(), command: command, enqueuedAt: Date())
+        queue.insert(item, at: 0)
+        onEvent?(.queueChanged)
+        if current != nil { stopCurrent() } else { pump() }
     }
 
     func respondToApproval(_ approve: Bool) {
@@ -114,8 +134,34 @@ final class VoiceCommandExecutor {
         currentRun = nil
         currentTask = nil
         pendingApproval = nil
+        remember(item, outcome)
         onEvent?(.finished(item, outcome))
         pump()
+    }
+
+    private func remember(_ item: Item, _ outcome: Outcome) {
+        if item.command.isControl { return }
+        let result: String
+        switch outcome {
+        case .done(let s): result = s.isEmpty ? "done" : s
+        case .failed(let m): result = "failed: \(m)"
+        case .cancelled: result = "stopped by the user"
+        }
+        recent.append("“\(item.command.spoken)” → \(Self.oneLine(result, max: 220))")
+        if recent.count > Self.maxRecent { recent.removeFirst(recent.count - Self.maxRecent) }
+    }
+
+    static func oneLine(_ s: String, max: Int) -> String {
+        let t = s.replacingOccurrences(of: "\n", with: " · ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.count <= max ? t : String(t.prefix(max - 1)) + "…"
+    }
+
+    /// The context every command and question runs with.
+    private func context() -> QueryContext {
+        var c = ContextProbe.current(recent: [])
+        c.conversation = recent
+        c.spoken = true
+        return c
     }
 
     // MARK: Perform
@@ -151,7 +197,7 @@ final class VoiceCommandExecutor {
                 if Task.isCancelled { return .cancelled }
                 guard approved else { return .failed("Declined") }
             }
-            switch await SystemCommands.run(action, context: ContextProbe.current(recent: [])) {
+            switch await SystemCommands.run(action, context: context()) {
             case .error(let m): return .failed(m)
             default: return .done(title)
             }
@@ -199,7 +245,7 @@ final class VoiceCommandExecutor {
     }
 
     private func runTask(_ item: Item, goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, continues: Bool) async -> Outcome {
-        var context = ContextProbe.current(recent: [])
+        var context = self.context()
         var task = goal
         // A follow-up meant for the app the previous instruction used, when that app isn't in front (background mode).
         if continues, let last = lastApp, let bid = last.bundleID, context.frontmostApp != bid,
@@ -214,6 +260,14 @@ final class VoiceCommandExecutor {
         let handle = services.agent.run(task: task, context: context, options: options)
         currentRun = handle
         var outcome: Outcome = .failed("The task ended without a result")
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.taskDeadlineMs))
+            guard !Task.isCancelled, let self else { return }
+            Log.voice.warning("voice task exceeded \(Self.taskDeadlineMs) ms — cancelling: \(task.prefix(80), privacy: .public)")
+            self.timedOutRun = handle.id
+            handle.cancel()
+        }
+        defer { deadline.cancel() }
         for await ev in handle.events {
             switch ev {
             case .step(_, let d): onEvent?(.progress(item, d))
@@ -225,7 +279,7 @@ final class VoiceCommandExecutor {
                 onEvent?(.needsApproval(item, description: d, risk: r))
             case .completed(let s): outcome = .done(s)
             case .failed(let m): outcome = .failed(m)
-            case .cancelled: outcome = .cancelled
+            case .cancelled: outcome = timedOutRun == handle.id ? .failed("Took too long and was stopped") : .cancelled
             }
         }
         if case .done = outcome, let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID {
@@ -237,7 +291,7 @@ final class VoiceCommandExecutor {
     private func answer(_ item: Item, question: String, wantsMemory: Bool) async -> Outcome {
         var hits: [MemoryHit] = []
         if wantsMemory { hits = await services.memory.search(query: question, limit: 6) }
-        let stream = services.answers.streamAnswer(query: question, context: ContextProbe.current(recent: []), memory: hits)
+        let stream = services.answers.streamAnswer(query: question, context: context(), memory: hits)
         var text = ""
         do {
             for try await chunk in stream {

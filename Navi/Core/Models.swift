@@ -148,6 +148,14 @@ struct QueryContext: Sendable {
     var clipboard: String?
     var recentQueries: [String]
     var timestamp: Date
+    /// What the user asked just before this and what came of it, most recent
+    /// last ("“send him a message saying hi” → Typed ‘hi’ into the message
+    /// field; not sent yet"). Voice control fills this so follow-ups like "now
+    /// send it" or "the text" resolve; empty for a typed panel query.
+    var conversation: [String] = []
+    /// The query was spoken (voice control): answers are read off a small
+    /// island, so they should be short unless more is asked for.
+    var spoken = false
 
     static var empty: QueryContext {
         QueryContext(frontmostApp: nil, frontmostAppName: nil, frontmostWindowTitle: nil,
