@@ -28,7 +28,11 @@ struct AppSkillsTests {
                 #expect(r.keywords.allSatisfy { $0 == $0.lowercased() }, "\(s.name): keywords must be lower-case")
             }
             for (_, url) in s.deepLinks { #expect(url.hasPrefix("https://"), "\(s.name): deep link \(url)") }
+            for t in s.triggers + s.weakTriggers + s.aliases { #expect(t == t.lowercased() && !t.isEmpty, "\(s.name): '\(t)' must be lower-case") }
+            for h in s.hosts { #expect(!h.hasPrefix("http") && !h.hasSuffix("/") && h.contains("."), "\(s.name): host entry '\(h)'") }
+            if let search = s.deepLinks["search"] { #expect(search.hasSuffix("=") || search.hasSuffix("/"), "\(s.name): search link must end in = or /") }
         }
+        #expect(AppSkills.native.count >= 60 && AppSkills.web.count >= 50, "library shrank: \(AppSkills.native.count) native, \(AppSkills.web.count) web")
         // The apps the failed runs were in are all covered.
         for b in ["com.apple.Notes", "com.apple.MobileSMS", "com.apple.calculator", "com.apple.iCal", "com.microsoft.Outlook", "com.apple.finder"] {
             #expect(AppSkills.skill(bundleID: b) != nil, "no skill for \(b)")
@@ -54,6 +58,96 @@ struct AppSkillsTests {
         #expect(AppSkills.skill(bundleID: "com.google.Chrome", url: "https://drive.google.com/drive/my-drive")?.name == "Google Drive")
         #expect(AppSkills.skill(bundleID: "com.google.Chrome", url: "https://example.com/")?.name == "Google Chrome")
         #expect(AppSkills.skill(bundleID: "com.apple.Notes", url: "https://drive.google.com/")?.name == "Notes")
+    }
+
+    // MARK: Which app a task means (voice: nothing named)
+
+    static let installed: Set<String> = ["com.apple.MobileSMS", "com.apple.mail", "com.apple.Notes", "com.apple.reminders", "com.apple.iCal", "com.apple.Music",
+                                         "com.spotify.client", "com.apple.finder", "com.apple.calculator", "com.apple.clock", "com.apple.Maps", "us.zoom.xos",
+                                         "com.tinyspeck.slackmacgap", "com.microsoft.Outlook", "com.apple.FaceTime", "com.apple.systempreferences", "com.google.Chrome",
+                                         "com.apple.PhotoBooth", "com.apple.Photos", "com.apple.weather", "com.apple.Dictionary"]
+    static func infer(_ task: String, front: String? = "com.google.Chrome", running: Set<String> = []) -> String? {
+        AppSkills.inferApp(for: task, frontmostBundleID: front, isInstalled: { installed.contains($0) }, isRunning: { running.contains($0) })?.skill.name
+    }
+
+    @Test func spokenTasksImplyTheRightApp() {
+        #expect(Self.infer("text mom I'm running late") == "Messages")
+        #expect(Self.infer("tell Sam I'll be there at 6") == "Messages")
+        #expect(Self.infer("email Sarah the report") == "Mail")
+        #expect(Self.infer("email Sarah the report", running: ["com.microsoft.Outlook"]) == "Outlook")       // the running client wins a tie
+        #expect(Self.infer("schedule a dentist appointment", running: ["com.microsoft.Outlook"]) == "Outlook")
+        #expect(Self.infer("remind me to call the dentist at 3") == "Reminders")
+        #expect(Self.infer("add milk to my grocery list") == "Reminders")
+        #expect(Self.infer("jot down that the meeting moved to Friday") == "Notes")
+        #expect(Self.infer("schedule a dentist appointment for Tuesday at 10") == "Calendar")
+        #expect(Self.infer("join my meeting") == "zoom.us")
+        #expect(Self.infer("play some jazz") == "Music")                                                      // a tie goes to Apple's app…
+        #expect(Self.infer("play some jazz", running: ["com.spotify.client"]) == "Spotify")                   // …unless the alternative is running
+        #expect(Self.infer("put on my liked songs", running: ["com.spotify.client"]) == "Spotify")
+        #expect(Self.infer("play the video") == nil)                                                          // Chrome in front claims "play"
+        #expect(Self.infer("play the video", front: "com.apple.Notes") == "Google Chrome")                    // a video is a browser thing
+        #expect(Self.infer("set a timer for 10 minutes") == "Clock")
+        #expect(Self.infer("how long to drive to Northeastern") == "Maps")
+        #expect(Self.infer("what's 12 times 34") == "Calculator")
+        #expect(Self.infer("open my downloads folder") == "Finder")
+        #expect(Self.infer("turn on dark mode") == "System Settings")
+        #expect(Self.infer("call mom") == "FaceTime")
+        #expect(Self.infer("rename the file and call it Report") == "Finder")                                // "call it" is a rename, not a call
+        #expect(Self.infer("take a picture of me") == "Photo Booth")
+        #expect(Self.infer("find photos from last summer") == "Photos")
+        #expect(Self.infer("define ubiquitous") == "Dictionary")
+        #expect(Self.infer("in slack tell John the build is green") == "Slack")                             // named app wins over "tell"
+        #expect(Self.infer("zoom in on the map", front: "com.apple.Maps") == nil)                           // "zoom" needs an opener to name the app
+        #expect(Self.infer("click the button") == nil)
+        #expect(Self.infer("make it bigger") == nil)
+        #expect(Self.infer("text mom I'm late", front: "com.apple.MobileSMS") == "Messages")               // caller drops it when already in front
+    }
+
+    @Test func mentionsNeedAnOpenerForCommonWords() {
+        #expect(AppSkills.mentioned(in: "open notes")?.name == "Notes")
+        #expect(AppSkills.mentioned(in: "in the notes app write hello")?.name == "Notes")
+        #expect(AppSkills.mentioned(in: "note that the meeting moved") == nil)
+        #expect(AppSkills.mentioned(in: "play some music") == nil)
+        #expect(AppSkills.mentioned(in: "switch to music")?.name == "Music")
+        #expect(AppSkills.mentioned(in: "send it on slack")?.name == "Slack")
+        #expect(AppSkills.mentioned(in: "look it up on youtube")?.name == "YouTube")
+        #expect(AppSkills.mentioned(in: "go to google docs")?.name == "Google Docs")                  // longest alias beats "google"
+        #expect(AppSkills.mentioned(in: "google the weather")?.name == "Google Search")
+        #expect(AppSkills.mentioned(in: "use vscode")?.name == "Visual Studio Code")
+        #expect(AppSkills.mentioned(in: "In Messages: reply ok")?.name == "Messages")
+    }
+
+    @Test func deepLinksCarryTheSpokenQuery() {
+        #expect(AppSkills.startURL(for: "play lofi beats on youtube") == "https://www.youtube.com/results?search_query=lofi%20beats")
+        #expect(AppSkills.startURL(for: "search amazon for a usb-c cable") == "https://www.amazon.com/s?k=usb-c%20cable")
+        #expect(AppSkills.startURL(for: "open gmail") == "https://mail.google.com/mail/u/0/#inbox")
+        #expect(AppSkills.startURL(for: "go to google drive shared with me") == "https://drive.google.com/drive/shared-with-me")
+        #expect(AppSkills.startURL(for: "google the weather in boston") == "https://www.google.com/search?q=weather%20in%20boston")
+        #expect(AppSkills.startURL(for: "look up apollo 11 on wikipedia") == "https://en.wikipedia.org/w/index.php?search=apollo%2011")
+        #expect(AppSkills.startURL(for: "pull up netflix") == "https://www.netflix.com/browse")
+        #expect(AppSkills.startURL(for: "text mom I'm late") == nil)                                   // no web app named
+        #expect(AppSkills.startURL(for: "open notes") == nil)                                          // native app named
+        // Planned browser steps and the planner-less path both use it.
+        #expect(TaskSurface.startURL(task: "watch the new trailer on youtube", frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=new%20trailer")
+        var step = TaskPlanner.Step(surface: .browser, goal: "on youtube play lofi beats")
+        #expect(TaskPlanner.startURL(for: step, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=lofi%20beats")
+        step.url = "https://example.com/"
+        #expect(TaskPlanner.startURL(for: step, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://example.com/")   // an explicit URL still wins
+    }
+
+    @Test func hostEntriesMayCarryPaths() {
+        #expect(AppSkills.skill(url: "https://docs.google.com/spreadsheets/d/1/edit")?.name == "Google Sheets")
+        #expect(AppSkills.skill(url: "https://docs.google.com/presentation/d/1/edit")?.name == "Google Slides")
+        #expect(AppSkills.skill(url: "https://docs.google.com/document/d/1/edit")?.name == "Google Docs")
+        #expect(AppSkills.skill(url: "https://docs.google.com/forms/d/e/1/viewform")?.name == "Google Forms")
+        #expect(AppSkills.skill(url: "https://www.google.com/maps/dir/a/b")?.name == "Google Maps")
+        #expect(AppSkills.skill(url: "https://www.google.com/travel/flights?hl=en")?.name == "Google Flights")
+        #expect(AppSkills.skill(url: "https://www.google.com/search?q=x")?.name == "Google Search")
+        #expect(AppSkills.skill(url: "https://canvas.northeastern.instructure.com/courses/1")?.name == "Canvas")
+        #expect(AppSkills.skill(url: "https://www.target.com/s?searchTerm=lamp")?.name == "Shopping sites")
+        #expect(AppSkills.hostEntry("google.com/maps", matchesHost: "www.google.com", path: "/maps/place/x"))
+        #expect(!AppSkills.hostEntry("google.com/maps", matchesHost: "www.google.com", path: "/search"))
+        #expect(AppSkills.hostEntry("google.com", matchesHost: "www.google.com", path: "/anything"))
     }
 
     // MARK: Playbook selection

@@ -371,6 +371,10 @@ Verified end-to-end 2026-09-20: "open TextEdit and type …" (1 step, 3 s) and
 "open Calculator and compute 12 times 34" (6 AXPress clicks, 6.4 s) with
 MATLAB/Chrome frontmost throughout; the target app never came forward.
 
+Rows, cells, tabs, menu items and radio buttons also carry `selected` (their
+`AXSelected`), so "which sidebar list is current" is visible — a Reminders
+recipe can say "click the named list first, then ⌘N" and Jev can tell.
+
 ### State (JSON, serialised to the `state` string)
 
 ```jsonc
@@ -403,20 +407,53 @@ not rely on knowledge stored in model weights when current information can
 come from your own knowledge base" and "the model cannot choose an omitted
 value" — so two knowledge sources ride in every request:
 
-- **`AppSkills`** (`Navi/Agent/AppSkills.swift`): a hand-written playbook per
-  app (Apple apps, Outlook, Slack, Spotify, VS Code, … and web apps by host:
-  Docs, Drive, Gmail, Google Calendar, Outlook web, YouTube, Amazon, GitHub…).
+- **`AppSkills`** (`Navi/Agent/AppSkills.swift`, data in `AppSkillLibrary.swift`):
+  a hand-written playbook per app — 60+ native (Messages, Mail, Outlook,
+  FaceTime, Slack, Discord, WhatsApp, Telegram, Signal, Teams, Zoom, Notes,
+  Reminders, Things, Todoist, Stickies, TextEdit, Obsidian, Bear, Notion,
+  Freeform, Pages/Numbers/Keynote, Word/Excel/PowerPoint, Calendar, Contacts,
+  Clock, Weather, Finder, System Settings, Terminal, Activity Monitor, App
+  Store, QuickTime, Shortcuts, Voice Memos, Home, Translate, Dictionary, Find
+  My, Photo Booth, Preview, Spotify, Music, Podcasts, TV, Books, Photos, Maps,
+  News, Stocks, Safari, Chrome, Arc, Firefox, Calculator, Xcode, VS Code, Zed,
+  GitHub Desktop, Figma) and 55+ web apps by host, optionally with a path
+  (Google Search/Docs/Sheets/Slides/Forms/Drive/Gmail/Calendar/Maps/Flights/
+  Keep/Photos/Translate/Meet/Classroom, Canvas, Gradescope, Piazza, Wikipedia,
+  Stack Overflow, YouTube, Netflix, Spotify web, Twitch, TikTok, Instagram,
+  Facebook, X, Reddit, LinkedIn, ChatGPT, Claude, Perplexity, Gemini, Amazon,
+  shopping sites, food delivery, travel booking, Uber, reservations, tickets,
+  Zillow, IMDb, GitHub, Linear, Jira, Trello, Asana, Notion, Slack/Discord/
+  WhatsApp/Telegram/Teams web, Outlook web, Dropbox, Zoom web, Figma web).
   Each carries `how_it_works`, `shortcuts` (what ⌘N does *here*), `recipes`
-  (goal keywords → steps in Jev's operation vocabulary), `done_when`, `avoid`,
-  `field_hints` (for the Haiku text helper) and `deep_links` (for the
-  planner: "Google Drive: shared with me" → the real URL, so no more 404s from
-  invented ones). `AppSkills.playbook(for:goal:)` keeps only the recipes whose
-  keywords match the goal (≤ 3) so the state stays small; the skill's
-  shortcuts are *added to the KEY head* (Outlook's ⌘2 cannot be chosen unless
-  offered) and re-describe the generic combos. The skill is re-resolved every
-  step from the snapshot's bundle id / URL. The browser runner gets the web
-  skills as `NAVI_PLAYBOOKS_JSON` and injects the one matching the page host
-  through the same `post_json` wrapper the coach uses.
+  (goal keywords in the words people *say* → steps in Jev's operation
+  vocabulary), `done_when`, `avoid` (shopping/booking skills: never pay or
+  book unless asked), `field_hints` (for the Haiku text helper), `deep_links`
+  (for the planner and the spoken start URL), `aliases` (spoken names) and
+  `triggers` / `weak_triggers` (which app a task implies). `AppSkills.playbook(for:goal:)`
+  keeps only the recipes whose keywords match the goal (≤ 3) so the state
+  stays small; the skill's shortcuts are *added to the KEY head* (Outlook's ⌘2
+  cannot be chosen unless offered) and re-describe the generic combos. The
+  skill is re-resolved every step from the snapshot's bundle id / URL. The
+  browser runner gets the web skills as `NAVI_PLAYBOOKS_JSON` (~50 KB) and
+  injects the one matching the page host through the same `post_json`
+  wrapper the coach uses.
+
+**Voice: which app does a spoken task mean?** A spoken task usually names no
+app ("text mom I'm running late") and voice mode skips the Claude planner, so
+the step used to run in whatever was in front. `AppSkills.inferApp` ranks the
+native skills by their `triggers` (nouns: "text" → Messages, "grocery list" →
+Reminders, "timer" → Clock, "jazz" → a music app) and `weak_triggers` (verbs
+such as "play", which do not count when the frontmost app's own skill claims
+them — "play the video" in Chrome opens nothing); a skill the task names
+(`mentioned`, by name or alias, common words only after an opener: "in
+music", "open notes") wins outright. Ties (Music / Spotify, Mail / Outlook,
+Calendar / Outlook) go to the running app, then Apple's own app.
+`resolvePlanWithoutPlanner` opens and pins that app; the two best-implied
+apps are also offered as `OPEN_APP` candidates mid-run, and a Jev `OPEN_APP`
+in background mode re-pins the target (the Claude path already did). For
+browser tasks `AppSkills.startURL` turns "play lofi beats on youtube" into the
+YouTube results page for "lofi beats" and "google drive shared with me" into
+that deep link, before the search-engine fallback.
 - **`AgentExperience`** (`Navi/Agent/AgentExperience.swift`): Agent S–style
   episodic memory. A completed step stores `(bundle id, goal, action labels)`
   — labels only, never typed text — in

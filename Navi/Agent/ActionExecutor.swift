@@ -338,6 +338,8 @@ enum TaskSurface {
     ///      results page full of relevant links rather than an unrelated tab.
     static func startURL(task: String, frontmost: FrontmostProbe.Info, start: Start? = nil) -> String? {
         if let u = TextCandidates.urls(in: task).first { return u.contains("://") ? u : "https://" + u }
+        // A web app the task names, with its query ("play lofi beats on youtube" → the results page).
+        if let deep = AppSkills.startURL(for: task) { return deep }
         if let site = UltrafastBridge.knownSiteURL(in: task) { return site }
         let lower = task.lowercased()
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {

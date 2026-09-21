@@ -343,7 +343,9 @@ final class AgentRun: @unchecked Sendable {
             }
         }
         guard surface == .browser, ComputerAgent.browserRunner != nil else {
-            return (front, TaskPlanner.fallback(task: originalTask, surface: .app))
+            // No planner (voice): a task that implies an app ("text mom I'm late" →
+            // Messages) must not run in whatever happens to be in front.
+            return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: Self.inferredApp(for: originalTask, frontmost: front)))
         }
         if let b = front.bundleID, AXSnapshotter.isBrowser(b) {
             front.url = FrontmostProbe.browserURL(bundleID: b)
@@ -359,6 +361,18 @@ final class AgentRun: @unchecked Sendable {
         var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
         plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: config.useCurrentTab ? .currentTab : nil)
         return (front, plan)
+    }
+
+    /// `AppSkills.inferApp` against the installed and running apps: the bundle id
+    /// to open (nil when the task names nothing and implies nothing, or the
+    /// frontmost app already is the implied one).
+    static func inferredApp(for task: String, frontmost: FrontmostProbe.Info) -> String? {
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        guard let hit = AppSkills.inferApp(for: task, frontmostBundleID: frontmost.bundleID,
+                                           isInstalled: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil },
+                                           isRunning: { running.contains($0) }) else { return nil }
+        if let f = frontmost.bundleID, hit.skill.bundleIDs.contains(f) { return nil }
+        return hit.bundleID
     }
 
     private enum StepOutcome { case completed(summary: String), failed(String), cancelled }
@@ -396,7 +410,7 @@ final class AgentRun: @unchecked Sendable {
             } else {
                 var opened: String?
                 if let app = step.app {
-                    handle.emit(.status("Opening \(app)"))
+                    handle.emit(.status("Opening \(app.contains(".") ? AppSkills.displayName(bundleID: app) : app)"))
                     do { opened = try await AgentCustomTools.openApp(named: app, activate: !config.background) } catch {
                         handle.emit(.status("Couldn't open \(app): \((error as? NaviError)?.errorDescription ?? error.localizedDescription)"))
                     }
@@ -594,7 +608,7 @@ final class AgentRun: @unchecked Sendable {
         let snapshotter = AXSnapshotter()
         let executor = ActionExecutor()
         executor.target = target
-        let target = self.target
+        var target = self.target
 
         // Opening a background app's menus would activate it, so the menu bar
         // is only offered in foreground mode; Jev falls back to shortcuts.
@@ -629,7 +643,13 @@ final class AgentRun: @unchecked Sendable {
         /// Snapshot keys already given a second look after a weak BLOCKED.
         var blockedRetries: Set<String> = []
         let candidates = TextCandidates.extract(task: task)
-        let appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
+        var appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
+        // Apps the task implies ("text …" → Messages) are OPEN_APP targets too, so Jev
+        // can switch when the step started in the wrong app.
+        for s in AppSkills.inferApps(for: task, frontmostBundleID: snapshot.bundleID).prefix(2)
+        where !appCandidates.contains(where: { $0.lowercased() == s.name.lowercased() }) && !(snapshot.bundleID.map(s.bundleIDs.contains) ?? false) {
+            appCandidates.append(s.name)
+        }
         let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
         /// Does the goal ask for an effect (create/send/type…) rather than information?
         let effectGoal = !Self.isLookup(task)
@@ -907,6 +927,13 @@ final class AgentRun: @unchecked Sendable {
             let before = await AXSnapshotter.fingerprint(target: target)
             do {
                 try await executor.perform(action, text: text, snapshot: snapshot)
+                // Background mode: Jev switched apps — follow it, or every later walk,
+                // event and screenshot would still address the app it left.
+                if case .openApp(let name) = action, target != nil {
+                    await pinTarget(opened: name)
+                    target = self.target
+                    executor.target = target
+                }
                 // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget.
                 if action != .wait { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
             } catch is CancellationError {

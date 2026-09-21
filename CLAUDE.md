@@ -72,12 +72,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `JevCoach` diagnoses **once** when Jev flails and its guidance rides in
     Jev's state/instructions — Claude never drives unless Jev says NEED_VISION.
     Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
-  - **App playbooks** (`Agent/AppSkills`): Jev knows nothing about Notes, Messages,
-    Calculator, Drive… so every step's state carries `playbook` (how the app works,
-    its shortcuts — also *offered* on the KEY head —, recipes matching the goal,
-    `done_when`, `avoid`) and `experience` (`AgentExperience`: action sequences that
-    completed similar goals in this app before). Web skills reach the browser runner
-    as `NAVI_PLAYBOOKS_JSON`. When a new app misbehaves, add or fix its skill first.
+  - **App playbooks** (`Agent/AppSkills` + `AppSkillLibrary`, 60+ native / 55+ web):
+    Jev knows nothing about Notes, Messages, Calculator, Drive… so every step's state
+    carries `playbook` (how the app works, its shortcuts — also *offered* on the KEY
+    head —, recipes matching the goal, `done_when`, `avoid`) and `experience`
+    (`AgentExperience`: action sequences that completed similar goals in this app
+    before). Web skills reach the browser runner as `NAVI_PLAYBOOKS_JSON`. Skills also
+    carry `triggers`/`aliases`: `AppSkills.inferApp` picks the app a spoken task
+    implies ("text mom" → Messages) when no planner runs, and `AppSkills.startURL`
+    turns "play X on youtube" into the results page. When a new app misbehaves, add or
+    fix its skill first; run the live A/B probe (see memory notes) before trusting it.
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,
