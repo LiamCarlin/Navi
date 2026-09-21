@@ -365,6 +365,19 @@ os.environ["NAVI_BACKGROUND_TAB"] = "1"; assert nr.should_close_tab("keep", "can
 os.environ.pop("NAVI_BACKGROUND_TAB", None)
 print("tab policy OK")
 
+# --- continue on the tab that is open ---
+assert nr.same_page("https://www.youtube.com/", "youtube.com")
+assert nr.same_page("https://www.youtube.com/results?search_query=x#top", "https://youtube.com/results?search_query=x")
+assert not nr.same_page("https://www.youtube.com/", "https://www.youtube.com/feed/history")
+assert not nr.same_page("", "")
+tabs = [{"type": "page", "targetId": "A", "url": "https://mail.google.com/mail/u/0/#inbox"},
+        {"type": "background_page", "targetId": "B", "url": "https://www.youtube.com/"},
+        {"type": "page", "targetId": "C", "url": "https://www.youtube.com/"}]
+assert nr.find_open_tab("youtube.com", tabs) == "C"
+assert nr.find_open_tab("https://mail.google.com/mail/u/0/", tabs) == "A"
+assert nr.find_open_tab("https://example.com", tabs) is None
+print("attach OK")
+
 # --- a helper with no value is a failed step (adaptation 16) ---
 class NoTextAgent:
     def __init__(self):

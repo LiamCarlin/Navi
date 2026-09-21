@@ -179,10 +179,15 @@ enum UltrafastBridge {
     /// brought to the front (`NAVI_BACKGROUND_TAB`), so the user keeps their
     /// current window while the task runs. CDP input and DOM reads don't need
     /// the tab to be visible.
+    ///
+    /// `attachToCurrentTab`: `startURL` is the tab that is open now — the runner
+    /// works on that tab (a follow-up like "look up X" on the site just opened)
+    /// instead of opening a second one.
     static func run(task: String, startURL: String?, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
-                    background: Bool = false) async -> String? {
+                    background: Bool = false, attachToCurrentTab: Bool = false) async -> String? {
         let search = searchURL(for: task)
         let first = startURL ?? search
+        let attachURL = attachToCurrentTab && startURL != nil ? startURL : nil
         if background {
             handle.emit(.status("Working in a background Chrome tab — keep using your Mac"))
         } else {
@@ -194,7 +199,7 @@ enum UltrafastBridge {
         let navigationOnly = first != search && isNavigationOnly(task)
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
                                             allowEarlyBlockRetry: first != search, background: background,
-                                            openedIsDone: navigationOnly)
+                                            openedIsDone: navigationOnly, attachURL: attachURL)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab).
             // Start over from a search-results page for the task.
@@ -259,7 +264,8 @@ enum UltrafastBridge {
 
     @discardableResult
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
-                        allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false) async -> (outcome: RunOutcome, text: String?) {
+                        allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false,
+                        attachURL: String? = nil) async -> (outcome: RunOutcome, text: String?) {
         guard let vendor = vendorDir, let runner = runnerScript,
               case let python = vendor.appendingPathComponent(".venv/bin/python").path,
               FileManager.default.isExecutableFile(atPath: python) else {
@@ -271,6 +277,7 @@ enum UltrafastBridge {
             return (.failed, nil)
         }
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
+        if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
         let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy
@@ -290,7 +297,7 @@ enum UltrafastBridge {
         proc.standardOutput = out
         proc.standardError = err
 
-        handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)"))
+        handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)" + (attachURL != nil ? " (current tab)" : "")))
         do { try proc.run() } catch {
             handle.emit(.failed("Could not start runner: \(error.localizedDescription)"))
             return (.failed, nil)

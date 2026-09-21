@@ -32,13 +32,15 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     let claude: ClaudeClient
 
     /// Integration hook: browser steps are handed here with `(goal, startURL,
-    /// handle, background)`. The runner owns the step from then on — it must emit
-    /// `.completed`/`.failed`/`.cancelled` on the handle (which is finished for
-    /// it afterwards), should honour task cancellation, and returns the final
-    /// page's visible text (nil when it did not complete) so a later step can
-    /// use what was found. `background` is this run's mode (a background tab vs.
-    /// the browser brought forward). nil ⇒ every step goes through the native driver.
-    nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle, Bool) async -> String?)?
+    /// handle, background, attachToCurrentTab)`. The runner owns the step from
+    /// then on — it must emit `.completed`/`.failed`/`.cancelled` on the handle
+    /// (which is finished for it afterwards), should honour task cancellation,
+    /// and returns the final page's visible text (nil when it did not complete)
+    /// so a later step can use what was found. `background` is this run's mode
+    /// (a background tab vs. the browser brought forward); `attachToCurrentTab`
+    /// says `startURL` is the tab that is open now — work on that tab, do not
+    /// open another. nil ⇒ every step goes through the native driver.
+    nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle, Bool, Bool) async -> String?)?
 
     init(jev: JevClient, claude: ClaudeClient) { self.jev = jev; self.claude = claude }
 
@@ -103,12 +105,13 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
 
 /// Object form of `ComputerAgent.browserRunner` for integrators who prefer a type.
 protocol BrowserTaskRunning: AnyObject, Sendable {
-    func run(task: String, startURL: String?, handle: AgentRunHandle, background: Bool) async -> String?
+    func run(task: String, startURL: String?, handle: AgentRunHandle, background: Bool, attachToCurrentTab: Bool) async -> String?
 }
 
 extension ComputerAgent {
     static func useBrowserRunner(_ runner: BrowserTaskRunning?) {
-        browserRunner = runner.map { r in { @Sendable task, url, handle, bg in await r.run(task: task, startURL: url, handle: handle, background: bg) } }
+        browserRunner = runner.map { r in { @Sendable task, url, handle, bg, attach in
+            await r.run(task: task, startURL: url, handle: handle, background: bg, attachToCurrentTab: attach) } }
     }
 }
 
@@ -335,7 +338,7 @@ final class AgentRun: @unchecked Sendable {
             surface = cls.surface
             if surface == .browser {
                 var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
-                plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: cls.start)
+                plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: config.useCurrentTab ? .currentTab : cls.start)
                 return (front, plan)
             }
         }
@@ -380,12 +383,14 @@ final class AgentRun: @unchecked Sendable {
             var pageText: String?
             if step.surface == .browser, let browserRunner {
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
+                // The start URL is the page that is open now: continue on that tab.
+                let attach = frontmost.url != nil && url == frontmost.url
                 let goal = task
                 let background = config.background
                 await showOverlay(step: max(1, actionIndex))
                 var text: String?
                 outcome = await runChild(goal: goal, stepBase: actionIndex, parent: handle) { child in
-                    text = await browserRunner(goal, url, child, background)
+                    text = await browserRunner(goal, url, child, background, attach)
                 }
                 pageText = text
             } else {
