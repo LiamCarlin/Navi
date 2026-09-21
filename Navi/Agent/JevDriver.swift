@@ -173,6 +173,7 @@ struct JevDriver: Sendable {
             if !e.options.isEmpty { d["options"] = e.options }
             if e.role == "AXCheckBox" || e.role == "AXRadioButton", let v = e.value { d["checked"] = (v == "1" || v.lowercased() == "true") }
             if e.role == "AXTab", let v = e.value { d["selected"] = (v == "1" || v.lowercased() == "true") }
+            if e.isSelected { d["selected"] = true }
             return d
         }
         var state: [String: Any] = [
@@ -229,6 +230,7 @@ struct JevDriver: Sendable {
             var d: [String: Any] = ["element": "[\(e.index)] \(e.label)", "current_value": e.value ?? "", "role": e.role]
             if e.role == "AXCheckBox" || e.role == "AXRadioButton" { d["checked"] = (e.value == "1" || e.value?.lowercased() == "true") }
             if e.role == "AXTab" { d["selected"] = (e.value == "1" || e.value?.lowercased() == "true") }
+            if e.isSelected { d["selected"] = true }
             if e.role == "AXDisclosureTriangle" || e.role == "AXPopUpButton" { d["expanded"] = (e.value == "1") }
             if !e.path.isEmpty { d["context"] = e.path }
             return J(any: d)

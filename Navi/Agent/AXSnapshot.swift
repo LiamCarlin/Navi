@@ -42,15 +42,17 @@ struct AXElement: @unchecked Sendable {
     /// Inside an AXWebArea (browser page / Electron view). Chromium acknowledges
     /// `AXPress` there and drops it, so such elements get a real click.
     var isWebContent: Bool
+    /// `AXSelected` of a row, cell or tab: which sidebar list / tab is current.
+    var isSelected: Bool
     /// Live reference; nil in tests.
     var ref: AXUIElement?
 
     init(id: String = "", role: String, subrole: String? = nil, label: String, value: String? = nil,
          frame: CGRect, isFocused: Bool = false, path: String = "", actions: [String] = [],
-         pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, ref: AXUIElement? = nil) {
+         pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, isSelected: Bool = false, ref: AXUIElement? = nil) {
         self.id = id; self.role = role; self.subrole = subrole; self.label = label; self.value = value
         self.frame = frame; self.isFocused = isFocused; self.path = path; self.actions = actions
-        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.ref = ref
+        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.isSelected = isSelected; self.ref = ref
     }
 
     /// Numeric index Jev sees ("e12" → 12).
@@ -96,7 +98,7 @@ extension AXElement: Equatable {
     static func == (a: AXElement, b: AXElement) -> Bool {
         a.id == b.id && a.role == b.role && a.subrole == b.subrole && a.label == b.label && a.value == b.value
             && a.frame == b.frame && a.isFocused == b.isFocused && a.path == b.path && a.actions == b.actions && a.pid == b.pid
-            && a.options == b.options
+            && a.options == b.options && a.isSelected == b.isSelected
     }
 }
 
@@ -410,7 +412,7 @@ final class AXSnapshotter: @unchecked Sendable {
         let attributes = [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
                           kAXEnabledAttribute, kAXFocusedAttribute, "AXFrame", kAXChildrenAttribute, kAXHiddenAttribute,
                           kAXPlaceholderValueAttribute, kAXHelpAttribute, kAXTitleUIElementAttribute,
-                          kAXIdentifierAttribute, kAXRoleDescriptionAttribute] as [String]
+                          kAXIdentifierAttribute, kAXRoleDescriptionAttribute, kAXSelectedAttribute] as [String]
         /// Every static text with its frame, so an unlabelled cell/row/button can be
         /// named after the text drawn inside it ("the cell" → "Mikey Ku · 9:12 PM").
         var texts: [(String, CGRect)] = []
@@ -469,10 +471,11 @@ final class AXSnapshotter: @unchecked Sendable {
                 if label.isEmpty, !isText {
                     unlabelled.append((raw.count, (vals[13] as? String) ?? "", (vals[14] as? String) ?? ""))
                 }
+                let selected = ["AXRow", "AXCell", "AXTab", "AXMenuItem", "AXRadioButton"].contains(role) && (vals[15] as? Bool) == true
                 raw.append(AXElement(role: role, subrole: vals[1] as? String, label: label,
                                      value: role == "AXSecureTextField" ? "••••" : shownValue.map { String($0.prefix(60)) },
                                      frame: f, isFocused: focused, path: path, actions: actions, pid: pid, options: options,
-                                     isWebContent: node.inWebArea || role == "AXWebArea", ref: el))
+                                     isWebContent: node.inWebArea || role == "AXWebArea", isSelected: selected, ref: el))
             }
 
             guard node.depth < AXSnapshot.maxDepth, let children = elements(vals[8]) else { continue }

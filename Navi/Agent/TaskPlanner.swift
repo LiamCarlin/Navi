@@ -177,6 +177,7 @@ enum TaskPlanner {
     static func startURL(for step: Step, frontmost: FrontmostProbe.Info) -> String {
         if let u = step.url { return u }
         if step.useCurrentTab, let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") { return u }
+        if let deep = AppSkills.startURL(for: step.goal) { return deep }             // "on youtube: lofi beats" → results page
         if let site = UltrafastBridge.knownSiteURL(in: step.goal) { return site }   // "google flights", "youtube", …
         if let q = step.query { return UltrafastBridge.searchURL(for: q) }
         return TaskSurface.startURL(task: step.goal, frontmost: frontmost) ?? UltrafastBridge.searchURL(for: step.goal)
