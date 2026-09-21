@@ -324,6 +324,62 @@ final class AXSnapshotter: @unchecked Sendable {
         }
     }
 
+    /// The element holding keyboard focus and what it contains, read before and
+    /// after typing to tell whether the keystrokes landed anywhere.
+    struct FocusedField: Equatable, Sendable {
+        var role: String
+        var value: String?
+        var isTextInput: Bool { ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role) }
+    }
+
+    /// Roles that plainly cannot take typed text: keystrokes sent while one of
+    /// these has focus go nowhere (or trigger shortcuts).
+    static let nonTextRoles: Set<String> = [
+        "AXButton", "AXStaticText", "AXImage", "AXWindow", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton",
+        "AXLink", "AXRow", "AXCell", "AXTable", "AXOutline", "AXList", "AXToolbar", "AXTabGroup", "AXScrollBar", "AXSplitter",
+        "AXPopUpButton", "AXSlider", "AXProgressIndicator", "AXDisclosureTriangle",
+    ]
+
+    /// Focused element of the target app (background mode) or the frontmost app.
+    static func focusedField(target: AgentTarget? = nil) async -> FocusedField? {
+        let pid: pid_t?
+        if let target { pid = target.pid } else { pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier } }
+        guard let pid else { return nil }
+        return await AXQueue.run {
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, 0.1)
+            guard let f = attr(app, kAXFocusedUIElementAttribute) as! AXUIElement? else { return nil }
+            let role = attr(f, kAXRoleAttribute) as? String ?? ""
+            let value = stringValue(attr(f, kAXValueAttribute)).map { String($0.prefix(4000)) }
+            return FocusedField(role: role, value: value)
+        }
+    }
+
+    /// Did `text` reach the focused field? nil when it did (or when nothing can
+    /// tell); otherwise a note for the model that asked for the typing — the
+    /// result of a `type` used to be a bare OK even when every keystroke had
+    /// gone to a window without focus.
+    static func typingNote(before: FocusedField?, after: FocusedField?, text: String) -> String? {
+        let probe = String(text.split(separator: "\n", omittingEmptySubsequences: true).first?.prefix(24) ?? "")
+        func landed(_ f: FocusedField?) -> Bool {
+            guard let f, let v = f.value else { return true }          // unreadable: no evidence either way
+            return v != (before?.value ?? "") || (!probe.isEmpty && v.contains(probe))
+        }
+        guard let before else {
+            if let after, after.isTextInput, landed(after) { return nil }
+            return "Note: no element had keyboard focus when the keystrokes were sent, so they probably went nowhere. Click inside the field first, then type again."
+        }
+        if before.isTextInput {
+            if landed(after) { return nil }
+            return "Note: the focused \(before.role) did not change after typing — the keystrokes may not have reached it. Click inside the field, then type again, and verify with a screenshot."
+        }
+        if nonTextRoles.contains(before.role) {
+            if let after, after.isTextInput, landed(after) { return nil }
+            return "Note: keyboard focus was on \(before.role.dropFirst(2)), not a text field, so the keystrokes probably went nowhere. Click inside the field first, then type again."
+        }
+        return nil
+    }
+
     /// Waits for the screen to react to an action: polls the cheap fingerprint
     /// every 40 ms and returns as soon as it differs from `before` (plus one
     /// extra tick so the change can finish), or after `maxMs`.

@@ -188,8 +188,13 @@ enum UltrafastBridge {
         } else {
             await bringBrowserForward()
         }
+        // "Go to YouTube and open it": the page itself is the deliverable. Jev finding
+        // nothing to do on it means the task is done — not a reason to close the tab
+        // the user just watched open and start over from a Google search.
+        let navigationOnly = first != search && isNavigationOnly(task)
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                            allowEarlyBlockRetry: first != search, background: background)
+                                            allowEarlyBlockRetry: first != search, background: background,
+                                            openedIsDone: navigationOnly)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab).
             // Start over from a search-results page for the task.
@@ -221,9 +226,40 @@ enum UltrafastBridge {
 
     enum RunOutcome: Equatable { case completed, failed, cancelled, blockedBeforeActing }
 
+    /// Is the task satisfied by opening its page — nothing to do once there?
+    /// "go to youtube", "open the youtube website and open it", "pull up
+    /// reddit in chrome", "navigate to github.com please".
+    static func isNavigationOnly(_ task: String) -> Bool {
+        var t = task.lowercased()
+        // A destination must be named: a URL or a site Navi knows ("the settings page" is not one).
+        var named = false
+        if let u = TextCandidates.urls(in: task).first { t = t.replacingOccurrences(of: u.lowercased(), with: " "); named = true }
+        if let site = knownSiteName(in: task) { t = t.replacingOccurrences(of: site, with: " "); named = true }
+        guard named else { return false }
+        t = " " + t.replacingOccurrences(of: "[^a-z0-9' ]", with: " ", options: .regularExpression) + " "
+        let fillers = ["please", "can you", "could you", "for me", "and open it", "open it", "and go there", "the website", "the web page",
+                       "the webpage", "the site", "the page", "website", "webpage", "site", "page", "in chrome", "in the browser",
+                       "in safari", "on chrome", "on the web", "online", "the", "a", "to", "and", "then", "on", "up"]
+        let verbs = ["go to", "goto", "navigate to", "open", "visit", "browse to", "browse", "pull up", "bring up", "show me", "show",
+                     "load", "launch", "take me to", "get me to", "head to"]
+        for f in fillers where f.contains(" ") { t = t.replacingOccurrences(of: " \(f) ", with: " ") }
+        var stripped = false
+        for v in verbs where t.contains(" \(v) ") { t = t.replacingOccurrences(of: " \(v) ", with: " "); stripped = true }
+        guard stripped else { return false }
+        var words = t.split(whereSeparator: { $0 == " " }).map(String.init)
+        words.removeAll { fillers.contains($0) }
+        return words.isEmpty
+    }
+
+    /// The well-known site the task names (the key of `knownSiteURL`), if any.
+    static func knownSiteName(in task: String) -> String? {
+        let lower = task.lowercased()
+        return knownSites.first { lower.contains($0.0) }?.0.trimmingCharacters(in: .whitespaces)
+    }
+
     @discardableResult
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
-                        allowEarlyBlockRetry: Bool, background: Bool = false) async -> (outcome: RunOutcome, text: String?) {
+                        allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false) async -> (outcome: RunOutcome, text: String?) {
         guard let vendor = vendorDir, let runner = runnerScript,
               case let python = vendor.appendingPathComponent(".venv/bin/python").path,
               FileManager.default.isExecutableFile(atPath: python) else {
@@ -327,17 +363,24 @@ enum UltrafastBridge {
                     let status = json["status"] as? String ?? "done"
                     let summary = json["summary"] as? String ?? ""
                     let ms = json["elapsed_ms"] as? Int ?? 0
+                    let opened = "Opened \(URL(string: json["url"] as? String ?? url)?.host ?? url)"
                     switch status {
                     case "done":
                         outcome = .completed
                         finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
                             .joined(separator: "\n")
-                        handle.emit(.completed(summary: "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
+                        handle.emit(.completed(summary: openedIsDone && stepIndex == 0 ? opened : "\(summary) (\(stepIndex) steps · \(Double(ms) / 1000)s)"))
                     case "cancelled":
                         outcome = .cancelled
                         handle.emit(.cancelled)
                     default:
-                        if stepIndex == 0, allowEarlyBlockRetry {
+                        if stepIndex == 0, openedIsDone {
+                            // The page is open; that was the task.
+                            outcome = .completed
+                            finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
+                                .joined(separator: "\n")
+                            handle.emit(.completed(summary: opened))
+                        } else if stepIndex == 0, allowEarlyBlockRetry {
                             outcome = .blockedBeforeActing
                         } else {
                             outcome = .failed
@@ -416,22 +459,22 @@ enum UltrafastBridge {
     /// A well-known site named in the task, if any.
     static func knownSiteURL(in task: String) -> String? {
         let lower = task.lowercased()
-        let sites: [(String, String)] = [
-            ("google flights", "https://www.google.com/travel/flights?hl=en"), ("flights", "https://www.google.com/travel/flights?hl=en"),
-            ("youtube", "https://www.youtube.com"), ("amazon", "https://www.amazon.com"), ("wikipedia", "https://en.wikipedia.org/wiki/Main_Page"),
-            ("github", "https://github.com"), ("gmail", "https://mail.google.com"), ("google maps", "https://www.google.com/maps"),
-            ("twitter", "https://x.com"), (" x.com", "https://x.com"), ("linkedin", "https://www.linkedin.com"), ("reddit", "https://www.reddit.com"),
-            ("hacker news", "https://news.ycombinator.com"), ("airbnb", "https://www.airbnb.com"), ("booking.com", "https://www.booking.com"),
-            ("google docs", "https://docs.google.com"), ("notion", "https://www.notion.so"), ("chatgpt", "https://chatgpt.com"),
-            ("ticketmaster", "https://www.ticketmaster.com"), ("stubhub", "https://www.stubhub.com"), ("seatgeek", "https://seatgeek.com"),
-            ("eventbrite", "https://www.eventbrite.com"), ("expedia", "https://www.expedia.com"), ("kayak", "https://www.kayak.com"),
-            ("yelp", "https://www.yelp.com"), ("doordash", "https://www.doordash.com"), ("uber eats", "https://www.ubereats.com"),
-            ("netflix", "https://www.netflix.com"), ("spotify", "https://open.spotify.com"), ("ebay", "https://www.ebay.com"),
-            ("craigslist", "https://www.craigslist.org"), ("zillow", "https://www.zillow.com"), ("instagram", "https://www.instagram.com"),
-        ]
-        for (name, url) in sites where lower.contains(name) { return url }
-        return nil
+        return knownSites.first { lower.contains($0.0) }?.1
     }
+
+    static let knownSites: [(String, String)] = [
+        ("google flights", "https://www.google.com/travel/flights?hl=en"), ("flights", "https://www.google.com/travel/flights?hl=en"),
+        ("youtube", "https://www.youtube.com"), ("amazon", "https://www.amazon.com"), ("wikipedia", "https://en.wikipedia.org/wiki/Main_Page"),
+        ("github", "https://github.com"), ("gmail", "https://mail.google.com"), ("google maps", "https://www.google.com/maps"),
+        ("twitter", "https://x.com"), (" x.com", "https://x.com"), ("linkedin", "https://www.linkedin.com"), ("reddit", "https://www.reddit.com"),
+        ("hacker news", "https://news.ycombinator.com"), ("airbnb", "https://www.airbnb.com"), ("booking.com", "https://www.booking.com"),
+        ("google docs", "https://docs.google.com"), ("notion", "https://www.notion.so"), ("chatgpt", "https://chatgpt.com"),
+        ("ticketmaster", "https://www.ticketmaster.com"), ("stubhub", "https://www.stubhub.com"), ("seatgeek", "https://seatgeek.com"),
+        ("eventbrite", "https://www.eventbrite.com"), ("expedia", "https://www.expedia.com"), ("kayak", "https://www.kayak.com"),
+        ("yelp", "https://www.yelp.com"), ("doordash", "https://www.doordash.com"), ("uber eats", "https://www.ubereats.com"),
+        ("netflix", "https://www.netflix.com"), ("spotify", "https://open.spotify.com"), ("ebay", "https://www.ebay.com"),
+        ("craigslist", "https://www.craigslist.org"), ("zillow", "https://www.zillow.com"), ("instagram", "https://www.instagram.com"),
+    ]
 
     /// Picks a start URL for a browser task: explicit URL in the task, a known
     /// site name, or the current browser tab when a browser is frontmost.

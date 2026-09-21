@@ -361,6 +361,8 @@ enum VoiceDecider {
             return .control(Self.heuristicControl(text) ?? .stop, text: text)
         case .openApp:
             if let app = appChoice(v, input: input) { return .openApp(app.entry, text: text) }
+            // "Go to YouTube" reads as open_app to Jev; with no such app it is a site.
+            if let url = Self.knownSiteToOpen(text) { return .openURL(url, text: text) }
             if let name = VoiceAppMatcher.nameGuess(in: text) { return .openAppNamed(name, text: text) }
             return .task(goal: text, surface: .nativeApp, useCurrentTab: false, isRisky: risky, continuesPrevious: continues)
         case .answer:
@@ -379,6 +381,7 @@ enum VoiceDecider {
             return .task(goal: text, surface: .nativeApp, useCurrentTab: false, isRisky: risky, continuesPrevious: continues)
         case .browse:
             if let url = URLAndWeb.detect(text) { return .openURL(url, text: text) }
+            if let url = Self.knownSiteToOpen(text) { return .openURL(url, text: text) }
             if let q = Self.plainSearchQuery(text) { return .webSearch(q, text: text) }
             let tab = v.startFrom?.choice == TaskSurface.Start.currentTab.rawValue
             return .task(goal: text, surface: .browser, useCurrentTab: tab, isRisky: risky, continuesPrevious: continues)
@@ -396,8 +399,18 @@ enum VoiceDecider {
         if let ctl = heuristicControl(text) { return .control(ctl, text: text) }
         if looksLikeOpen(text), let app = input.context.appCandidates.first, app.score >= 0.9 { return .openApp(app.entry, text: text) }
         if let url = URLAndWeb.detect(text) { return .openURL(url, text: text) }
+        if let url = knownSiteToOpen(text) { return .openURL(url, text: text) }
         if let q = plainSearchQuery(text) { return .webSearch(q, text: text) }
         return .task(goal: text, surface: .unsure, useCurrentTab: false, isRisky: false, continuesPrevious: false)
+    }
+
+    /// "Go to YouTube", "open reddit and open it": a well-known site with nothing
+    /// to do once there opens like a URL does — straight away, in the browser,
+    /// and it stays open. Through the agent, the runner's tab used to be closed
+    /// again when the run ended with nothing done on it.
+    static func knownSiteToOpen(_ text: String) -> URL? {
+        guard UltrafastBridge.isNavigationOnly(text), let site = UltrafastBridge.knownSiteURL(in: text) else { return nil }
+        return URL(string: site)
     }
 
     static func appChoice(_ v: Verdict, input: Input) -> VoiceAppMatcher.Candidate? {

@@ -167,6 +167,67 @@ struct JevDriverTests {
         #expect(JevDriver.decide(v, request: req, threshold: 0.25) == .act(.click(elementID: "e2")))
     }
 
+    @Test func typingGoalsKeepAFairlySureTypeTextWithJev() {
+        let req = JevDriver.request(for: Self.input())
+        let v = Self.verdict(op: "TYPE_TEXT", confidence: 0.45, request: req, target: ("type_text_target", "1"))
+        // Below the threshold and the goal doesn't ask for typing: Claude looks.
+        if case .fallbackToClaude = JevDriver.decide(v, request: req, threshold: 0.5) {} else { Issue.record("should fall back") }
+        // The goal says to type: Jev's pick stands.
+        #expect(JevDriver.decide(v, request: req, threshold: 0.5, typingGoal: true) == .act(.typeText(elementID: "e1")))
+        // But not on a hunch.
+        let weak = Self.verdict(op: "TYPE_TEXT", confidence: 0.2, request: req, target: ("type_text_target", "1"))
+        if case .fallbackToClaude = JevDriver.decide(weak, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("20% is a hunch") }
+        // Other operations are unaffected.
+        let click = Self.verdict(op: "CLICK", confidence: 0.45, request: req, target: ("click_target", "2"))
+        if case .fallbackToClaude = JevDriver.decide(click, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("click still falls back") }
+    }
+
+    @Test func goalAsksToType() {
+        for g in ["can you type that in the message bar and send it", "Tell her that I just got back to my dorm", "say good night",
+                  "write a little paragraph about why I love Devon", "text Bella good night", "reply yes", "search for lo-fi beats",
+                  "put 'hello' in the title", "Type the words good morning"] {
+            #expect(JevDriver.goalAsksToType(g), "\(g)")
+        }
+        for g in ["click on Bella", "open youtube", "take a photo", "close this", "scroll down", "can you accept that"] {
+            #expect(!JevDriver.goalAsksToType(g), "\(g)")
+        }
+    }
+
+    @Test func typingNotesOnlyWhenKeystrokesWentNowhere() {
+        typealias F = AXSnapshotter.FocusedField
+        // Landed: the field changed.
+        #expect(AXSnapshotter.typingNote(before: F(role: "AXTextArea", value: ""), after: F(role: "AXTextArea", value: "good night"), text: "good night") == nil)
+        // Landed: the value is unreadable (no evidence) — assume fine.
+        #expect(AXSnapshotter.typingNote(before: F(role: "AXTextArea", value: nil), after: F(role: "AXTextArea", value: nil), text: "hi") == nil)
+        // Landed: focus was created by the typing (a search field appearing).
+        #expect(AXSnapshotter.typingNote(before: nil, after: F(role: "AXTextField", value: "hi"), text: "hi") == nil)
+        // Not landed: a text field that didn't change.
+        #expect(AXSnapshotter.typingNote(before: F(role: "AXTextArea", value: "old"), after: F(role: "AXTextArea", value: "old"), text: "new words") != nil)
+        // Not landed: nothing focused, or a button.
+        #expect(AXSnapshotter.typingNote(before: nil, after: nil, text: "hi") != nil)
+        #expect(AXSnapshotter.typingNote(before: F(role: "AXButton", value: nil), after: F(role: "AXButton", value: nil), text: "hi") != nil)
+        // Unknown roles (web areas, custom editors) get the benefit of the doubt.
+        #expect(AXSnapshotter.typingNote(before: F(role: "AXWebArea", value: nil), after: F(role: "AXWebArea", value: nil), text: "hi") == nil)
+        #expect(ActionExecutor.textLanded("good night", before: "", after: "good night"))
+        #expect(ActionExecutor.textLanded("good night", before: "good night", after: "good night"))   // ⌘A + retype of the same text
+        #expect(!ActionExecutor.textLanded("good night", before: "draft", after: "draft"))
+    }
+
+    @Test func aLookOnlyClaudeTurnIsRecordedAsSuch() {
+        #expect(AgentRun.lookedOnly("Done: the message is already visible as a sent bubble") == "Looked only, took no action — observed: the message is already visible as a sent bubble")
+        #expect(AgentRun.lookedOnly("Did: nothing (took a screenshot only)") == "Looked only, took no action — observed: nothing (took a screenshot only)")
+        #expect(AgentRun.lookedOnly("") == "Looked only, took no action.")
+        #expect(AgentRun.isTypingStep("Jev is only 45% sure about TYPE_TEXT (threshold 50%)"))
+        #expect(AgentRun.isTypingStep("the text for ‘Search’ must be composed by the vision model"))
+        #expect(!AgentRun.isTypingStep("Jev is only 46% sure about CLICK (threshold 50%)"))
+        let typed = JevDriver.HistoryEntry(action: "Type ‘good night’ into ‘Message’", kind: "type_text", text: "good night", pageChanged: true)
+        let failed = JevDriver.HistoryEntry(action: "Type ‘good night’ into ‘Message’ → error: focus elsewhere", kind: "type_text", text: "good night", pageChanged: false)
+        let reason = "Jev is only 45% sure about TYPE_TEXT (threshold 50%)"
+        #expect(AgentRun.needsTypingOrders(reason: reason, history: []))
+        #expect(AgentRun.needsTypingOrders(reason: reason, history: [failed]))
+        #expect(!AgentRun.needsTypingOrders(reason: reason, history: [typed]))   // already typed this run: no repeat
+    }
+
     @Test func weakBlockedIsTentative() {
         let req = JevDriver.request(for: Self.input())
         // Unsure BLOCKED (31%) → wait and look again rather than coach/fail.

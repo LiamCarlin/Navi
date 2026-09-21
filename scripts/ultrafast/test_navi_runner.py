@@ -356,8 +356,13 @@ assert not nr.should_close_tab("reveal", "done", 3)
 assert nr.should_close_tab("close", "done", 3)           # a background lookup: answer is in the panel
 assert not nr.should_close_tab("close", "blocked", 2)    # failures keep the tab so the user can take over
 assert not nr.should_close_tab("keep", "cancelled", 1)
-assert nr.should_close_tab("keep", "blocked", 0)         # nothing happened on it
-assert nr.should_close_tab("reveal", "error", 0)
+assert nr.should_close_tab("keep", "blocked", 0, background=True)      # nothing happened on it, nobody saw it
+assert nr.should_close_tab("reveal", "error", 0, background=True)
+assert not nr.should_close_tab("keep", "blocked", 0, background=False)  # the user watched it open: it stays
+assert not nr.should_close_tab("keep", "cancelled", 0, background=False)
+os.environ.pop("NAVI_BACKGROUND_TAB", None); assert not nr.should_close_tab("keep", "cancelled", 0)
+os.environ["NAVI_BACKGROUND_TAB"] = "1"; assert nr.should_close_tab("keep", "cancelled", 0)
+os.environ.pop("NAVI_BACKGROUND_TAB", None)
 print("tab policy OK")
 
 # --- a helper with no value is a failed step (adaptation 16) ---

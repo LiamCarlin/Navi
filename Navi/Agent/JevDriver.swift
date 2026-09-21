@@ -403,8 +403,26 @@ struct JevDriver: Sendable {
     /// this sure; otherwise it is re-asked once (`Decision.prematureDone`).
     static let prematureDoneConfidence = 0.95
 
+    /// "Type good night in the box": when the goal itself asks for typing and
+    /// Jev picked TYPE_TEXT — just less surely than `threshold` because the
+    /// mass is split with KEY/CLICK — the step stays with Jev above this floor.
+    /// Handing it to the vision model cost 6+ s and, too often, a screenshot
+    /// followed by a claim that the text was "already there".
+    static let typeTextFloor = 0.3
+
+    /// Does the goal spell out that something is to be typed, written or sent
+    /// (spoken tasks: "type that in the message bar", "tell her good night")?
+    static func goalAsksToType(_ goal: String) -> Bool {
+        let g = " " + goal.lowercased().replacingOccurrences(of: "[^a-z0-9' ]", with: " ", options: .regularExpression) + " "
+        let verbs = ["type", "types", "typing", "write", "writes", "enter", "put", "say", "says", "tell", "text", "message",
+                     "reply", "respond", "send", "sends", "compose", "fill", "ask", "dictate", "paste", "search for", "look up"]
+        if verbs.contains(where: { g.contains(" \($0) ") }) { return true }
+        return TextCandidates.obviousText(in: goal) != nil
+    }
+
     static func decide(_ v: Verdict, request: Request, threshold: Double,
-                       effectGoal: Bool = false, actionsTaken: Int = 1, doneRejected: Bool = false) -> Decision {
+                       effectGoal: Bool = false, actionsTaken: Int = 1, doneRejected: Bool = false,
+                       typingGoal: Bool = false) -> Decision {
         // "Compute 12 × 34" answered DONE 95 % on a Calculator showing 0: nothing
         // had been pressed. A first-step DONE on an effect goal gets one second look.
         func premature(_ confidence: Double) -> Bool {
@@ -424,7 +442,8 @@ struct JevDriver: Sendable {
         }
         if op == .needVision { return .fallbackToClaude(reason: "Jev says the accessibility tree is insufficient for this step") }
         if op == .blocked { return .blocked(reason: "Jev chose BLOCKED: no supported operation can make progress") }
-        if opHead.confidence < threshold {
+        let keepTyping = op == .typeText && typingGoal && opHead.confidence >= typeTextFloor
+        if opHead.confidence < threshold, !keepTyping {
             return .fallbackToClaude(reason: "Jev is only \(Int(opHead.confidence * 100))% sure about \(op.rawValue) (threshold \(Int(threshold * 100))%)")
         }
         if let headName = op.targetHead {
