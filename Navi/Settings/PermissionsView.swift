@@ -34,6 +34,11 @@ struct PermissionsList: View {
                       state: model.automation,
                       request: { _ = Permissions.requestAutomation() },
                       open: { Permissions.openSettings(.automation) })
+        PermissionRow(title: "Microphone",
+                      explanation: "Lets voice control hear you. Speech is transcribed on this Mac; audio never leaves it.",
+                      state: model.microphone,
+                      request: { Task { _ = await Permissions.requestMicrophone(); await model.refresh() } },
+                      open: { Permissions.openSettings(.microphone) })
         PermissionRow(title: "Notifications",
                       explanation: "Tells you when a background task or long agent run finishes.",
                       state: model.notifications,

@@ -70,6 +70,13 @@ final class PanelViewModel: ObservableObject {
 
     let services: NaviServices
     var onDismiss: (() -> Void)?
+    /// The sparkle in the bar was clicked: hand over to voice control (set by `AppDelegate`).
+    var onVoiceRequested: (() -> Void)?
+
+    func startVoice() {
+        Log.panel.info("voice requested from the bar")
+        onVoiceRequested?()
+    }
 
     private var routeTask: Task<Void, Never>?
     private var answerTask: Task<Void, Never>?

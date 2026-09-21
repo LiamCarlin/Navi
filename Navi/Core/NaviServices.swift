@@ -39,10 +39,16 @@ protocol ComputerAgentRunning: AnyObject, Sendable {
     /// task, before the user presses ⏎, so the agent can do speculative work
     /// (classify the task surface, warm connections) off the critical path.
     @MainActor func prepare(task: String, context: QueryContext)
+    /// Optional: a run with per-call overrides (voice control skips the planner
+    /// and passes the surface Jev already decided). Defaults to `run(task:context:)`.
+    @MainActor func run(task: String, context: QueryContext, options: ComputerAgent.RunOptions) -> AgentRunHandle
 }
 
 extension ComputerAgentRunning {
     @MainActor func prepare(task: String, context: QueryContext) {}
+    @MainActor func run(task: String, context: QueryContext, options: ComputerAgent.RunOptions) -> AgentRunHandle {
+        run(task: task, context: context)
+    }
 }
 
 /// Background screen-memory: capture → OCR → digest → Obsidian vault.
@@ -90,10 +96,9 @@ final class NaviServices: @unchecked Sendable {
         let memory = MemoryService(jev: jev, claude: claude)
         let agent = ComputerAgent(jev: jev, claude: claude)
         // Browser tasks run on browser-use/jev-ultrafast (vendored) via the Python bridge.
-        ComputerAgent.browserRunner = { task, startURL, handle in
+        ComputerAgent.browserRunner = { task, startURL, handle, background in
             let maxSteps = UserDefaults.standard.integer(forKey: "agentMaxSteps")
             let shots = UserDefaults.standard.bool(forKey: "ultrafastScreenshots")
-            let background = UserDefaults.standard.bool(forKey: "agentRunInBackground")
             return await UltrafastBridge.run(task: task, startURL: startURL, handle: handle, maxSteps: maxSteps, screenshots: shots,
                                              background: background)
         }

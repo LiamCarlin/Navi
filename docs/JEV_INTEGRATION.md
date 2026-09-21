@@ -180,7 +180,59 @@ but never sends frames to a digest model (`digestProvider` behaves as
 `.localOnly`) and only excluded-bundle-ID filtering applies — the Memory page
 shows this state.
 
-## Call 4 — Connection test (`Navi/Settings/ProvidersView.swift`)
+## Call 4 — Voice segmentation (`Navi/Voice/VoiceDecider.swift`)
+
+Live voice control never waits for the user to stop talking: the on-device
+recognizer streams words, `UtteranceSegmenter` proposes a clause (the words
+after the cursor up to the first "and" / "then" / punctuation), and Jev
+answers, per candidate, *is this a complete instruction, and what kind?* —
+re-asked as words arrive (150 ms debounce), ~160–250 ms warm.
+
+State (JSON):
+
+```jsonc
+{
+  "mode": "Live voice control. The user talks continuously; Navi carries out each instruction the moment it is complete…",
+  "transcript": { "HEAD": "open the notes app", "CONNECTOR": "and", "FOLLOWING": "make hello the title",
+                  "silence_ms_since_last_word": 106, "recent_instructions_already_carried_out": [] },
+  "screen": { "frontmost_app": "Google Chrome", "window_title": "…", "browser_url": "https://…" },
+  "navi": { "queued_instructions": 0, "listening_paused": false, "busy_with": "Opening Notes", "awaiting_user_approval_for": null },
+  "installed_apps_possibly_named_in_HEAD": [ { "id": "a1", "app": "Notes" } ]
+}
+```
+
+| Name | Type | Criteria / use |
+|---|---|---|
+| `boundary` | choice | `complete` (act now; FOLLOWING starts something else), `continues` (FOLLOWING or words to come belong to HEAD), `not_a_command` (chatter). The only head that gates acting. |
+| `kind` | choice | `open_app`, `do_in_app`, `browse_or_search`, `answer`, `system_setting`, `control_navi`, `none` → `VoiceCommand`. |
+| `control` | choice | `stop`, `undo`, `confirm`, `deny`, `cancel_everything`, `stop_listening`, `pause`, `resume`, `none` — read only for `control_navi`; "yes"/"no" answer a pending approval. |
+| `app_target` | choice | `a1…a5` from `VoiceAppMatcher` (fuzzy windows of the clause against `AppIndex`) + `none` → direct launch, no text model. |
+| `surface`, `start_from` | choice | `TaskSurface` criteria (browser / native_app / unsure; current_tab / web_search) → passed to `ComputerAgent.run(options:)` so the run skips both the planner and the surface call. |
+| `is_risky`, `continues_previous`, `wants_memory` | noul | shield in the island; "In Notes: …" prefix for follow-ups when that app isn't in front; memory hits for answers. |
+
+Decision rules (`VoiceDecider.decide`, unit-tested):
+
+```text
+not_a_command ≥ 0.6 and (words follow or silence ≥ 1.5 s)   → drop
+complete ≥ 0.5:
+   words follow the connector, or the connector is . ? !     → commit now
+   bare connector ("open notes and")                        → wait ≤ 450 ms for a word
+   no boundary at all                                       → wait for 650 ms of real silence (400 ms if confidence ≥ 0.8)
+continues (or complete < 0.5):
+   words follow                                             → merge: that connector never splits again ("cats and dogs")
+   sentence mark + 700 ms silence                           → commit
+   1.6 s silence and complete ≥ 0.3, or 3.2 s and ≥ 0.12    → commit (the user trailed off)
+no Jev                                                      → connectors + a 1.6 s pause decide; everything is a task
+```
+
+"Silence" is acoustic (microphone level above a running noise floor), not
+time since the last word: the recognizer reports in ~1 s windows, so the
+session also asks it to `finalize` after ~350 ms of real silence to get the
+tail of a sentence immediately. Measured 2026-09-20 with recorded clips:
+words arrive 50–300 ms after their 1 s window closes; a clause commits
+~350 ms after its last word arrives when a connector follows it.
+
+## Call 5 — Connection test (`Navi/Settings/ProvidersView.swift`)
 
 ```swift
 JevClient().ask(state: "ping",

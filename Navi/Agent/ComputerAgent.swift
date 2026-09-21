@@ -32,12 +32,13 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     let claude: ClaudeClient
 
     /// Integration hook: browser steps are handed here with `(goal, startURL,
-    /// handle)`. The runner owns the step from then on — it must emit
+    /// handle, background)`. The runner owns the step from then on — it must emit
     /// `.completed`/`.failed`/`.cancelled` on the handle (which is finished for
     /// it afterwards), should honour task cancellation, and returns the final
     /// page's visible text (nil when it did not complete) so a later step can
-    /// use what was found. nil ⇒ every step goes through the native driver.
-    nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle) async -> String?)?
+    /// use what was found. `background` is this run's mode (a background tab vs.
+    /// the browser brought forward). nil ⇒ every step goes through the native driver.
+    nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle, Bool) async -> String?)?
 
     init(jev: JevClient, claude: ClaudeClient) { self.jev = jev; self.claude = claude }
 
@@ -55,16 +56,40 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
 
     @MainActor
     func run(task: String, context: QueryContext) -> AgentRunHandle {
+        run(task: task, context: context, options: RunOptions())
+    }
+
+    /// Per-run overrides of the Settings defaults. Voice control uses these:
+    /// it already knows the surface (Jev decided it in the same call that
+    /// segmented the utterance), wants no planner round trip, no overlay pill
+    /// (the island shows progress) and a small step budget per spoken clause.
+    struct RunOptions: Sendable {
+        var background: Bool? = nil
+        var showOverlay: Bool? = nil
+        var maxSteps: Int? = nil
+        /// false ⇒ skip `TaskPlanner` (Claude); one step on `surface`.
+        var planWithClaude = true
+        /// Where the task happens when the planner is skipped; `.unsure` ⇒ Jev classifies.
+        var surface: TaskSurface.Surface = .unsure
+        /// Browser steps: continue on the tab that is open now.
+        var useCurrentTab = false
+    }
+
+    @MainActor
+    func run(task: String, context: QueryContext, options: RunOptions) -> AgentRunHandle {
         let s = NaviSettings.shared
         let config = AgentRun.Config(model: s.agentModel,
-                                     maxSteps: max(1, s.agentMaxSteps),
+                                     maxSteps: max(1, options.maxSteps ?? s.agentMaxSteps),
                                      approvalMode: s.agentApprovalMode,
-                                     showOverlay: s.agentShowLiveOverlay,
+                                     showOverlay: options.showOverlay ?? s.agentShowLiveOverlay,
                                      driver: s.agentDriver,
                                      jevConfidenceThreshold: min(max(s.agentJevConfidenceThreshold, 0), 1),
                                      maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks),
-                                     background: s.agentRunInBackground,
-                                     revealWhenDone: s.agentRevealWhenDone)
+                                     background: options.background ?? s.agentRunInBackground,
+                                     revealWhenDone: s.agentRevealWhenDone,
+                                     planWithClaude: options.planWithClaude,
+                                     surfaceHint: options.surface,
+                                     useCurrentTab: options.useCurrentTab)
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
@@ -78,12 +103,12 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
 
 /// Object form of `ComputerAgent.browserRunner` for integrators who prefer a type.
 protocol BrowserTaskRunning: AnyObject, Sendable {
-    func run(task: String, startURL: String?, handle: AgentRunHandle) async -> String?
+    func run(task: String, startURL: String?, handle: AgentRunHandle, background: Bool) async -> String?
 }
 
 extension ComputerAgent {
     static func useBrowserRunner(_ runner: BrowserTaskRunning?) {
-        browserRunner = runner.map { r in { @Sendable task, url, handle in await r.run(task: task, startURL: url, handle: handle) } }
+        browserRunner = runner.map { r in { @Sendable task, url, handle, bg in await r.run(task: task, startURL: url, handle: handle, background: bg) } }
     }
 }
 
@@ -103,6 +128,10 @@ final class AgentRun: @unchecked Sendable {
         /// Background mode: bring the app/tab the task worked in forward once an
         /// effect task (not a lookup) completes, so the result is in front of the user.
         var revealWhenDone: Bool = true
+        /// false ⇒ no `TaskPlanner` call; the task is one step on `surfaceHint`.
+        var planWithClaude: Bool = true
+        var surfaceHint: TaskSurface.Surface = .unsure
+        var useCurrentTab: Bool = false
     }
 
     static let screenshotMaxLongEdge = 1280
@@ -267,6 +296,7 @@ final class AgentRun: @unchecked Sendable {
     /// Claude's plan when available; otherwise one step whose surface Jev
     /// picks (`TaskSurface`), or the native driver when nothing can decide.
     private func resolvePlan() async -> (FrontmostProbe.Info, TaskPlanner.Plan) {
+        if !config.planWithClaude { return await resolvePlanWithoutPlanner() }
         if claude.isConfigured {
             let (front, plan) = await TaskPlanner.planUsingPrefetch(task: originalTask, claude: claude)
             if let plan { return (front, plan) }
@@ -281,6 +311,46 @@ final class AgentRun: @unchecked Sendable {
         if cls.surface == .browser {
             plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: cls.start)
         }
+        return (front, plan)
+    }
+
+    /// Voice control: the caller already knows the surface, so the task is one
+    /// step there — no Haiku plan, and Jev's `TaskSurface` only when the hint is
+    /// `.unsure`. A browser step starts on the current tab when asked (looking
+    /// the URL up in a running browser even if it isn't frontmost), else on the
+    /// usual start page for the task.
+    private func resolvePlanWithoutPlanner() async -> (FrontmostProbe.Info, TaskPlanner.Plan) {
+        var surface = config.surfaceHint
+        var front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        if surface == .unsure {
+            guard ComputerAgent.browserRunner != nil, jev.isConfigured else {
+                return (front, TaskPlanner.fallback(task: originalTask, surface: .app))
+            }
+            let (f, cls) = await TaskSurface.classifyUsingPrefetch(task: originalTask, jev: jev)
+            front = f
+            surface = cls.surface
+            if surface == .browser {
+                var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+                plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: cls.start)
+                return (front, plan)
+            }
+        }
+        guard surface == .browser, ComputerAgent.browserRunner != nil else {
+            return (front, TaskPlanner.fallback(task: originalTask, surface: .app))
+        }
+        if let b = front.bundleID, AXSnapshotter.isBrowser(b) {
+            front.url = FrontmostProbe.browserURL(bundleID: b)
+        } else if config.useCurrentTab {
+            // The user is talking about "the page" while another app is in front: ask the running browsers.
+            let running = await MainActor.run { NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier) }
+            for b in running where AXSnapshotter.isBrowser(b) {
+                if let u = FrontmostProbe.browserURL(bundleID: b), u.hasPrefix("http") {
+                    front.bundleID = b; front.url = u; break
+                }
+            }
+        }
+        var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+        plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: config.useCurrentTab ? .currentTab : nil)
         return (front, plan)
     }
 
@@ -307,10 +377,11 @@ final class AgentRun: @unchecked Sendable {
             if step.surface == .browser, let browserRunner {
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 let goal = task
+                let background = config.background
                 await showOverlay(step: max(1, actionIndex))
                 var text: String?
                 outcome = await runChild(goal: goal, stepBase: actionIndex, parent: handle) { child in
-                    text = await browserRunner(goal, url, child)
+                    text = await browserRunner(goal, url, child, background)
                 }
                 pageText = text
             } else {
@@ -612,7 +683,8 @@ final class AgentRun: @unchecked Sendable {
             await updateOverlay(step: step, status: "Asking Claude why this keeps failing")
             var png: Data?
             if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
-            var screenInput = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot, history: [])
+            var screenInput = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot, history: [],
+                                                  conversation: context.conversation)
             screenInput.playbook = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url).map { AppSkills.playbook(for: $0, goal: task) }
             let screen = JevDriver.stateJSON(for: screenInput)
             let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
@@ -630,7 +702,8 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.planned("Guidance for Jev:\n\(advice.guidance)"))
             history.append(JevDriver.HistoryEntry(action: "Claude guidance: \(AgentAction.short(advice.guidance, 200))", kind: "coach", text: nil, pageChanged: true))
             let req = request ?? JevDriver.request(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
-                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates))
+                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
+                                                                            conversation: context.conversation))
             if let a = JevDriver.coachAction(operation: advice.nextOperation, target: advice.nextTarget, request: req) {
                 coachAction = a
             } else if advice.nextOperation == "BLOCKED" {
@@ -669,7 +742,7 @@ final class AgentRun: @unchecked Sendable {
             let actionsTaken = history.filter { $0.kind != "declined" && $0.kind != "coach" }.count
             var input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                            guidance: guidance)
+                                            guidance: guidance, conversation: context.conversation)
             input.playbook = skill.map { AppSkills.playbook(for: $0, goal: task) }
             input.experience = AgentExperience.shared.recall(bundleID: snapshot.bundleID, goal: task)
             input.keyCombos = AppSkills.keyCombos(for: skill)
@@ -1347,6 +1420,10 @@ final class AgentRun: @unchecked Sendable {
         if let b = frontmost.bundleID ?? context.frontmostApp { ctx += " (\(b))" }
         if let t = frontmost.windowTitle ?? context.frontmostWindowTitle, !t.isEmpty { ctx += "\nWindow: \(t)" }
         if let sel = context.selectedText, !sel.isEmpty { ctx += "\nSelected text: \(sel.prefix(400))" }
+        if !context.conversation.isEmpty {
+            ctx += "\n\nEarlier in this conversation (most recent last) — the task may refer to it (\"the text\", \"him\", \"that one\", \"now send it\"):\n"
+                + context.conversation.map { "- \($0)" }.joined(separator: "\n")
+        }
 
         let mode = background == nil
             ? "The user typed the task below into Navi's ⌘Space panel and is watching your progress."

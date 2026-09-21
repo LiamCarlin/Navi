@@ -49,6 +49,17 @@ final class NaviSettings: ObservableObject {
     /// so the result is not left hidden behind the user's windows.
     @Published var agentRevealWhenDone: Bool { didSet { d.set(agentRevealWhenDone, forKey: "agentRevealWhenDone") } }
 
+    // MARK: Voice control (the notch island)
+    /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
+    @Published var voiceLocale: String { didSet { d.set(voiceLocale, forKey: "voiceLocale") } }
+    /// Voice tasks bring the app forward and use the real cursor (you watch it
+    /// happen); off ⇒ the typed-task background mode.
+    @Published var voiceBringsAppsForward: Bool { didSet { d.set(voiceBringsAppsForward, forKey: "voiceBringsAppsForward") } }
+    @Published var voiceSounds: Bool { didSet { d.set(voiceSounds, forKey: "voiceSounds") } }
+    /// Debounce after the last recognized word before Jev is asked whether the
+    /// clause is complete. Lower = snappier, more false starts.
+    @Published var voiceReactionMs: Int { didSet { d.set(voiceReactionMs, forKey: "voiceReactionMs") } }
+
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
     @Published var memoryCaptureIntervalSeconds: Int { didSet { d.set(memoryCaptureIntervalSeconds, forKey: "memoryCaptureIntervalSeconds") } }
@@ -86,6 +97,10 @@ final class NaviSettings: ObservableObject {
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
+            "voiceLocale": "",
+            "voiceBringsAppsForward": true,
+            "voiceSounds": true,
+            "voiceReactionMs": 150,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -114,6 +129,10 @@ final class NaviSettings: ObservableObject {
         agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
         agentRunInBackground = d.bool(forKey: "agentRunInBackground")
         agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
+        voiceLocale = d.string(forKey: "voiceLocale") ?? ""
+        voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
+        voiceSounds = d.bool(forKey: "voiceSounds")
+        voiceReactionMs = d.integer(forKey: "voiceReactionMs")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")

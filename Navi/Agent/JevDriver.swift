@@ -145,6 +145,9 @@ struct JevDriver: Sendable {
         var actionsTaken: Int = 0
         /// A premature DONE was already rejected once for this screen; Jev's next DONE stands.
         var doneRejected: Bool = false
+        /// Earlier instructions and their outcomes (`QueryContext.conversation`),
+        /// so "the text", "him", "that one" in the goal resolve without a round trip.
+        var conversation: [String] = []
     }
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
@@ -190,6 +193,10 @@ struct JevDriver: Sendable {
             progress["note"] = "DONE was rejected once because nothing had been done yet; choose DONE again only if the result is already visible."
         }
         state["progress"] = progress
+        if !input.conversation.isEmpty {
+            state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that', 'now send it').",
+                                     "earlier": input.conversation]
+        }
         return state
     }
 

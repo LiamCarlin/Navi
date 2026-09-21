@@ -17,6 +17,7 @@ ScreenCaptureKit / SQLite3.
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/NaviPanelView` |
 | `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `InputController` (CGEvent/AX), `AgentTools` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
+| `Navi/Voice` | live voice control | `SpeechListener` (on-device `SpeechAnalyzer`/`SpeechTranscriber`), `UtteranceSegmenter`, `VoiceAppMatcher`, `VoiceDecider` (Jev), `VoiceCommandExecutor`, `VoiceSession`, `VoiceIslandController` + `VoiceIslandView` (the notch island) |
 | `Navi/Settings` | the visible app | `SettingsRootView` (NavigationSplitView), `HomeView`, `GeneralView` + `HotKeyRecorderView`, `ProvidersView`, `PermissionsView`, `MemoryView`, `AgentView`, `UsageView`, `AboutView`, `OnboardingView`; helpers `Permissions`, `LoginItem`, `SpotlightShortcutFix`; `DebugSnapshot` (DEBUG only) |
 
 `NaviServices.bootstrap()` wires the concrete types; everything above the
@@ -141,6 +142,36 @@ parallel.
  Retention: frames older than memoryRetentionDays pruned; notes kept.
 ```
 
+### A spoken instruction
+
+```text
+ microphone (AVAudioEngine tap, 16 kHz mono)
+    │
+    ▼
+ SpeechListener ── SpeechAnalyzer + SpeechTranscriber (on device, volatile + final results)
+    │  transcript(finalized, volatile) every ~1 s window; level 25 Hz
+    │  flush() after ~350 ms of acoustic silence (the session watches the level)
+    ▼
+ VoiceSession.transcriptChanged ─▶ UtteranceSegmenter.update
+    │      pending() = HEAD | CONNECTOR | FOLLOWING   ("open notes" | "and" | "make hello the title")
+    │      debounce voiceReactionMs (150 ms), then
+    ├──▶ VoiceDecider: one JevClient.ask — boundary / kind / control / app_target / surface /
+    │                  start_from / is_risky / continues_previous / wants_memory   ~160–250 ms
+    │      decide(): commit | merge (false boundary) | drop (noise) | wait(retry)
+    ▼
+ VoiceCommandExecutor (serial queue, one command at a time)
+    ├─ openApp ──▶ NSWorkspace.openApplication (activates in foreground mode), wait for its window
+    ├─ task ─────▶ ComputerAgent.run(options: planWithClaude: false, surface: Jev's, showOverlay: false)
+    ├─ openURL / webSearch ─▶ default browser
+    ├─ answer ───▶ AnswerService.streamAnswer ─▶ island
+    ├─ system ───▶ SystemCommands.run (destructive ones wait for a spoken "yes")
+    └─ control ──▶ handled by the session: stop / undo / confirm / deny / pause / stop listening
+
+ VoiceIslandController: fixed transparent NSPanel at the top of the notched screen (level .statusBar,
+ non-activating, never key); VoiceIslandView renders VoiceSession (waveform, activity, transcript,
+ approvals, streamed answer) and animates its own size, anchored to the notch.
+```
+
 ### Settings window
 
 ```text
@@ -176,6 +207,7 @@ instant results always render first.
 | Permission | Needed by | Probe | Request |
 |---|---|---|---|
 | Accessibility | `InputController` (CGEvent posting, AX clicks), window titles in `FrontmostProbe`/`ContextProbe` | `AXIsProcessTrusted()` | `AXIsProcessTrustedWithOptions(prompt)` |
+| Microphone | `SpeechListener` (voice control; recognition is on-device, no speech-recognition authorization needed) | `AVCaptureDevice.authorizationStatus(for: .audio)` | `AVCaptureDevice.requestAccess(for: .audio)` |
 | Screen Recording | `ScreenCapture` (agent frames, memory captures), window titles via CGWindowList | `CGPreflightScreenCaptureAccess()` | `CGRequestScreenCaptureAccess()` |
 | Automation (Apple Events) | browser tab URL, AppleScript system commands | `AEDeterminePermissionToAutomateTarget(System Events, askUserIfNeeded: false)` | run a trivial `NSAppleScript` against System Events |
 | Notifications | task-complete alerts | `UNUserNotificationCenter.notificationSettings()` | `requestAuthorization([.alert,.sound])` |

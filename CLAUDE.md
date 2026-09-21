@@ -38,6 +38,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
 | `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app) |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
+| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
 `NaviServices.bootstrap()` wires concrete types. **Do not rename** `QueryRouter`,
@@ -92,6 +93,40 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,
     `importance` score — only important/new frames go to the vision LLM digest.
+  - **Voice control** (`Voice`): click the sparkle in the ⌘Space bar (or menu bar /
+    `navi://voice`) and the island drops out of the notch. Apple's on-device
+    `SpeechTranscriber` streams volatile words (~1 s windows; the session flushes it
+    after ~350 ms of acoustic silence); `UtteranceSegmenter` splits the stream at
+    "and"/"then"/punctuation into HEAD + FOLLOWING; one Jev call per candidate
+    answers `boundary` (complete / continues / not_a_command) plus speculative heads
+    `kind` (open_app, do_in_app, browse_or_search, answer, system_setting, control_navi),
+    `app_target` (fuzzy matches from `VoiceAppMatcher`), `surface`, `start_from`,
+    `is_risky`, `continues_previous`, `wants_memory`. `VoiceDecider.decide` is pure:
+    following words or a sentence mark ⇒ act now; a boundary-less head waits ~650 ms
+    of real silence (400 ms when Jev ≥ 80 %); a bare "and" waits for a word. Commands
+    run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
+    `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
+    (no planner round trip, no overlay pill), questions stream from Claude into the
+    island; "stop", "undo", "yes/no", "pause", "stop listening" are `control_navi`.
+    Voice runs are foreground by default (`voiceBringsAppsForward`): the user is
+    watching. The recognizer is not trusted to be tidy: a flush can finalize a
+    stretch of speech as punctuation alone ("....."), so `SpeechListener` keeps
+    the volatile words when a final has none, `UtteranceSegmenter.tokenize` glues
+    stray marks onto the previous word (a punctuation-only word at the cursor once
+    jammed it for good), and `VoiceSession` runs a watchdog: pending words older
+    than ~1.2 s with no decision in flight get one, whatever the bookkeeping says.
+    Context without round trips: `VoiceCommandExecutor.recent` ("“what was said” →
+    what came of it", last 5) rides in `QueryContext.conversation` into Jev's
+    per-step state, Claude's coach/fallback prompts and the answer prompt
+    (`QueryContext.spoken` keeps answers short), and into the voice decider's
+    `recent_instructions_already_carried_out`. While Navi is busy the decider also
+    asks `replaces_current`: a correction ("no, I mean…") aborts the running
+    command (`Decision.replace`) instead of queuing behind it. Heads made of
+    function words ("you", "to the") or 1–2 words Jev can't classify are dropped
+    locally — each used to cost a 2 s agent run. A spoken task may run for as long
+    as it keeps reporting steps (minutes); only one silent for 2 min is stopped.
+    Debug: `navi://voice?file=/path.aiff` replays a recording
+    (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`.
 - Always pass **structured state** (labelled sections, not prose) — Jev is trained on program state.
 - Cache identical requests (JevClient does this) and never block the UI on Jev: instant
   local results render first, Jev's answer re-ranks.

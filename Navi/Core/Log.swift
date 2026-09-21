@@ -12,6 +12,7 @@ enum Log {
     static let agent = Logger(subsystem: subsystem, category: "agent")
     static let memory = Logger(subsystem: subsystem, category: "memory")
     static let settings = Logger(subsystem: subsystem, category: "settings")
+    static let voice = Logger(subsystem: subsystem, category: "voice")
 }
 
 #if DEBUG
@@ -24,8 +25,11 @@ enum DebugTrace {
         return dir.appendingPathComponent("debug.log")
     }()
     private static let queue = DispatchQueue(label: "navi.debugtrace")
+    private static let stamp: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"; return f
+    }()
     static func log(_ message: @autoclosure () -> String) {
-        let line = "\(Date()) \(message())\n"
+        let line = "\(stamp.string(from: Date())) \(message())\n"
         queue.async {
             if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
             else { FileManager.default.createFile(atPath: url.path, contents: Data(line.utf8)) }

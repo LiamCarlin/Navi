@@ -92,9 +92,15 @@ enum AppActivation {
 struct MenuBarMenu: View {
     @EnvironmentObject private var settings: NaviSettings
     @Environment(\.openWindow) private var openWindow
+    /// Bumped on voice state changes so the menu title re-evaluates.
+    @State private var voiceTick = 0
+
+    private var voiceActive: Bool { _ = voiceTick; return AppDelegate.shared?.voice?.isListening ?? false }
 
     var body: some View {
         Button("Open Navi  ⌘Space") { AppDelegate.shared?.togglePanel() }
+        Button(voiceActive ? "Stop Voice Control" : "Start Voice Control…") { AppDelegate.shared?.toggleVoice() }
+            .onReceive(NotificationCenter.default.publisher(for: .naviVoiceStateChanged)) { _ in voiceTick &+= 1 }
         if let vm = AppDelegate.shared?.panelController.viewModel, vm.hasAgentToShow {
             Button(vm.agentRun != nil ? "Show running task…" : "Show last task…") { AppDelegate.shared?.showCurrentTask() }
         }
