@@ -5,7 +5,7 @@ import AppKit
 
 /// The sidebar sections of the Navi window.
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
-    case home, general, providers, permissions, memory, agent, usage, about
+    case home, general, providers, permissions, memory, agent, voice, usage, about
 
     var id: String { rawValue }
 
@@ -17,6 +17,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .permissions: return "Permissions"
         case .memory: return "Screen Memory"
         case .agent: return "Agent"
+        case .voice: return "Voice"
         case .usage: return "Usage"
         case .about: return "About"
         }
@@ -30,6 +31,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .permissions: return "lock.shield"
         case .memory: return "brain"
         case .agent: return "cursorarrow.click.2"
+        case .voice: return "waveform"
         case .usage: return "chart.bar"
         case .about: return "info.circle"
         }

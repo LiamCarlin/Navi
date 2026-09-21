@@ -18,8 +18,12 @@ struct SearchBarView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            SparkleGlyph(isRouting: vm.isRouting, isAnswering: vm.isAnswering, isAgent: vm.agentRun != nil)
-                .frame(width: 26, height: 26)
+            // Navi's sparkle doubles as the voice button: click it and the
+            // island drops out of the notch and starts listening.
+            VoiceButton(isRouting: vm.isRouting, isAnswering: vm.isAnswering, isAgent: vm.agentRun != nil) {
+                vm.startVoice()
+            }
+            .frame(width: 26, height: 26)
 
             ZStack(alignment: .leading) {
                 if vm.query.isEmpty {
@@ -89,6 +93,43 @@ struct SearchBarView: View {
                 hintIndex = (hintIndex + 1) % Self.hints.count
             }
         }
+    }
+}
+
+// MARK: - Voice button
+
+/// The sparkle, clickable. Hovering swaps in a waveform so the affordance is
+/// discoverable; the tooltip says what it does.
+struct VoiceButton: View {
+    var isRouting: Bool
+    var isAnswering: Bool
+    var isAgent: Bool
+    var action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(PanelStyle.accentGradient.opacity(hover ? 0.16 : 0))
+                    .frame(width: 34, height: 34)
+                if hover {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(PanelStyle.accentGradient)
+                        .symbolEffect(.variableColor.iterative, options: .repeat(.continuous), isActive: true)
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                } else {
+                    SparkleGlyph(isRouting: isRouting, isAnswering: isAnswering, isAgent: isAgent)
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
+            }
+            .animation(PanelStyle.quickSpring, value: hover)
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Talk to Navi — voice control")
+        .accessibilityLabel("Start voice control")
     }
 }
 
