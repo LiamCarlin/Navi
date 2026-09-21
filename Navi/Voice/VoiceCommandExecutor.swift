@@ -56,6 +56,9 @@ final class VoiceCommandExecutor {
     private(set) var pendingApproval: (description: String, risk: String, respond: (Bool) -> Void)?
     /// The app the last command opened or worked in, for follow-up clauses.
     private(set) var lastApp: (bundleID: String?, name: String)?
+    /// The last command was on the web (opened a URL, searched, ran a browser
+    /// task): a follow-up on the page in front continues on that tab.
+    private(set) var lastWasBrowser = false
     /// What was asked and what came of it, most recent last — the conversation
     /// every later command and question is given (`QueryContext.conversation`).
     private(set) var recent: [String] = []
@@ -142,6 +145,12 @@ final class VoiceCommandExecutor {
 
     private func remember(_ item: Item, _ outcome: Outcome) {
         if item.command.isControl { return }
+        switch item.command {
+        case .openURL, .webSearch: lastWasBrowser = true
+        case .task(_, let surface, _, _, _): lastWasBrowser = surface == .browser
+        case .openApp, .openAppNamed, .system: lastWasBrowser = false
+        case .answer, .control: break
+        }
         let result: String
         switch outcome {
         case .done(let s): result = s.isEmpty ? "done" : s
@@ -226,6 +235,12 @@ final class VoiceCommandExecutor {
         return .done("Opened \(entry.name)")
     }
 
+    static func continuesOnCurrentTab(goal: String, surface: TaskSurface.Surface, frontmostApp: String?,
+                                      continues: Bool, lastWasBrowser: Bool) -> Bool {
+        guard surface != .nativeApp, let bid = frontmostApp, AXSnapshotter.isBrowser(bid), continues || lastWasBrowser else { return false }
+        return TextCandidates.urls(in: goal).isEmpty && UltrafastBridge.knownSiteURL(in: goal) == nil
+    }
+
     /// A freshly launched app takes a moment to come forward and put up a
     /// window; a follow-up like "make the title hello" must not run against
     /// whatever was in front before.
@@ -248,6 +263,13 @@ final class VoiceCommandExecutor {
     private func runTask(_ item: Item, goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, continues: Bool) async -> Outcome {
         var context = self.context()
         var task = goal
+        // "Look up Matt Armstrong" right after "go to YouTube": the page in front is
+        // where it happens. Jev's start_from head is not always asked (no URL yet
+        // when the words arrived), so decide locally too: a browser is in front,
+        // the previous instruction was on the web or this one continues it, and
+        // no other site or URL is named.
+        let useCurrentTab = useCurrentTab || Self.continuesOnCurrentTab(goal: goal, surface: surface, frontmostApp: context.frontmostApp,
+                                                                        continues: continues, lastWasBrowser: lastWasBrowser)
         // A follow-up meant for the app the previous instruction used, when that app isn't in front (background mode).
         if continues, let last = lastApp, let bid = last.bundleID, context.frontmostApp != bid,
            !goal.lowercased().contains(last.name.lowercased()) {

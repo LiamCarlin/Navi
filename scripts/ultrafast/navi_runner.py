@@ -260,9 +260,21 @@ class FastBrowser(Browser):
         from browser_harness.helpers import cdp
 
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        # "Look up Matt Armstrong" right after "go to YouTube" continues on the
+        # YouTube tab that is open (NAVI_ATTACH_URL): attach to it rather than
+        # opening a second tab with a Google search. The user's tab is never closed.
+        self.attached = False
+        attach_url = os.environ.get("NAVI_ATTACH_URL", "").strip()
+        existing = find_open_tab(attach_url) if attach_url else None
+        if existing:
+            self.target = existing
+            self.attached = True
+        else:
+            self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+        # No `Emulation.setDeviceMetricsOverride` (upstream forces 1120×780): the page
+        # then rendered in a fraction of the Chrome window the user was watching.
+        # Jev reads the DOM, which is fine at whatever size the window has.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         # Show the work: the user asked Navi to do this, so the tab is brought to the
         # front instead of running invisibly in the background.
@@ -271,7 +283,8 @@ class FastBrowser(Browser):
                 cdp("Target.activateTarget", targetId=self.target)
             except Exception:  # noqa: BLE001 — cosmetic
                 pass
-        self.call("Page.navigate", url=url)
+        if not self.attached:
+            self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
@@ -280,6 +293,41 @@ class FastBrowser(Browser):
             except Exception:  # noqa: BLE001 — document swapped mid-evaluate
                 pass
             time.sleep(0.02)
+
+    def close(self):
+        # The tab was the user's before the run: leave it exactly where it is.
+        if self.attached:
+            self.target = None
+            return
+        super().close()
+
+
+def same_page(a, b):
+    """Two URLs naming the same page: scheme-insensitive, ignoring the fragment,
+    a trailing slash and a leading www."""
+    def norm(u):
+        u = (u or "").strip().split("#", 1)[0]
+        for prefix in ("https://", "http://"):
+            if u.startswith(prefix):
+                u = u[len(prefix):]
+        if u.startswith("www."):
+            u = u[4:]
+        return u.rstrip("/").lower()
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def find_open_tab(url, targets=None):
+    """The id of an open Chrome tab showing `url`, or None."""
+    if targets is None:
+        try:
+            from browser_harness.helpers import cdp
+            targets = cdp("Target.getTargets").get("targetInfos", [])
+        except Exception:  # noqa: BLE001 — no daemon yet: open our own tab
+            return None
+    for t in targets:
+        if t.get("type") == "page" and same_page(t.get("url"), url):
+            return t.get("targetId")
+    return None
 
 
 # --- Adaptation 4: warm the model connections during navigation -------------

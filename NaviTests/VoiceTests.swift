@@ -462,3 +462,18 @@ import Testing
         #expect(c.count <= VoiceAppMatcher.maxCandidates)
     }
 }
+struct VoiceCurrentTabTests {
+    @Test @MainActor func followUpsOnABrowserPageStayOnThatTab() {
+        let chrome = "com.google.Chrome"
+        // After "go to YouTube", "look up Matt Armstrong" continues on the YouTube tab.
+        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: true))
+        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "click the first video", surface: .unsure, frontmostApp: chrome, continues: true, lastWasBrowser: false))
+        // Naming another site or a URL is a new destination.
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "go to reddit", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "open github.com", surface: .browser, frontmostApp: chrome, continues: true, lastWasBrowser: true))
+        // Not in a browser, or nothing browser-related before it, or a native task: no.
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: "com.apple.MobileSMS", continues: true, lastWasBrowser: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: false))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "close this tab", surface: .nativeApp, frontmostApp: chrome, continues: true, lastWasBrowser: true))
+    }
+}
