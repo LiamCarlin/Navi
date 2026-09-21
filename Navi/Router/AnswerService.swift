@@ -123,6 +123,13 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
                 lines.append("Clipboard contents:\n\"\"\"\n\(clip.prefix(4000))\n\"\"\"")
             }
         }
+        if !context.conversation.isEmpty {
+            lines.append("Earlier in this conversation (most recent last) — the question may refer to it:\n"
+                         + context.conversation.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        if context.spoken {
+            lines.append("The user is speaking to you and hears/reads the answer on a small overlay: answer in one to three short sentences unless they ask for detail or a draft. No headings, no lists unless asked.")
+        }
         if !memory.isEmpty {
             lines.append("Relevant moments from the user's screen memory (most relevant first):")
             lines.append(memory.prefix(8).map { formatMemoryHit($0, timeZone: timeZone) }.joined(separator: "\n"))

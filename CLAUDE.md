@@ -106,6 +106,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     stray marks onto the previous word (a punctuation-only word at the cursor once
     jammed it for good), and `VoiceSession` runs a watchdog: pending words older
     than ~1.2 s with no decision in flight get one, whatever the bookkeeping says.
+    Context without round trips: `VoiceCommandExecutor.recent` ("“what was said” →
+    what came of it", last 5) rides in `QueryContext.conversation` into Jev's
+    per-step state, Claude's coach/fallback prompts and the answer prompt
+    (`QueryContext.spoken` keeps answers short), and into the voice decider's
+    `recent_instructions_already_carried_out`. While Navi is busy the decider also
+    asks `replaces_current`: a correction ("no, I mean…") aborts the running
+    command (`Decision.replace`) instead of queuing behind it. Heads made of
+    function words ("you", "to the") or 1–2 words Jev can't classify are dropped
+    locally — each used to cost a 2 s agent run. A spoken task is capped at 45 s.
     Debug: `navi://voice?file=/path.aiff` replays a recording
     (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`.
 - Always pass **structured state** (labelled sections, not prose) — Jev is trained on program state.

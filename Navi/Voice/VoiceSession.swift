@@ -417,6 +417,20 @@ final class VoiceSession: ObservableObject {
             Log.voice.info("commit “\(clause.head, privacy: .public)” → \(command.label, privacy: .public)")
             dispatch(command)
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
+        case .replace(let command):
+            #if DEBUG
+            DebugTrace.log("voice replace | “\(clause.head)” → \(command) (stops \(self.executor.busyLabel ?? "?"))")
+            #endif
+            segmenter.commit(clause)
+            pendingText = segmenter.pendingText
+            hint = ""
+            committed.append(clause.head)
+            if committed.count > Self.maxCommittedShown { committed.removeFirst(committed.count - Self.maxCommittedShown) }
+            let busy = executor.busyLabel ?? ""
+            Log.voice.info("replace “\(busy, privacy: .public)” with “\(clause.head, privacy: .public)” → \(command.label, privacy: .public)")
+            VoiceSounds.play(.commit)
+            executor.replaceCurrent(with: command)
+            if segmenter.pending() != nil { scheduleDecision(after: 60) }
         case .merge:
             segmenter.acceptContinuation(clause)
             hint = "…"
@@ -490,6 +504,9 @@ final class VoiceSession: ObservableObject {
             activity = nil
             approval = nil
             isAnswering = false
+            #if DEBUG
+            DebugTrace.log("voice finished | “\(item.command.spoken)” → \(outcome)")
+            #endif
             switch outcome {
             case .done(let s):
                 if case .answer = item.command { showOutcome("", ok: true) } else { showOutcome(s, ok: true) }
@@ -532,7 +549,7 @@ final class VoiceSession: ObservableObject {
         ctx.queued = executor.queue.count
         ctx.awaitingApproval = executor.pendingApproval?.description
         ctx.lastResult = lastOutcome?.text
-        ctx.recentDone = Array(segmenter.history.suffix(3))
+        ctx.recentDone = executor.recent.isEmpty ? Array(segmenter.history.suffix(3)) : Array(executor.recent.suffix(3))
         ctx.appCandidates = VoiceAppMatcher.candidates(in: clause.head, index: AppIndex.shared, running: AppIndex.runningBundleIDs())
         ctx.isPaused = phase == .paused
         return ctx

@@ -131,6 +131,9 @@ struct JevDriver: Sendable {
         /// Claude's coaching after Jev kept failing (`JevCoach`); rides along in
         /// the state and in every question's instructions for the rest of the step.
         var guidance: String? = nil
+        /// Earlier instructions and their outcomes (`QueryContext.conversation`),
+        /// so "the text", "him", "that one" in the goal resolve without a round trip.
+        var conversation: [String] = []
     }
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
@@ -169,6 +172,10 @@ struct JevDriver: Sendable {
             "recent_actions": input.history.suffix(historyInState).map(\.json),
         ]
         if let g = input.guidance { state["guidance"] = g }
+        if !input.conversation.isEmpty {
+            state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that', 'now send it').",
+                                     "earlier": input.conversation]
+        }
         return state
     }
 

@@ -87,6 +87,7 @@ enum VoiceDecider {
         var queued: Int = 0
         var awaitingApproval: String?
         var lastResult: String?
+        /// Recent instructions with what came of them, most recent last.
         var recentDone: [String] = []
         var appCandidates: [VoiceAppMatcher.Candidate] = []
         var isPaused = false
@@ -161,6 +162,9 @@ enum VoiceDecider {
                     TaskSurface.Start.webSearch.rawValue: "HEAD needs something elsewhere on the web; the open page is unrelated",
                 ])
         }
+        if ctx.busyWith != nil {
+            q["replaces_current"] = .noul(instructions: "HEAD corrects, restates or replaces the instruction Navi is busy with right now (navi.busy_with) — 'no, I mean…', 'actually…', 'not that one…', the same request in other words — rather than a new instruction to carry out after it finishes")
+        }
         q["is_risky"] = .noul(instructions: "Carrying out HEAD would send a message or email, post something, spend money, delete or overwrite data, or otherwise be hard to undo")
         q["continues_previous"] = .noul(instructions: "HEAD should be carried out in the same app or on the same thing as the most recent entry of recent_instructions_already_carried_out (e.g. 'make the title hello' right after 'open notes'), rather than somewhere new")
         q["wants_memory"] = .noul(instructions: "Answering HEAD well requires knowing what the user was doing, reading or writing earlier on this computer")
@@ -186,6 +190,7 @@ enum VoiceDecider {
         var isRisky: Double = 0
         var continuesPrevious: Double = 0
         var wantsMemory: Double = 0
+        var replacesCurrent: Double = 0
         var latencyMs = 0
         var source: RouteDecision.Source = .jev
     }
@@ -205,6 +210,7 @@ enum VoiceDecider {
         v.isRisky = r["is_risky"]?.noul ?? 0
         v.continuesPrevious = r["continues_previous"]?.noul ?? 0
         v.wantsMemory = r["wants_memory"]?.noul ?? 0
+        v.replacesCurrent = r["replaces_current"]?.noul ?? 0
         v.latencyMs = r.latencyMs
         return v
     }
@@ -216,6 +222,8 @@ enum VoiceDecider {
         case wait(reason: String, retryAfterMs: Int?)
         /// The head is done: act on it, move the cursor past the connector.
         case commit(VoiceCommand)
+        /// The head corrects what Navi is busy with: stop that, run this next.
+        case replace(VoiceCommand)
         /// The boundary after the head was false: merge and keep listening.
         case merge
         /// The head is noise: skip it.
@@ -236,6 +244,12 @@ enum VoiceDecider {
     static let commitOnLongPauseP = 0.12
     static let dropP = 0.6
     static let dropAfterMs = 1500
+    /// P(replaces_current) above which a clause aborts the running command.
+    static let replaceP = 0.6
+    /// Heads made only of these are never an instruction ("you", "to the", "and it").
+    static let fragmentWords: Set<String> = ["you", "to", "the", "it", "that", "this", "so", "and", "then", "a", "an", "of", "in", "on",
+                                             "at", "for", "with", "me", "my", "i", "is", "was", "are", "these", "those", "just", "like",
+                                             "um", "uh", "okay", "ok", "yeah", "well", "oh", "hmm", "he", "she", "they", "we", "him", "her", "them"]
     static let appTargetP = 0.4
     /// A bare connector with no words after it yet ("open notes and") is not
     /// evidence either way; wait for a word or a pause before committing.
@@ -279,15 +293,17 @@ enum VoiceDecider {
                 let need = b.confidence >= settleFastConfidence ? settleFastMs : settleMs
                 if silence < need { return .wait(reason: "…", retryAfterMs: need - silence) }
             }
-            return .commit(command(v, input: input))
+            return act(v, input: input)
         }
         // Continues: merge a false boundary, otherwise keep listening — unless the user has stopped talking.
         if pContinues >= pComplete || pComplete < commitP {
             if !c.following.isEmpty { return .merge }
             let sentenceEnded = Self.isSentenceMark(c.connector) && c.connector != ","
-            if sentenceEnded, silence >= sentencePauseMs { return .commit(command(v, input: input)) }
-            if silence >= longPauseMs, pComplete >= commitOnLongPauseP { return .commit(command(v, input: input)) }
-            if silence >= pauseMs, pComplete >= commitOnPauseP { return .commit(command(v, input: input)) }
+            if sentenceEnded, silence >= sentencePauseMs { return act(v, input: input) }
+            // A long pause acts on anything that isn't noise — but not on what is more likely noise.
+            if pNoise > pComplete, pNoise >= 0.4, silence >= dropAfterMs { return .drop(reason: "more likely chatter (\(pct(pNoise)))") }
+            if silence >= longPauseMs, pComplete >= commitOnLongPauseP { return act(v, input: input) }
+            if silence >= pauseMs, pComplete >= commitOnPauseP { return act(v, input: input) }
             let retry: Int?
             if sentenceEnded { retry = max(100, sentencePauseMs - silence) }
             else if pComplete >= commitOnPauseP { retry = max(100, pauseMs - silence) }
@@ -305,6 +321,29 @@ enum VoiceDecider {
         if c.hasBoundary, !c.following.isEmpty, words >= 2 { return .commit(heuristicCommand(input)) }
         if input.silenceMs >= pauseMs, words >= 1 { return .commit(heuristicCommand(input)) }
         return .wait(reason: "offline: waiting for a pause", retryAfterMs: max(100, pauseMs - input.silenceMs))
+    }
+
+    /// Commit — unless the head is a fragment that could never be an instruction
+    /// (each one used to cost a 2 s agent run that did nothing), or it corrects
+    /// what Navi is busy with (then the running command is replaced, not queued
+    /// behind). Control words ("stop", "yes") are never replacements.
+    static func act(_ v: Verdict, input: Input) -> Decision {
+        let cmd = command(v, input: input)
+        if case .task = cmd, isFragment(input.clause.head, v: v, input: input) {
+            return .drop(reason: "fragment, nothing to do")
+        }
+        if !cmd.isControl, input.context.busyWith != nil, v.replacesCurrent >= replaceP { return .replace(cmd) }
+        return .commit(cmd)
+    }
+
+    /// "you", "to the", "and it": all filler/function words, or one or two
+    /// words Jev could not classify with no app or question in them.
+    static func isFragment(_ head: String, v: Verdict, input: Input) -> Bool {
+        let words = head.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
+        guard !words.isEmpty else { return true }
+        if words.allSatisfy({ fragmentWords.contains($0) }) { return true }
+        let unclassified = (v.kind?.choice).map { $0 == Kind.none.rawValue || Kind(rawValue: $0) == nil } ?? true
+        return words.count <= 2 && unclassified && appChoice(v, input: input) == nil && !head.contains("?")
     }
 
     // MARK: Kind → command
