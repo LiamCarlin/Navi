@@ -19,6 +19,14 @@ final class NaviSettings: ObservableObject {
     @Published var hotKeyModifiers: UInt32 { didSet { d.set(Int(hotKeyModifiers), forKey: "hotKeyModifiers"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
     @Published var appearance: Appearance { didSet { d.set(appearance.rawValue, forKey: "appearance") } }
 
+    // MARK: Navi Cloud (account transport)
+    /// Base URL of the Navi Cloud proxy. `defaults write com.liamcarlin.navi cloudBaseURL http://127.0.0.1:8787`
+    /// points a build at a mock server (see scripts/dev/mock-cloud.py).
+    @Published var cloudBaseURL: String { didSet { d.set(cloudBaseURL, forKey: CloudTransport.baseURLKey) } }
+    /// Route model calls through Navi Cloud when signed in. Off ⇒ developer
+    /// mode: the vendor keys in AI Providers are used directly.
+    @Published var useCloud: Bool { didSet { d.set(useCloud, forKey: CloudTransport.useCloudKey); NotificationCenter.default.post(name: .naviAccountChanged, object: nil) } }
+
     // MARK: AI
     @Published var jevModel: String { didSet { d.set(jevModel, forKey: "jevModel") } }
     /// Which transport reaches Jev: TypeSafe's API directly or Vercel AI Gateway.
@@ -83,6 +91,8 @@ final class NaviSettings: ObservableObject {
             "hotKeyCode": 49,           // Space
             "hotKeyModifiers": 256,     // cmdKey (Carbon)
             "appearance": Appearance.system.rawValue,
+            CloudTransport.baseURLKey: CloudTransport.defaultBaseURL,
+            CloudTransport.useCloudKey: true,
             "jevModel": "jev-latest",
             "jevProvider": JevProvider.auto.rawValue,
             "answerModel": "claude-sonnet-5",
@@ -115,6 +125,8 @@ final class NaviSettings: ObservableObject {
         hotKeyCode = UInt32(d.integer(forKey: "hotKeyCode"))
         hotKeyModifiers = UInt32(d.integer(forKey: "hotKeyModifiers"))
         appearance = Appearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
+        cloudBaseURL = d.string(forKey: CloudTransport.baseURLKey) ?? CloudTransport.defaultBaseURL
+        useCloud = d.bool(forKey: CloudTransport.useCloudKey)
         jevModel = d.string(forKey: "jevModel") ?? "jev-latest"
         jevProvider = JevProvider(rawValue: d.string(forKey: "jevProvider") ?? "") ?? .auto
         answerModel = d.string(forKey: "answerModel") ?? "claude-sonnet-5"
@@ -162,6 +174,9 @@ final class NaviSettings: ObservableObject {
     ]
 
     // MARK: Derived
+
+    /// Hidden Developer section + vendor details: `defaults write com.liamcarlin.navi developerMode -bool YES`.
+    nonisolated static var developerMode: Bool { UserDefaults.standard.bool(forKey: "developerMode") }
 
     /// True when the selected Jev transport has a key.
     var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }

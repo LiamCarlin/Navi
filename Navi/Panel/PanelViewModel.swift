@@ -42,6 +42,11 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var pendingApproval: (id: UUID, description: String, risk: String)?
     @Published private(set) var toast: String?
     @Published private(set) var errorMessage: String?
+    /// Account errors (quota, entitlement, signed out) come with one action —
+    /// "Upgrade" opens checkout, "Sign in" opens the browser. Set with
+    /// `errorMessage`; nil for every other error. (Rendering lands with the panel views.)
+    @Published private(set) var upgradeAction: (() -> Void)?
+    @Published private(set) var upgradeActionTitle: String = "Upgrade"
     // Clarification (mode == .clarify)
     @Published private(set) var clarification: ClarificationPrompt?
     @Published private(set) var isClarifying = false
@@ -98,6 +103,7 @@ final class PanelViewModel: ObservableObject {
         services.jev.warm()
         services.claude.warm()
         errorMessage = nil
+        upgradeAction = nil
         toast = nil
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }
         // Reopening while a task runs (or just finished) lands on the task, not an
@@ -116,7 +122,67 @@ final class PanelViewModel: ObservableObject {
     func requestFocus() { focusRequestID &+= 1 }
 
     /// Dismisses the error banner.
-    func clearError() { errorMessage = nil }
+    func clearError() { errorMessage = nil; upgradeAction = nil }
+
+    /// Shows an error. Account errors (`NaviError.quotaExceeded` / `.notEntitled`
+    /// / `.signedOut`) render as one plain line plus an Upgrade / Sign in action.
+    func showError(_ error: Error) {
+        let account = NaviAccount.shared
+        if let (message, title) = Self.accountPresentation(for: error, quotas: account.quotas) {
+            errorMessage = message
+            upgradeActionTitle = title
+            switch error as? NaviError {
+            case .signedOut: upgradeAction = { account.signIn() }
+            case .notEntitled(let feature, _):
+                let recall = feature.hasPrefix("recall")
+                upgradeAction = { account.openCheckout(plan: recall ? .proRecall : .pro, interval: .month) }
+            default: upgradeAction = { account.openCheckout(plan: .pro, interval: .month) }
+            }
+        } else {
+            errorMessage = error.localizedDescription
+            upgradeAction = nil
+        }
+    }
+
+    /// Pure: the one-line message and action title for an account error, or nil.
+    nonisolated static func accountPresentation(for error: Error, quotas: Quotas) -> (message: String, actionTitle: String)? {
+        guard let e = error as? NaviError else { return nil }
+        let time: (Date?) -> String = { d in d.map { " Resets at \($0.formatted(date: .omitted, time: .shortened))." } ?? "" }
+        switch e {
+        case .quotaExceeded(let feature, let tier, let resetsAt):
+            let plan = Tier(rawValue: tier)?.displayName ?? "Free"
+            let f = CloudFeature(rawValue: feature) ?? .answer
+            switch f {
+            case .task, .voice:
+                if let n = quotas.tasksPerDay {
+                    return ("You've used today's \(n) tasks on the \(plan) plan.\(time(resetsAt))", "Upgrade")
+                }
+                if let n = quotas.tasksPerMonth {
+                    return ("You've used this month's \(n) tasks on the \(plan) plan.\(time(resetsAt))", "Upgrade")
+                }
+                return ("You've used today's tasks on the \(plan) plan.\(time(resetsAt))", "Upgrade")
+            case .recallTriage, .recallDigest:
+                return ("Recall has hit its limit on the \(plan) plan.\(time(resetsAt))", "Upgrade")
+            case .route, .answer:
+                let n = quotas.answersPerDay.map { "\($0) " } ?? ""
+                return ("You've used today's \(n)answers on the \(plan) plan.\(time(resetsAt))", "Upgrade")
+            }
+        case .notEntitled(let feature, let tier):
+            let plan = Tier(rawValue: tier)?.displayName ?? "current"
+            let f = CloudFeature(rawValue: feature)
+            switch f {
+            case .recallTriage, .recallDigest:
+                return ("Recall isn't included in the \(plan) plan — Navi remembers your screen once you add it.", "Add Recall")
+            case .voice: return ("Voice control isn't included in the \(plan) plan.", "Upgrade")
+            case .task: return ("Tasks aren't included in the \(plan) plan.", "Upgrade")
+            default: return ("That isn't included in the \(plan) plan.", "Upgrade")
+            }
+        case .signedOut:
+            return ("Sign in to Navi to keep going.", "Sign in")
+        default:
+            return nil
+        }
+    }
 
     /// Copies the current answer to the pasteboard and shows a toast.
     @discardableResult
@@ -141,6 +207,7 @@ final class PanelViewModel: ObservableObject {
         mode = .results
         statusLine = ""
         errorMessage = nil
+        upgradeAction = nil
         // Leave a running (or not-yet-dismissed) agent alone; user may reopen to check on it.
         if agentRun == nil, agentDismissed { agentEvents = []; agentScreenshot = nil; agentTaskTitle = "" }
     }
@@ -285,7 +352,7 @@ final class PanelViewModel: ObservableObject {
                 }
             } catch is CancellationError {
             } catch {
-                self?.errorMessage = error.localizedDescription
+                self?.showError(error)
             }
             self?.isAnswering = false
         }
@@ -352,7 +419,7 @@ final class PanelViewModel: ObservableObject {
                 #if DEBUG
                 DebugTrace.log("clarification failed: \(error.localizedDescription)")
                 #endif
-                self.errorMessage = error.localizedDescription
+                self.showError(error)
                 self.mode = .results
                 self.requestFocus()
             }

@@ -156,6 +156,9 @@ struct QueryContext: Sendable {
     /// The query was spoken (voice control): answers are read off a small
     /// island, so they should be short unless more is asked for.
     var spoken = false
+    /// The cloud run every call for this query is billed under (`X-Navi-Run`):
+    /// one id per answer / task / voice command, however many model calls it takes.
+    var runID = UUID()
 
     static var empty: QueryContext {
         QueryContext(frontmostApp: nil, frontmostAppName: nil, frontmostWindowTitle: nil,
@@ -235,6 +238,12 @@ enum NaviError: LocalizedError {
     case permissionDenied(String)
     case cancelled
     case other(String)
+    /// Navi Cloud 402: the tier's cap for `feature` is used up until `resetsAt`.
+    case quotaExceeded(feature: String, tier: String, resetsAt: Date?)
+    /// Navi Cloud 403: the tier does not include `feature` (e.g. `recall` on Pro).
+    case notEntitled(feature: String, tier: String)
+    /// No Navi session (never signed in, or the refresh token was rejected).
+    case signedOut
 
     var errorDescription: String? {
         switch self {
@@ -244,6 +253,26 @@ enum NaviError: LocalizedError {
         case .permissionDenied(let p): return "Permission needed: \(p)"
         case .cancelled: return "Cancelled"
         case .other(let m): return m
+        case .quotaExceeded(let feature, let tier, let resetsAt):
+            let noun = CloudFeature(rawValue: feature)?.unitNoun ?? "requests"
+            let plan = Tier(rawValue: tier)?.displayName ?? tier.capitalized
+            var s = "You've used today's \(noun) on the \(plan.isEmpty ? "current" : plan) plan."
+            if let r = resetsAt { s += " Resets \(r.formatted(date: .omitted, time: .shortened))." }
+            return s
+        case .notEntitled(let feature, let tier):
+            let what = CloudFeature(rawValue: feature).map { $0.unitNoun == "Recall" ? "Recall" : $0.unitNoun } ?? feature
+            let plan = Tier(rawValue: tier)?.displayName ?? tier.capitalized
+            return "\(what.capitalized) isn't included in the \(plan.isEmpty ? "current" : plan) plan."
+        case .signedOut:
+            return "Sign in to Navi to keep going."
+        }
+    }
+
+    /// True for the errors that come with an Upgrade / Sign in action.
+    var isAccountError: Bool {
+        switch self {
+        case .quotaExceeded, .notEntitled, .signedOut: return true
+        default: return false
         }
     }
 }

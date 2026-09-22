@@ -104,8 +104,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         let start = Date()
         do {
             let jev = self.jev
-            let resp = try await Self.withTimeout(ms: Self.jevTimeoutMs) {
-                try await jev.ask(state: state, questions: questions)
+            // Metered as `route` under the query's run id (the answer/task that follows shares it).
+            let resp = try await CloudRun.$current.withValue(CloudRun(feature: .route, runID: context.runID)) {
+                try await Self.withTimeout(ms: Self.jevTimeoutMs) {
+                    try await jev.ask(state: state, questions: questions)
+                }
             }
             let threshold = await MainActor.run { NaviSettings.shared.jevConfidenceThreshold }
             let latency = resp.latencyMs > 0 ? resp.latencyMs : Int(Date().timeIntervalSince(start) * 1000)
@@ -346,8 +349,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
 
         case .askQuestion:
             var hits: [MemoryHit] = []
-            if (ex?.wantsMemory ?? 0) > 0.5 { hits = await memory.search(query: q, limit: 6) }
+            let wantsMemory = (ex?.wantsMemory ?? 0) > 0.5
+            if wantsMemory, Self.recallEntitled() { hits = await memory.search(query: q, limit: 6) }
             rows.append(askRow(q, context: context, memory: hits, score: 0.95))
+            // Recall gate: the question leans on screen memory the plan doesn't include.
+            if wantsMemory, !Self.recallEntitled() { rows.append(Self.unlockRecallRow(score: 0.9)) }
             rows.append(URLAndWeb.webSearchResult(for: q, score: 0.2))
 
         case .computerTask:
@@ -362,6 +368,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
             })
 
         case .recallMemory:
+            // Recall gate (account workstream): without the entitlement the only row is the upsell.
+            guard Self.recallEntitled() else {
+                rows.append(Self.unlockRecallRow(score: 1.0))
+                break
+            }
             let hits = await memory.search(query: q, limit: 8)
             rows.append(SearchResult(id: "ask-memory:\(q)", kind: .answer, title: "Ask about this: \(q)",
                                      subtitle: hits.isEmpty ? "No matching screen memories" : "Answer using \(hits.count) matching moment\(hits.count == 1 ? "" : "s")",
@@ -403,9 +414,28 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
 
     // MARK: - Row builders
 
+    // MARK: - Recall gate (account workstream)
+
+    /// Whether screen memory may be searched. Seam for tests; the app reads the account.
+    @MainActor static var recallEntitled: () -> Bool = { NaviAccount.shared.entitlements.recall }
+
+    /// The one row shown when a memory question lands on a plan without Recall.
+    @MainActor static func unlockRecallRow(score: Double) -> SearchResult {
+        let signedIn = NaviAccount.shared.isSignedIn
+        return SearchResult(id: "unlock-recall", kind: .suggestion, title: "Unlock Recall",
+                            subtitle: signedIn ? "Navi remembers your screen so you can ask about it · Add Recall"
+                                               : "Sign in to Navi to add Recall",
+                            icon: .system("clock.arrow.circlepath"), score: score,
+                            shortcutHint: signedIn ? "⏎ Add Recall" : "⏎ Sign in") {
+            if NaviAccount.shared.isSignedIn { NaviAccount.shared.openCheckout(plan: .proRecall, interval: .month) }
+            else { NaviAccount.shared.signIn() }
+            return .dismiss
+        }
+    }
+
     func askRow(_ q: String, context: QueryContext, memory: [MemoryHit], score: Double = 0.05) -> SearchResult {
         let answers = self.answers
-        let subtitle = memory.isEmpty ? (claude.isConfigured ? "Answer with Claude" : "Add an Anthropic key in Navi → AI Providers")
+        let subtitle = memory.isEmpty ? (claude.isConfigured ? "Answer with Claude" : "Sign in to Navi to ask")
                                       : "Answer using \(memory.count) moment\(memory.count == 1 ? "" : "s") from screen memory"
         return SearchResult(id: "ask:\(q)", kind: .answer, title: "Ask Navi: \(q)", subtitle: subtitle,
                             icon: .system("sparkle"), score: score, shortcutHint: "⏎ Ask") {

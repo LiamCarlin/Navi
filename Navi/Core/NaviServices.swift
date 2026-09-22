@@ -68,6 +68,9 @@ struct MemoryStatus: Sendable, Equatable {
     var lastDigestAt: Date? = nil
     var vaultNoteCount: Int = 0
     var lastError: String? = nil
+    /// Capture was requested but the account has no `recall` entitlement
+    /// (Settings → Memory shows the Unlock Recall card instead of the toggle).
+    var needsEntitlement: Bool = false
 }
 
 // MARK: - Container
@@ -110,10 +113,14 @@ final class NaviServices: @unchecked Sendable {
     @MainActor
     func startBackgroundServices() {
         if NaviSettings.shared.memoryCaptureEnabled { memory.start() }
-        NotificationCenter.default.addObserver(forName: .naviSettingsChanged, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                if NaviSettings.shared.memoryCaptureEnabled { self.memory.start() } else { self.memory.stop() }
+        // Settings toggles and account changes (sign-in, upgrade, sign-out) both
+        // re-evaluate capture: `MemoryService.start()` refuses without `recall`.
+        for name in [Notification.Name.naviSettingsChanged, .naviAccountChanged] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    if NaviSettings.shared.memoryCaptureEnabled { self.memory.start() } else { self.memory.stop() }
+                }
             }
         }
     }

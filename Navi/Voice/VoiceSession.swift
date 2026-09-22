@@ -367,8 +367,11 @@ final class VoiceSession: ObservableObject {
             let state = JevClient.JSONValue(any: VoiceDecider.stateJSON(input))
             let questions = VoiceDecider.questions(input)
             do {
-                let resp = try await QueryRouter.withTimeout(ms: Self.jevTimeoutMs) {
-                    try await jev.ask(state: state, questions: questions, cacheable: false)
+                // Integration hook (account workstream): the decider call is metered as `voice`.
+                let resp = try await CloudRun.$current.withValue(CloudRun(feature: .voice)) {
+                    try await QueryRouter.withTimeout(ms: Self.jevTimeoutMs) {
+                        try await jev.ask(state: state, questions: questions, cacheable: false)
+                    }
                 }
                 guard !Task.isCancelled else { return }
                 let v = VoiceDecider.verdict(from: resp)

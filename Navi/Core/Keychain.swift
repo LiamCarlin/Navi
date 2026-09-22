@@ -27,6 +27,8 @@ enum Keychain {
         case openai = "OPENAI_API_KEY"          // optional
         case deepgram = "DEEPGRAM_API_KEY"      // optional voice
         case firecrawl = "FIRECRAWL_API_KEY"    // optional web
+        case naviAccess = "NAVI_ACCESS_TOKEN"   // Navi Cloud session (1 h JWT)
+        case naviRefresh = "NAVI_REFRESH_TOKEN" // Navi Cloud refresh token
     }
 
     enum LoadState: Equatable { case notLoaded, loading, loaded, failed(OSStatus) }

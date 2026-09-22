@@ -26,7 +26,7 @@ struct SettingsRootView: View {
 
     private var sidebar: some View {
         List(selection: $nav.section) {
-            ForEach(SettingsSection.allCases) { s in
+            ForEach(SettingsSection.allCases.filter(\.isVisible)) { s in
                 Label(s.title, systemImage: s.symbol).tag(s)
             }
         }
@@ -46,6 +46,10 @@ struct SettingsRootView: View {
     @ViewBuilder private var detail: some View {
         switch nav.section ?? .home {
         case .home: HomeView()
+        case .account: AccountView()
+        case .developer:
+            // TODO(branding): swap for DeveloperView.developerSection once Navi/Settings/DeveloperView.swift lands.
+            Text("Developer").font(.largeTitle.weight(.semibold)).frame(maxWidth: .infinity, maxHeight: .infinity)
         case .general: GeneralView()
         case .providers: ProvidersView()
         case .permissions: PermissionsView()
