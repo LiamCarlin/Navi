@@ -18,6 +18,21 @@ enum PanelWording {
     private static let vendorWord = try! NSRegularExpression(
         pattern: #"\b(jev|claude|anthropic|typesafe|gemini|haiku|sonnet|opus|vercel)\b"#, options: [.caseInsensitive])
 
+    /// Whole phrases other modules emit (router rows, agent status) and what
+    /// the user should read instead. Checked before the word-level rewrite.
+    static let phraseRewrites: [(String, String)] = [
+        ("Answer with Claude", "Answer this question"),
+        ("Add an Anthropic key in Navi → AI Providers", "Finish setting up Navi first"),
+    ]
+
+    /// A result row's subtitle as the user should see it: other modules'
+    /// rows may still name an engine; developers see them as emitted.
+    static func resultSubtitle(_ subtitle: String?, developer: Bool) -> String? {
+        guard let subtitle, !subtitle.isEmpty else { return nil }
+        guard !developer, mentionsVendor(subtitle) else { return subtitle }
+        return userFacing(subtitle)
+    }
+
     /// True when `text` names a vendor, model or transport.
     static func mentionsVendor(_ text: String) -> Bool {
         let lower = text.lowercased()
@@ -42,6 +57,7 @@ enum PanelWording {
     /// names become "Navi", latencies and probabilities are dropped.
     static func userFacing(_ text: String) -> String {
         var s = text
+        for (engine, navi) in phraseRewrites { s = s.replacingOccurrences(of: engine, with: navi) }
         s = s.replacingOccurrences(
             of: #"^\s*Jev flags this as irreversible\s*\(\d{1,3}\s?%\):\s*"#,
             with: "This may be hard to undo: ", options: [.regularExpression, .caseInsensitive])

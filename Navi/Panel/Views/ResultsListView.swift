@@ -70,7 +70,7 @@ struct ResultRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if let s = result.subtitle, !s.isEmpty {
+                if let s = PanelWording.resultSubtitle(result.subtitle, developer: DeveloperMode.isEnabled) {
                     Text(s)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)

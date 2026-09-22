@@ -92,6 +92,15 @@ struct BrandingTests {
         #expect(PanelWording.userFacing("Opening Google Chrome") == "Opening Google Chrome")
     }
 
+    @Test func routerRowSubtitlesReadAsNavi() {
+        #expect(PanelWording.resultSubtitle("Answer with Claude", developer: false) == "Answer this question")
+        #expect(PanelWording.resultSubtitle("Add an Anthropic key in Navi → AI Providers", developer: false) == "Finish setting up Navi first")
+        #expect(PanelWording.resultSubtitle("Answer with Claude", developer: true) == "Answer with Claude")
+        #expect(PanelWording.resultSubtitle("App", developer: false) == "App")
+        #expect(PanelWording.resultSubtitle("", developer: false) == nil)
+        #expect(PanelWording.resultSubtitle(nil, developer: false) == nil)
+    }
+
     // MARK: Developer section
 
     @Test func developerSectionIsListedOnlyInDeveloperMode() {
