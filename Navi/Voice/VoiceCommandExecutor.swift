@@ -69,6 +69,10 @@ final class VoiceCommandExecutor {
     /// takes — but one that reports nothing at all for this long has stalled,
     /// and a stall here would freeze every instruction behind it.
     static let taskIdleMs = 120_000
+    /// Bounded Claude vision turns per spoken task. Jev decides nearly every step;
+    /// when it truly can't, one look is worth having — a loop of them is not,
+    /// because the user is right there and can say the next thing.
+    static let voiceClaudeFallbacks = 2
 
     init(services: NaviServices) { self.services = services }
 
@@ -146,7 +150,7 @@ final class VoiceCommandExecutor {
     private func remember(_ item: Item, _ outcome: Outcome) {
         if item.command.isControl { return }
         switch item.command {
-        case .openURL, .webSearch: lastWasBrowser = true
+        case .openURL, .webSearch, .browser: lastWasBrowser = true
         case .task(_, let surface, _, _, _): lastWasBrowser = surface == .browser
         case .openApp, .openAppNamed, .system: lastWasBrowser = false
         case .answer, .control: break
@@ -216,6 +220,12 @@ final class VoiceCommandExecutor {
             case .undo: await undo(); return .done("Undone")
             default: return .done(item.command.label)   // stop / confirm / … are handled by the session before queueing
             }
+        case .browser(let b, _):
+            guard let done = await BrowserControls.perform(b, input: input) else { return .failed("No browser is open") }
+            if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID {
+                lastApp = (app.bundleIdentifier, app.localizedName ?? "the browser")
+            }
+            return Task.isCancelled ? .cancelled : .done(done)
         }
     }
 
@@ -237,8 +247,10 @@ final class VoiceCommandExecutor {
 
     static func continuesOnCurrentTab(goal: String, surface: TaskSurface.Surface, frontmostApp: String?,
                                       continues: Bool, lastWasBrowser: Bool) -> Bool {
-        guard surface != .nativeApp, let bid = frontmostApp, AXSnapshotter.isBrowser(bid), continues || lastWasBrowser else { return false }
-        return TextCandidates.urls(in: goal).isEmpty && UltrafastBridge.knownSiteURL(in: goal) == nil
+        guard surface != .nativeApp, let bid = frontmostApp, AXSnapshotter.isBrowser(bid) else { return false }
+        guard TextCandidates.urls(in: goal).isEmpty, UltrafastBridge.knownSiteURL(in: goal) == nil, AppSkills.startURL(for: goal) == nil else { return false }
+        // The page in front is where "click …", "type …", "scroll …" happen, whatever came before.
+        return continues || lastWasBrowser || TaskSurface.isPageAction(goal)
     }
 
     /// A freshly launched app takes a moment to come forward and put up a
@@ -280,7 +292,8 @@ final class VoiceCommandExecutor {
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
         let options = ComputerAgent.RunOptions(background: !foreground, showOverlay: false, maxSteps: maxSteps,
-                                               planWithClaude: false, surface: surface, useCurrentTab: useCurrentTab)
+                                               planWithClaude: false, surface: surface, useCurrentTab: useCurrentTab,
+                                               maxClaudeFallbacks: Self.voiceClaudeFallbacks)
         let handle = services.agent.run(task: task, context: context, options: options)
         currentRun = handle
         var outcome: Outcome = .failed("The task ended without a result")

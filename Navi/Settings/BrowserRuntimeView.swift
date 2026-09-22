@@ -9,9 +9,17 @@ struct BrowserRuntimeSection: View {
     @State private var log = ""
     @AppStorage("ultrafastScreenshots") private var screenshots = false
     @AppStorage("ultrafastTextModel") private var textModel = "claude-haiku-4-5"
+    @AppStorage("ultrafastEnabled") private var enabled = true
 
     var body: some View {
         Section {
+            Toggle(isOn: $enabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use the Chrome runner when Chrome is the browser")
+                    Text("Web tasks otherwise run on Jev's native driver in whatever browser is in front — Safari, Arc, Firefox, Chrome — from its accessibility tree. Nothing to install; the runner is a faster, DOM-level path for Chrome only.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             ExplainedRow(title: "Runtime", explanation: "Python 3.12 + browser-harness, installed by uv into vendor/jev-ultrafast/.venv.") {
                 HStack(spacing: 8) {
                     StatusDot(level: runtime?.isReady == true ? .ok : (runtime == nil ? .off : .warn))
@@ -43,7 +51,7 @@ struct BrowserRuntimeSection: View {
         } header: {
             Text("Browser tasks · Jev Ultrafast")
         } footer: {
-            Text("Anything Jev classifies as a browser task runs on browser-use/jev-ultrafast: one Jev request per step picks the operation and the exact DOM element (no coordinates, no screenshots in the loop); the text helper only writes what goes into a field. Google Flights search: ~7 s end to end.")
+            Text("With the runner, one Jev request per step picks the operation and the exact DOM element in a background Chrome tab (Google Flights search: ~7 s end to end). Without it — or in any other browser — the same Jev loop reads the page through Accessibility instead.")
         }
         .task { refresh() }
     }

@@ -59,6 +59,13 @@ final class NaviSettings: ObservableObject {
     /// Debounce after the last recognized word before Jev is asked whether the
     /// clause is complete. Lower = snappier, more false starts.
     @Published var voiceReactionMs: Int { didSet { d.set(voiceReactionMs, forKey: "voiceReactionMs") } }
+    /// A global shortcut that starts / stops voice control from anywhere (default ⌥Space),
+    /// so talking to Navi never needs the panel first.
+    @Published var voiceHotKeyEnabled: Bool { didSet { d.set(voiceHotKeyEnabled, forKey: "voiceHotKeyEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    @Published var voiceHotKeyCode: UInt32 { didSet { d.set(Int(voiceHotKeyCode), forKey: "voiceHotKeyCode"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    @Published var voiceHotKeyModifiers: UInt32 { didSet { d.set(Int(voiceHotKeyModifiers), forKey: "voiceHotKeyModifiers"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    /// Start listening as soon as Navi launches (hands-free from login).
+    @Published var voiceStartsAtLaunch: Bool { didSet { d.set(voiceStartsAtLaunch, forKey: "voiceStartsAtLaunch") } }
 
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
@@ -101,6 +108,10 @@ final class NaviSettings: ObservableObject {
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
             "voiceReactionMs": 150,
+            "voiceHotKeyEnabled": true,
+            "voiceHotKeyCode": 49,       // Space
+            "voiceHotKeyModifiers": 2048, // optionKey (Carbon)
+            "voiceStartsAtLaunch": false,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -133,6 +144,10 @@ final class NaviSettings: ObservableObject {
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
         voiceReactionMs = d.integer(forKey: "voiceReactionMs")
+        voiceHotKeyEnabled = d.bool(forKey: "voiceHotKeyEnabled")
+        voiceHotKeyCode = UInt32(d.integer(forKey: "voiceHotKeyCode"))
+        voiceHotKeyModifiers = UInt32(d.integer(forKey: "voiceHotKeyModifiers"))
+        voiceStartsAtLaunch = d.bool(forKey: "voiceStartsAtLaunch")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")
@@ -160,6 +175,27 @@ final class NaviSettings: ObservableObject {
         ("claude-opus-5", "Claude Opus 5 — most capable, $5 / $25 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, $1 / $5 per MTok"),
     ]
+
+    // MARK: Auto mode
+
+    /// **Auto mode**: Navi acts on its own. Jev decides every step from what is
+    /// on screen (native apps and any browser alike), Claude is consulted only
+    /// when Jev is stuck, and nothing pauses for approval except actions that
+    /// cannot be undone — sending, paying, deleting. Off ⇒ every action asks
+    /// first. It is a preset over the agent settings, so the two stay in step.
+    var autoMode: Bool {
+        get { agentDriver == .jevFirst && agentApprovalMode != .alwaysAsk }
+        set {
+            if newValue {
+                agentDriver = .jevFirst
+                if agentApprovalMode == .alwaysAsk { agentApprovalMode = .askForRisky }
+                if agentJevConfidenceThreshold > 0.5 { agentJevConfidenceThreshold = 0.5 }
+            } else {
+                agentApprovalMode = .alwaysAsk
+            }
+            objectWillChange.send()
+        }
+    }
 
     // MARK: Derived
 
