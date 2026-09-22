@@ -215,16 +215,16 @@ final class Updater: ObservableObject {
                 }
                 pending = appcast
                 state = .available
-                Log.app.info("update available: \(appcast.version) (\(appcast.build))")
+                Log.app.info("update available: \(appcast.version, privacy: .public) (\(appcast.build, privacy: .public))")
                 showWindow()
             } else {
                 state = .upToDate
-                Log.app.info("update check: up to date (\(Self.currentVersion), feed \(appcast.version))")
+                Log.app.info("update check: up to date (\(Self.currentVersion, privacy: .public), feed \(appcast.version, privacy: .public))")
                 if userInitiated { alert("You're up to date", "Navi \(Self.currentVersion) is the latest version.") }
             }
         } catch {
             state = .failed(error.localizedDescription)
-            Log.app.error("update check failed: \(error.localizedDescription)")
+            Log.app.error("update check failed: \(error.localizedDescription, privacy: .public)")
             if userInitiated { alert("Couldn't check for updates", error.localizedDescription) }
         }
     }
@@ -255,15 +255,22 @@ final class Updater: ObservableObject {
         state = .downloading(0)
         do {
             let dmg = try await download(appcast.url)
-            defer { try? FileManager.default.removeItem(at: dmg) }
             state = .installing
-            let data = try Data(contentsOf: dmg, options: .mappedIfSafe)
-            try UpdateVerifier.verify(data, sha256: appcast.sha256, signatureBase64: appcast.ed25519)
-            let staged = try await Task.detached { try Updater.stageApp(fromDMG: dmg) }.value
+            let staged: URL
+            do {
+                let data = try Data(contentsOf: dmg, options: .mappedIfSafe)
+                try UpdateVerifier.verify(data, sha256: appcast.sha256, signatureBase64: appcast.ed25519)
+                staged = try await Task.detached { try Updater.stageApp(fromDMG: dmg) }.value
+            } catch {
+                try? FileManager.default.removeItem(at: dmg)
+                throw error
+            }
+            // Delete the image now: `NSApp.terminate` in the swap never returns, so a `defer` would not run.
+            try? FileManager.default.removeItem(at: dmg)
             try swapAndRelaunch(with: staged)
         } catch {
             state = .failed(error.localizedDescription)
-            Log.app.error("update install failed: \(error.localizedDescription)")
+            Log.app.error("update install failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -335,7 +342,7 @@ final class Updater: ObservableObject {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try p.run()
-        Log.app.info("update staged at \(staged.path); relaunching")
+        Log.app.info("update staged at \(staged.path, privacy: .public); relaunching")
         closeWindow()
         NSApp.terminate(nil)
     }
