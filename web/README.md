@@ -17,7 +17,11 @@ npm run lint
 | `app/page.tsx` | The single landing page: nav, hero (MacBook + island loop), "Spotlight finds. Navi does.", "decides, not chats", voice, background mode, Recall, pricing, FAQ, waitlist, footer |
 | `components/MacBook.tsx` | CSS/SVG 14" MacBook Pro in perspective with pointer tilt. The screen is a container; everything on it is sized in `--u` (see `.screen` in `globals.css`) |
 | `components/HeroLoop.tsx` | The ~12 s hero loop as a pure function of time: island drops from the notch and ticks steps, then the ⌘Space bar shows task / calculator / app |
-| `components/Island.tsx`, `components/Panel.tsx` | The voice island and the ⌘Space bar, presentational; `useLoop.ts` drives any looping demo (pauses off-screen, static frame under reduced motion) |
+| `components/Island.tsx`, `components/Panel.tsx`, `components/Windows.tsx` | The voice island, the ⌘Space bar, and the mini macOS windows/notifications the demos use; all presentational and themed via CSS variables |
+| `components/useLoop.ts` | Drives every looping demo as a pure function of elapsed time: starts in view, pauses off-screen, long rest so it plays once then loops slowly, one static frame under reduced motion, `seek()` for the chips |
+| `components/Does.tsx`, `Decides.tsx`, `Talk.tsx`, `Background.tsx`, `Recall.tsx` | The five numbered story sections, each with its own timeline |
+| `components/Section.tsx` | The 12-column story layout (narrow text column, wide visual, alternating) |
+| `components/Nav.tsx` | Nav with the sun/moon theme toggle; `app/layout.tsx` sets `data-theme` on `<html>` before first paint (stored choice, else `prefers-color-scheme`) |
 | `app/api/waitlist/route.ts` | `POST { email, note?, source? }` → 201 created · 200 already on the list · 400 bad email · 500 storage error |
 | `lib/waitlist.ts` | Storage: Supabase when configured, else `web/.waitlist.local.jsonl` (gitignored) |
 | `app/opengraph-image.tsx` | OG image (the MacBook with the island down), generated at build time |
@@ -25,6 +29,10 @@ npm run lint
 | `app/privacy`, `app/terms` | Placeholder legal pages |
 
 Copy rule: the site never names a model or an AI vendor. It is all "Navi".
+
+Theme: dark and light are two real palettes in `app/globals.css` (`:root` and `[data-theme="light"]`, with a
+`prefers-color-scheme` fallback for no-JS). The MacBook's wallpaper, the bar and the mini windows follow via
+`--wall`, `--panel-*` and `--win-*`; the island stays black because it is the notch.
 
 ## Environment
 
