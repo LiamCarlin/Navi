@@ -8,7 +8,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://navi.app";
 const title = "Navi — Press ⌘Space. Say what you want.";
 const description =
-  "Navi opens apps, answers questions, and does things on your Mac — in under a second.";
+  "Navi opens apps, answers questions, and does things on your Mac — by keyboard or voice, in under a second.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -32,7 +32,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#07070b",
+  themeColor: "#0a0a0b",
   colorScheme: "dark",
   width: "device-width",
   initialScale: 1,

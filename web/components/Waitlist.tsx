@@ -33,20 +33,21 @@ export function Waitlist() {
   }
 
   return (
-    <section id="waitlist" className="scroll-mt-20 px-4 py-20 sm:px-6 md:py-28">
+    <section id="waitlist" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
       <Reveal>
-        <div className="card gradient-border relative mx-auto max-w-3xl overflow-hidden p-8 text-center sm:p-12">
-          <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60%_80%_at_50%_0%,rgba(139,140,248,0.18),transparent_70%)]" />
+        <div className="card relative mx-auto max-w-3xl overflow-hidden p-8 text-center sm:p-12">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_80%_at_50%_0%,rgba(139,140,248,0.14),transparent_70%)]" aria-hidden="true" />
+          <div className="relative">
           <Glyph className="mx-auto mb-5 h-8 w-8 text-accent" />
-          <h2 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">Get Navi first.</h2>
-          <p className="mx-auto mt-3 max-w-md text-fg-muted">
+          <h2 className="h-section">Get Navi first.</h2>
+          <p className="lede mx-auto mt-3 max-w-md">
             Invites go out in order. Tell us what you’d use it for and we’ll move you up.
           </p>
 
           {state.kind === "done" ? (
             <div
               role="status"
-              className="mx-auto mt-8 max-w-md rounded-2xl border border-accent/40 bg-accent-soft px-6 py-5 text-fg"
+              className="mx-auto mt-8 max-w-md rounded-[16px] border border-accent/40 bg-accent-soft px-6 py-5 text-fg"
             >
               <div className="text-lg font-medium">You’re on the list.</div>
               <div className="mt-1 text-sm text-fg-muted">We’ll email you in order.</div>
@@ -65,7 +66,7 @@ export function Waitlist() {
                 placeholder="you@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-line-strong bg-bg/70 px-4 py-3 text-base text-fg outline-none transition-colors placeholder:text-fg-dim focus:border-accent"
+                className="w-full rounded-[12px] border border-line-strong bg-bg/70 px-4 py-3 text-base text-fg outline-none transition-colors duration-200 placeholder:text-fg-dim focus:border-accent"
               />
               <label className="sr-only" htmlFor="wl-note">
                 What would you use it for?
@@ -78,12 +79,12 @@ export function Waitlist() {
                 placeholder="What would you use it for? (optional)"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                className="w-full resize-none rounded-xl border border-line-strong bg-bg/70 px-4 py-3 text-base text-fg outline-none transition-colors placeholder:text-fg-dim focus:border-accent"
+                className="w-full resize-none rounded-[12px] border border-line-strong bg-bg/70 px-4 py-3 text-base text-fg outline-none transition-colors duration-200 placeholder:text-fg-dim focus:border-accent"
               />
               <button
                 type="submit"
                 disabled={state.kind === "busy"}
-                className="mt-1 rounded-full bg-fg px-6 py-3 text-sm font-medium text-bg transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60"
+                className="btn-primary mt-1 disabled:opacity-60"
               >
                 {state.kind === "busy" ? "Adding you…" : "Join the waitlist"}
               </button>
@@ -95,6 +96,7 @@ export function Waitlist() {
               <p className="text-center text-xs text-fg-dim">No spam. One email when it’s your turn.</p>
             </form>
           )}
+          </div>
         </div>
       </Reveal>
     </section>
