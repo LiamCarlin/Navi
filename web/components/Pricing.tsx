@@ -72,7 +72,7 @@ export function Pricing() {
           </div>
         </Reveal>
 
-        <div className="mt-12 grid gap-5 md:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 md:grid-cols-3">
           {plans.map((p, i) => (
             <Reveal key={p.name} delay={i * 0.08}>
               <article

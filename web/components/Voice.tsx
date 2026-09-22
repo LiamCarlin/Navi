@@ -13,7 +13,7 @@ const transcript = [
 export function Voice() {
   return (
     <section id="voice" className="scroll-mt-20 px-4 py-20 sm:px-6 md:py-28">
-      <div className="mx-auto grid max-w-6xl items-center gap-12 md:grid-cols-2">
+      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 md:grid-cols-2">
         <Reveal className="md:order-2">
           <div className="mb-3 text-xs font-medium uppercase tracking-wider text-accent">Voice</div>
           <h2 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">

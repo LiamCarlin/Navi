@@ -34,7 +34,7 @@ export function Features() {
             Navi decides what you meant in under a second, then does the fastest thing that gets you there.
           </p>
         </Reveal>
-        <div className="mt-12 grid gap-5 md:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 md:grid-cols-3">
           {features.map((f, i) => (
             <Reveal key={f.title} delay={i * 0.08}>
               <article className="card flex h-full flex-col p-6">
