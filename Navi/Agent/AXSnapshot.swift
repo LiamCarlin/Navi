@@ -269,8 +269,14 @@ final class AXSnapshotter: @unchecked Sendable {
     static let pressOnlyRoles: Set<String> = ["AXImage", "AXStaticText", "AXGroup", "AXRow", "AXUnknown", "AXHeading"]
 
     static let chromiumBundles: Set<String> = [
-        "com.google.Chrome", "com.google.Chrome.canary", "com.brave.Browser", "com.microsoft.edgemac",
-        "com.vivaldi.Vivaldi", "org.chromium.Chromium", "company.thebrowser.Browser", "com.operasoftware.Opera",
+        "com.google.Chrome", "com.google.Chrome.canary", "com.google.Chrome.beta", "com.google.Chrome.dev",
+        "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "org.chromium.Chromium",
+        "company.thebrowser.Browser", "company.thebrowser.dia", "com.operasoftware.Opera", "com.sigmaos.sigmaos",
+    ]
+    /// Browsers that are not Chromium but expose their pages through AX just as well.
+    static let otherBrowserBundles: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition",
+        "org.mozilla.nightly", "com.kagi.kagimacOS", "app.zen-browser.zen", "org.torproject.torbrowser",
     ]
 
     /// Target app (or, when nil, the frontmost app) + its focused window →
@@ -400,7 +406,7 @@ final class AXSnapshotter: @unchecked Sendable {
     }
 
     static func isBrowser(_ bundleID: String) -> Bool {
-        bundleID == "com.apple.Safari" || chromiumBundles.contains(bundleID)
+        otherBrowserBundles.contains(bundleID) || chromiumBundles.contains(bundleID)
     }
 
     static func needsEnhancedUI(bundleID: String?) -> Bool {

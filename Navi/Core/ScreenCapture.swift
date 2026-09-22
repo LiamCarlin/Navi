@@ -142,15 +142,41 @@ enum FrontmostProbe {
     static func browserURL(bundleID: String) -> String? {
         let script: String?
         switch bundleID {
-        case "com.apple.Safari": script = "tell application \"Safari\" to return URL of current tab of front window"
-        case "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "company.thebrowser.Browser", "com.vivaldi.Vivaldi":
+        case "com.apple.Safari", "com.apple.SafariTechnologyPreview":
+            let name = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName ?? "Safari"
+            script = "tell application \"\(name)\" to return URL of current tab of front window"
+        case _ where AXSnapshotter.chromiumBundles.contains(bundleID):
             let name = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName ?? "Google Chrome"
             script = "tell application \"\(name)\" to return URL of active tab of front window"
         default: script = nil
         }
-        guard let script, let apple = NSAppleScript(source: script) else { return nil }
-        var err: NSDictionary?
-        let result = apple.executeAndReturnError(&err)
-        return err == nil ? result.stringValue : nil
+        if let script, let apple = NSAppleScript(source: script) {
+            var err: NSDictionary?
+            let result = apple.executeAndReturnError(&err)
+            if err == nil, let u = result.stringValue, !u.isEmpty { return u }
+        }
+        // Firefox, Orion, Zen… have no scripting dictionary: the page's AXWebArea carries its URL.
+        return axWebAreaURL(bundleID: bundleID)
+    }
+
+    /// The URL of the front window's web area via Accessibility (any browser).
+    static func axWebAreaURL(bundleID: String) -> String? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return nil }
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 0.2)
+        guard let window = AXSnapshotter.attr(ax, kAXFocusedWindowAttribute) as! AXUIElement? ?? (AXSnapshotter.attr(ax, kAXMainWindowAttribute) as! AXUIElement?) else { return nil }
+        var stack: [(AXUIElement, Int)] = [(window, 0)]
+        var visited = 0
+        while let (el, depth) = stack.popLast(), visited < 400 {
+            visited += 1
+            if let role = AXSnapshotter.attr(el, kAXRoleAttribute) as? String, role == "AXWebArea" {
+                if let u = AXSnapshotter.attr(el, "AXURL") as? URL { return u.absoluteString }
+                if let u = AXSnapshotter.attr(el, "AXURL") as? String { return u }
+                if let doc = AXSnapshotter.attr(el, kAXDocumentAttribute) as? String { return doc }
+            }
+            guard depth < 12, let children = AXSnapshotter.elements(AXSnapshotter.attr(el, kAXChildrenAttribute)) else { continue }
+            for c in children.prefix(40) { stack.append((c, depth + 1)) }
+        }
+        return nil
     }
 }

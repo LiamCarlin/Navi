@@ -234,12 +234,13 @@ enum UltrafastBridge {
     /// Is the task satisfied by opening its page — nothing to do once there?
     /// "go to youtube", "open the youtube website and open it", "pull up
     /// reddit in chrome", "navigate to github.com please".
-    static func isNavigationOnly(_ task: String) -> Bool {
+    static func isNavigationOnly(_ task: String, alsoNamed: [String] = []) -> Bool {
         var t = task.lowercased()
         // A destination must be named: a URL or a site Navi knows ("the settings page" is not one).
         var named = false
         if let u = TextCandidates.urls(in: task).first { t = t.replacingOccurrences(of: u.lowercased(), with: " "); named = true }
         if let site = knownSiteName(in: task) { t = t.replacingOccurrences(of: site, with: " "); named = true }
+        for n in alsoNamed.sorted(by: { $0.count > $1.count }) where t.contains(n) { t = t.replacingOccurrences(of: n, with: " "); named = true }
         guard named else { return false }
         t = " " + t.replacingOccurrences(of: "[^a-z0-9' ]", with: " ", options: .regularExpression) + " "
         let fillers = ["please", "can you", "could you", "for me", "and open it", "open it", "and go there", "the website", "the web page",
