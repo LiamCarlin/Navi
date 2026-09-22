@@ -38,9 +38,13 @@ final class JevClient: @unchecked Sendable {
     static let vercelEndpoint = URL(string: "https://ai-gateway.vercel.sh/v4/ai/evaluation-model")!
     static let vercelModel = "typesafe-ai/jev"
 
-    enum Transport: String, Sendable { case typesafe, vercelGateway }
+    /// `navi` is the account transport (docs/LAUNCH_ROADMAP.md §3.1): the same
+    /// TypeSafe body posted to `<cloudBaseURL>/v1/jev` with the account's
+    /// bearer; the other two are bring-your-own-key (developer mode).
+    enum Transport: String, Sendable { case typesafe, vercelGateway, navi }
 
-    /// Picks the transport for a preference, or nil when no usable key exists.
+    /// Picks the BYOK transport for a preference, or nil when no usable key exists.
+    /// (The account transport is chosen by `activeTransport`, not here.)
     static func resolveTransport(preference: JevProvider) -> Transport? {
         switch preference {
         case .typesafe: return Keychain.has(.typesafe) ? .typesafe : nil
@@ -56,8 +60,11 @@ final class JevClient: @unchecked Sendable {
     private let cache = ResponseCache()
     /// When the pooled connection was last used (warm-up bookkeeping).
     private let lastUse = LastUse()
+    /// The account transport; `isActive` decides whether it is used.
+    let cloud: CloudTransport
 
-    init() {
+    init(cloud: CloudTransport = .shared) {
+        self.cloud = cloud
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 8
         cfg.waitsForConnectivity = false
@@ -174,11 +181,16 @@ final class JevClient: @unchecked Sendable {
 
     // MARK: - Call
 
-    /// True when a key exists for the transport selected in Settings.
+    /// True when Jev is reachable: signed in to Navi, or a key exists for the
+    /// transport selected in Settings.
     var isConfigured: Bool { activeTransport != nil }
 
-    /// The transport that `ask` will use, honouring `NaviSettings.jevProvider`.
-    var activeTransport: Transport? { Self.resolveTransport(preference: Self.preference) }
+    /// The transport that `ask` will use: the account when signed in (and
+    /// `useCloud`), else the BYOK transport `NaviSettings.jevProvider` names.
+    var activeTransport: Transport? {
+        if cloud.isActive { return .navi }
+        return Self.resolveTransport(preference: Self.preference)
+    }
 
     /// Thread-safe read of the Settings preference (callers run off the main actor).
     private static var preference: JevProvider {
@@ -196,25 +208,33 @@ final class JevClient: @unchecked Sendable {
     func ask(state: JSONValue, questions: [String: Question], model: String? = nil,
              cacheable: Bool = true, transport: Transport? = nil) async throws -> Response {
         let pref = Self.preference
-        guard let transport = transport ?? Self.resolveTransport(preference: pref) else {
+        guard let transport = transport ?? activeTransport else {
             throw NaviError.missingAPIKey(pref == .vercelGateway ? .vercelGateway : .typesafe)
         }
         let settingsModel = await MainActor.run { NaviSettings.shared.jevModel }
-        let (req, cacheKey) = try Self.buildRequest(transport: transport, state: state, questions: questions,
-                                                    model: model ?? settingsModel)
+        let run = CloudRun.resolve(fallback: .route)
+        let (req, cacheKey) = transport == .navi
+            ? try buildNaviRequest(state: state, questions: questions, model: model ?? settingsModel, run: run)
+            : try Self.buildRequest(transport: transport, state: state, questions: questions, model: model ?? settingsModel)
         if cacheable, let hit = await cache.get(cacheKey) { return hit }
 
         let start = Date()
-        let (respData, resp) = try await session.data(for: req)
+        let respData: Data
+        if transport == .navi {
+            (respData, _) = try await cloud.send(req)   // 401 refresh / 402 / 403 handled there
+        } else {
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response from Jev") }
+            guard (200..<300).contains(http.statusCode) else {
+                let text = String(data: data, encoding: .utf8) ?? ""
+                Log.jev.error("Jev (\(transport.rawValue)) HTTP \(http.statusCode): \(text)")
+                throw NaviError.http(status: http.statusCode, body: text)
+            }
+            respData = data
+        }
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         await lastUse.touch()
-        guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response from Jev") }
-        guard (200..<300).contains(http.statusCode) else {
-            let text = String(data: respData, encoding: .utf8) ?? ""
-            Log.jev.error("Jev (\(transport.rawValue)) HTTP \(http.statusCode): \(text)")
-            throw NaviError.http(status: http.statusCode, body: text)
-        }
-        var parsed = try transport == .typesafe ? Self.parse(respData, latencyMs: ms) : Self.parseVercel(respData, latencyMs: ms)
+        var parsed = try transport == .vercelGateway ? Self.parseVercel(respData, latencyMs: ms) : Self.parse(respData, latencyMs: ms)
         parsed.transport = transport
         Log.jev.debug("Jev/\(transport.rawValue) \(parsed.answers.count) answers in \(ms)ms (\(parsed.inputTokens) in)")
         await MainActor.run { NaviSettings.shared.usageJevCalls += 1 }
@@ -222,11 +242,22 @@ final class JevClient: @unchecked Sendable {
         return parsed
     }
 
-    /// Builds the HTTP request for a transport. Returns the request and a cache key
-    /// (the transport-tagged body).
+    /// The account transport: the exact TypeSafe body to `POST /v1/jev` with
+    /// the feature/run headers (the bearer is attached by `CloudTransport.send`).
+    func buildNaviRequest(state: JSONValue, questions: [String: Question], model: String,
+                          run: CloudRun) throws -> (URLRequest, Data) {
+        let data = try JSONEncoder().encode(RequestBody(state: state, model: model, questions: questions))
+        let req = cloud.request(path: "/v1/jev", body: data, run: run)
+        return (req, Data("navi:".utf8) + data)
+    }
+
+    /// Builds the HTTP request for a BYOK transport. Returns the request and a
+    /// cache key (the transport-tagged body).
     static func buildRequest(transport: Transport, state: JSONValue, questions: [String: Question],
                              model: String) throws -> (URLRequest, Data) {
         switch transport {
+        case .navi:
+            throw NaviError.other("The account transport needs a client instance (buildNaviRequest)")
         case .typesafe:
             guard let key = Keychain.get(.typesafe), !key.isEmpty else { throw NaviError.missingAPIKey(.typesafe) }
             let data = try JSONEncoder().encode(RequestBody(state: state, model: model, questions: questions))
@@ -268,6 +299,7 @@ final class JevClient: @unchecked Sendable {
     /// TypeSafe, a bare GET on the Gateway host. Fire-and-forget; never throws.
     func warm() {
         guard let transport = activeTransport else { return }
+        if transport == .navi { cloud.warm(); return }
         Task.detached(priority: .userInitiated) { [self] in
             guard await lastUse.isColder(than: Self.warmAfterIdleSeconds) else { return }
             var req: URLRequest
@@ -278,6 +310,8 @@ final class JevClient: @unchecked Sendable {
                 req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             case .vercelGateway:
                 req = URLRequest(url: URL(string: "https://ai-gateway.vercel.sh/")!)
+            case .navi:
+                return
             }
             req.timeoutInterval = 5
             let start = Date()

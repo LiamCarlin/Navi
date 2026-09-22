@@ -108,25 +108,33 @@ struct MenuBarMenu: View {
             openWindow(id: WindowID.main)
             AppActivation.showDock()
         }
+        Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
         Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
-        Menu("Model: \(shortModel(settings.answerModel))") {
-            ForEach(NaviSettings.claudeModels, id: \.id) { m in
-                Button {
-                    settings.answerModel = m.id
-                    settings.agentModel = m.id
-                } label: {
-                    if settings.answerModel == m.id { Label(shortModel(m.id), systemImage: "checkmark") }
-                    else { Text(shortModel(m.id)) }
+        if NaviSettings.developerMode {
+            // Vendor models are a developer detail; the product has one plan, not a model picker.
+            Menu("Model: \(shortModel(settings.answerModel))") {
+                ForEach(NaviSettings.claudeModels, id: \.id) { m in
+                    Button {
+                        settings.answerModel = m.id
+                        settings.agentModel = m.id
+                    } label: {
+                        if settings.answerModel == m.id { Label(shortModel(m.id), systemImage: "checkmark") }
+                        else { Text(shortModel(m.id)) }
+                    }
                 }
             }
+            Divider()
         }
-        Divider()
         // Same setting as Settings → Agent; here so it can be flipped between tasks.
         Toggle("Run tasks in background", isOn: $settings.agentRunInBackground)
         Divider()
-        Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
-        if settings.memoryCaptureEnabled {
+        if !NaviAccount.shared.entitlements.recall {
+            Button("Unlock Recall…") { AppDelegate.shared?.openMainWindow(section: .memory) }
+        } else {
+            Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
+        }
+        if settings.memoryCaptureEnabled, NaviAccount.shared.entitlements.recall {
             if settings.memoryIsPaused {
                 Button("Resume capture") { settings.memoryPausedUntil = nil }
             } else {

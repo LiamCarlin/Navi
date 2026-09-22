@@ -143,11 +143,17 @@ struct JevDriverTests {
         #expect(JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.1], confidence: 0.6), ids: ids))
         #expect(!JevDriver.validate(nil, ids: ids))
         #expect(!JevDriver.validate(JevDriver.Head(choice: "SELECT", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.1], confidence: 0.6), ids: ids))          // not offered
-        #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.3], confidence: 0.6), ids: ids))                        // missing id
-        #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.5, "WAIT": 0.5, "DONE": 0.5], confidence: 0.6), ids: ids))           // sum ≠ 1
         #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.2, "WAIT": 0.7, "DONE": 0.1], confidence: 0.6), ids: ids))           // not argmax
         #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.1], confidence: 1.4), ids: ids))           // out of range
         #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": .nan, "WAIT": 0.2, "DONE": 0.1], confidence: 0.6), ids: ids))          // non-finite
+        #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.5, "WAIT": 0.5, "DONE": 0.5], confidence: 0.6), ids: ids))           // sum far from 1
+        // Untidy but usable answers no longer cost a vision turn: an id the API rounded away, a
+        // key that was never offered, rounding drift on a big head.
+        #expect(JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.3], confidence: 0.6), ids: ids))                         // missing id ⇒ 0
+        #expect(JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.1, "NOPE": 0.4], confidence: 0.6), ids: ids)) // extra key ignored
+        #expect(JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.14], confidence: 0.6), ids: ids))           // drift
+        #expect(!JevDriver.validate(JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 0.7, "WAIT": 0.2, "DONE": 0.1, "NOPE": 0.9], confidence: 0.6),
+                                    ids: ids + ["NOPE"]))                                                                                                            // offered & bigger ⇒ not argmax
     }
 
     // MARK: Decision matrix
@@ -159,27 +165,44 @@ struct JevDriverTests {
         if case .finish = JevDriver.decide(v, request: req, threshold: 0.5) {} else { Issue.record("task_complete > 0.8 should finish") }
     }
 
-    @Test func decideLowConfidenceFallsBack() {
+    @Test func decideLowConfidenceActsTentativelyWhenCheapToUndo() {
         let req = JevDriver.request(for: Self.input())
+        // 30 % CLICK: below the threshold, above the floor, reversible ⇒ taken as a hunch, not handed to Claude.
         let v = Self.verdict(op: "CLICK", confidence: 0.3, request: req, target: ("click_target", "2"))
-        if case .fallbackToClaude(let r) = JevDriver.decide(v, request: req, threshold: 0.5) { #expect(r.contains("30%")) } else { Issue.record("low confidence should fall back") }
-        // Same verdict clears a lower bar.
+        if case .actTentatively(let a, let r) = JevDriver.decide(v, request: req, threshold: 0.5) {
+            #expect(a == .click(elementID: "e2")); #expect(r.contains("30%"))
+        } else { Issue.record("a reversible hunch should be tried") }
+        // Same verdict clears a lower bar outright.
         #expect(JevDriver.decide(v, request: req, threshold: 0.25) == .act(.click(elementID: "e2")))
+        // Below the floor it is a guess: Claude looks.
+        let guess = Self.verdict(op: "CLICK", confidence: 0.15, request: req, target: ("click_target", "2"))
+        if case .fallbackToClaude(let r) = JevDriver.decide(guess, request: req, threshold: 0.5) { #expect(r.contains("15%")) } else { Issue.record("a guess should fall back") }
+        // Keys that lose something (⌘W, ⌘↩, Delete) are never pressed on a hunch.
+        let closeTab = Self.verdict(op: "KEY", confidence: 0.4, request: req, target: ("key_target", "cmd+w"))
+        if case .fallbackToClaude = JevDriver.decide(closeTab, request: req, threshold: 0.5) {} else { Issue.record("⌘W at 40% must not be a hunch") }
+        let ret = Self.verdict(op: "KEY", confidence: 0.4, request: req, target: ("key_target", "Return"))
+        if case .actTentatively(.key("Return"), _) = JevDriver.decide(ret, request: req, threshold: 0.5) {} else { Issue.record("Return at 40% is fine") }
+        // Unsure what to do next, but the screen says the goal is met (the message went out): done.
+        var done = Self.verdict(op: "KEY", confidence: 0.33, request: req, target: ("key_target", "Return"))
+        done.taskComplete = 0.6
+        if case .finish = JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 5) {} else { Issue.record("likely complete + unsure ⇒ finish") }
+        // …but not before anything was done: then it's just an unsure first step.
+        if case .actTentatively = JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 0) {} else { Issue.record("nothing done yet ⇒ act") }
     }
 
     @Test func typingGoalsKeepAFairlySureTypeTextWithJev() {
         let req = JevDriver.request(for: Self.input())
         let v = Self.verdict(op: "TYPE_TEXT", confidence: 0.45, request: req, target: ("type_text_target", "1"))
-        // Below the threshold and the goal doesn't ask for typing: Claude looks.
-        if case .fallbackToClaude = JevDriver.decide(v, request: req, threshold: 0.5) {} else { Issue.record("should fall back") }
-        // The goal says to type: Jev's pick stands.
+        // Below the threshold and the goal doesn't ask for typing: a reversible hunch.
+        if case .actTentatively(.typeText(elementID: "e1"), _) = JevDriver.decide(v, request: req, threshold: 0.5) {} else { Issue.record("should be tentative") }
+        // The goal says to type: Jev's pick stands outright.
         #expect(JevDriver.decide(v, request: req, threshold: 0.5, typingGoal: true) == .act(.typeText(elementID: "e1")))
-        // But not on a hunch.
+        // But not on a guess.
         let weak = Self.verdict(op: "TYPE_TEXT", confidence: 0.2, request: req, target: ("type_text_target", "1"))
-        if case .fallbackToClaude = JevDriver.decide(weak, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("20% is a hunch") }
-        // Other operations are unaffected.
+        if case .fallbackToClaude = JevDriver.decide(weak, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("20% is a guess") }
+        // Other operations are unaffected by the typing floor.
         let click = Self.verdict(op: "CLICK", confidence: 0.45, request: req, target: ("click_target", "2"))
-        if case .fallbackToClaude = JevDriver.decide(click, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("click still falls back") }
+        if case .actTentatively = JevDriver.decide(click, request: req, threshold: 0.5, typingGoal: true) {} else { Issue.record("click is tentative") }
     }
 
     @Test func goalAsksToType() {
@@ -253,9 +276,9 @@ struct JevDriverTests {
         if case .fallbackToClaude(let r) = JevDriver.decide(Self.verdict(op: "CLICK", request: req), request: req, threshold: 0.5) {
             #expect(r.contains("click_target"))
         } else { Issue.record("missing target should fall back") }
-        // Operation head that isn't a valid distribution → fallback.
+        // Operation head that isn't a distribution at all (nothing offered in it) → fallback.
         var v = Self.verdict(op: "CLICK", request: req, target: ("click_target", "2"))
-        v.operation = JevDriver.Head(choice: "CLICK", probabilities: ["CLICK": 1.0], confidence: 1)
+        v.operation = JevDriver.Head(choice: "CLICK", probabilities: ["NOPE": 1.0], confidence: 1)
         if case .fallbackToClaude = JevDriver.decide(v, request: req, threshold: 0.5) {} else { Issue.record("invalid operation head should fall back") }
         // Unoffered operation → fallback.
         var v2 = Self.verdict(op: "CLICK", request: req, target: ("click_target", "2"))

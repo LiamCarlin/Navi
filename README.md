@@ -88,9 +88,11 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 
 ### First launch
 
-Navi opens its window with a five-step onboarding: **Welcome → API keys →
-Permissions → Spotlight shortcut → Done**. You can re-run any step later from
-the sidebar.
+Navi opens its window with a six-step onboarding: **Welcome → API keys →
+Permissions → Spotlight shortcut → Voice → Done**. You can re-run any step later from
+the sidebar. Voice control needs only the microphone (recognition is on-device);
+press **⌥Space** anywhere and talk. **Auto mode** (on by default) means Jev
+drives every step itself and only pauses before sending, paying or deleting.
 
 1. **API keys** (Navi → AI Providers). Keys are stored in the macOS Keychain
    under `com.liamcarlin.navi`; environment variables (`TYPESAFE_API_KEY`,
@@ -127,6 +129,8 @@ the sidebar.
 | `best ramen in sf` | web search |
 | `what's the capital of peru`, `explain dns like I'm five` | streams a Claude answer |
 | `open chrome, search for jev and click the first result` | runs the computer-use agent with a live overlay |
+| ⌥Space, then *"open safari, go to youtube and play lo-fi beats"* | voice: each clause runs as you say it — in any app, in any browser |
+| *"close the tab"*, *"go back"*, *"scroll down"*, *"next tab"* (voice) | one key press in the browser, no agent |
 | `what was I working on yesterday afternoon` | searches Screen Memory, shows moments with thumbnails |
 | `sleep`, `lock`, `toggle dark mode`, `wifi off`, `empty trash` | system command |
 | `navi settings`, `change hotkey` | opens the Navi window |

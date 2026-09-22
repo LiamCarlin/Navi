@@ -339,7 +339,7 @@ enum VoiceDecider {
     /// "you", "to the", "and it": all filler/function words, or one or two
     /// words Jev could not classify with no app or question in them.
     static func isFragment(_ head: String, v: Verdict, input: Input) -> Bool {
-        let words = head.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
+        let words = normalizedGoal(head).lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
         guard !words.isEmpty else { return true }
         if words.allSatisfy({ fragmentWords.contains($0) }) { return true }
         let unclassified = (v.kind?.choice).map { $0 == Kind.none.rawValue || Kind(rawValue: $0) == nil } ?? true
@@ -350,10 +350,19 @@ enum VoiceDecider {
 
     static func command(_ v: Verdict, input: Input) -> VoiceCommand {
         let c = input.clause
-        let text = c.head
+        let text = normalizedGoal(c.head)
         let kind = v.kind.flatMap { Kind(rawValue: $0.choice) } ?? .doInApp
         let risky = v.isRisky >= 0.5
         let continues = v.continuesPrevious >= 0.5
+        // Browser-level instructions ("close the tab", "go back", "reload") never
+        // need Jev's driver: one key press in the browser. Scrolling and zooming
+        // only when a browser is in front — "scroll down" in Notes is Notes' business.
+        if kind != .answer, kind != .control, let b = BrowserControls.match(text) {
+            let frontIsBrowser = input.context.frontmostBundle.map(AXSnapshotter.isBrowser) ?? false
+            if b.key.map({ !["cmd+=", "cmd+-", "cmd+0", "cmd+up", "cmd+down"].contains($0) }) ?? false || frontIsBrowser {
+                return .browser(b, text: text)
+            }
+        }
         switch kind {
         case .control:
             let ctl = v.control.flatMap { Control(rawValue: $0.choice) } ?? .none
@@ -395,8 +404,9 @@ enum VoiceDecider {
     }
 
     static func heuristicCommand(_ input: Input) -> VoiceCommand {
-        let text = input.clause.head
+        let text = normalizedGoal(input.clause.head)
         if let ctl = heuristicControl(text) { return .control(ctl, text: text) }
+        if let b = BrowserControls.match(text) { return .browser(b, text: text) }
         if looksLikeOpen(text), let app = input.context.appCandidates.first, app.score >= 0.9 { return .openApp(app.entry, text: text) }
         if let url = URLAndWeb.detect(text) { return .openURL(url, text: text) }
         if let url = knownSiteToOpen(text) { return .openURL(url, text: text) }
@@ -409,8 +419,15 @@ enum VoiceDecider {
     /// and it stays open. Through the agent, the runner's tab used to be closed
     /// again when the run ended with nothing done on it.
     static func knownSiteToOpen(_ text: String) -> URL? {
-        guard UltrafastBridge.isNavigationOnly(text), let site = UltrafastBridge.knownSiteURL(in: text) else { return nil }
-        return URL(string: site)
+        if UltrafastBridge.isNavigationOnly(text), let site = UltrafastBridge.knownSiteURL(in: text) { return URL(string: site) }
+        // A web app Navi has a playbook for ("go to Google Drive", "open Claude", "pull up
+        // Google Calendar"): its home page, with no more asked. Not a native app of the same name.
+        if let skill = AppSkills.mentioned(in: text), !skill.hosts.isEmpty, skill.bundleIDs.isEmpty,
+           UltrafastBridge.isNavigationOnly(text, alsoNamed: ([skill.name] + skill.aliases).map { $0.lowercased() }),
+           let url = AppSkills.startURL(for: text) {
+            return URL(string: url)
+        }
+        return nil
     }
 
     static func appChoice(_ v: Verdict, input: Input) -> VoiceAppMatcher.Candidate? {
@@ -425,6 +442,35 @@ enum VoiceDecider {
     }
 
     // MARK: Small parsers
+
+    /// Politeness and address that carry no instruction, stripped from the front
+    /// of a head before it becomes a goal: "can you go to Google Drive" → "go to
+    /// Google Drive". Also a leading "you" on its own — what is left of "can you"
+    /// when the recognizer revises the first word away mid-sentence (real
+    /// transcripts: "you go to speech after Scott", "you to, um, my …").
+    static let leadingAddress: [String] = [
+        "hey navi", "okay navi", "ok navi", "navi", "hey", "okay", "ok", "so", "um", "uh", "please", "now", "just", "quickly",
+        "can you", "could you", "would you", "will you", "can you please", "could you please", "would you please",
+        "i want you to", "i need you to", "i'd like you to", "i would like you to", "go ahead and", "you",
+    ]
+
+    static func normalizedGoal(_ head: String) -> String {
+        var t = head.trimmingCharacters(in: .whitespaces)
+        var stripped = true
+        while stripped {
+            stripped = false
+            let lower = t.lowercased()
+            for p in leadingAddress.sorted(by: { $0.count > $1.count }) {
+                if lower == p || lower == p + "," { return head }   // nothing left: keep what was said (the fragment check decides)
+                if lower.hasPrefix(p + " ") || lower.hasPrefix(p + ",") {
+                    t = String(t.dropFirst(p.count)).trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ",")))
+                    stripped = true
+                    break
+                }
+            }
+        }
+        return t.isEmpty ? head : t
+    }
 
     static let controlPhrases: [(String, Control)] = [
         ("stop listening", .stopListening), ("go to sleep", .stopListening), ("goodbye", .stopListening), ("that's all", .stopListening),
@@ -486,11 +532,13 @@ enum VoiceCommand: Equatable, Sendable {
     case answer(question: String, wantsMemory: Bool)
     case system(SystemCommands.Action, title: String, text: String, confirm: Bool)
     case control(VoiceDecider.Control, text: String)
+    /// A browser-level command (tab, history, reload, scroll, zoom): one key press, no agent.
+    case browser(BrowserControls.Command, text: String)
 
     /// What the user said, for the transcript and logs.
     var spoken: String {
         switch self {
-        case .openApp(_, let t), .openAppNamed(_, let t), .openURL(_, let t), .webSearch(_, let t), .system(_, _, let t, _), .control(_, let t): return t
+        case .openApp(_, let t), .openAppNamed(_, let t), .openURL(_, let t), .webSearch(_, let t), .system(_, _, let t, _), .control(_, let t), .browser(_, let t): return t
         case .task(let g, _, _, _, _): return g
         case .answer(let q, _): return q
         }
@@ -506,6 +554,7 @@ enum VoiceCommand: Equatable, Sendable {
         case .webSearch(let q, _): return "Searching for “\(q)”"
         case .answer: return "Thinking"
         case .system(_, let title, _, _): return title
+        case .browser(let b, _): return b.title
         case .control(let c, _):
             switch c {
             case .stop: return "Stopping"

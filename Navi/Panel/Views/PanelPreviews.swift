@@ -20,7 +20,7 @@ private struct PreviewBackdrop<Content: View>: View {
     }
 }
 
-private func jev(_ intent: Intent, _ p: Double, ms: Int = 140, risky: Bool = false) -> RouteDecision {
+private func routed(_ intent: Intent, _ p: Double, ms: Int = 140, risky: Bool = false) -> RouteDecision {
     RouteDecision(intent: intent, confidence: p, probabilities: [intent: p], isRisky: risky,
                   needsClarification: false, latencyMs: ms, source: .jev)
 }
@@ -46,12 +46,12 @@ private var previewScreenshot: NSImage {
     }
 }
 
-#Preview("Results · Jev decided") {
+#Preview("Results · routed") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "maps",
                                    results: PanelViewModel.sampleResults,
-                                   decision: jev(.openApp, 0.92),
+                                   decision: routed(.openApp, 0.92),
                                    selectedIndex: 0))
     }
 }
@@ -70,7 +70,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "why is the sky blue", results: [],
-                                   decision: jev(.askQuestion, 0.88, ms: 210)))
+                                   decision: routed(.askQuestion, 0.88, ms: 210)))
     }
 }
 
@@ -78,7 +78,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "explain dns",
-                                   decision: jev(.askQuestion, 0.96, ms: 180),
+                                   decision: routed(.askQuestion, 0.96, ms: 180),
                                    mode: .answer,
                                    answer: PanelViewModel.sampleAnswer,
                                    isAnswering: true))
@@ -89,7 +89,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "explain dns",
-                                   decision: jev(.askQuestion, 0.96, ms: 180),
+                                   decision: routed(.askQuestion, 0.96, ms: 180),
                                    mode: .answer,
                                    answer: PanelViewModel.sampleAnswer,
                                    toast: "Copied"))
@@ -100,7 +100,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "send it to him",
-                                   decision: jev(.computerTask, 0.71, ms: 190),
+                                   decision: routed(.computerTask, 0.71, ms: 190),
                                    mode: .clarify,
                                    clarification: ClarificationPrompt(
                                     originalQuery: "send it to him",
@@ -115,7 +115,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "send it to him",
-                                   decision: jev(.computerTask, 0.71, ms: 190),
+                                   decision: routed(.computerTask, 0.71, ms: 190),
                                    mode: .clarify,
                                    isClarifying: true))
     }
@@ -124,15 +124,15 @@ private var previewScreenshot: NSImage {
 #Preview("Agent · running") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
-            PanelViewModel.preview(query: "open chrome, search for jev and click the first result",
-                                   decision: jev(.computerTask, 0.91, ms: 160),
+            PanelViewModel.preview(query: "open chrome, search for navi launcher and click the first result",
+                                   decision: routed(.computerTask, 0.91, ms: 160),
                                    mode: .agent,
-                                   agentTask: "Open Chrome, search for Jev and click the first result",
+                                   agentTask: "Open Chrome, search for Navi launcher and click the first result",
                                    agentEvents: [
-                                    .planned("Open Chrome, focus the address bar, search “jev typesafe”, click the first organic result."),
+                                    .planned("Open Chrome, focus the address bar, search “navi launcher”, click the first organic result."),
                                     .step(index: 1, description: "Opening Google Chrome"),
                                     .status("Chrome is frontmost"),
-                                    .step(index: 2, description: "Typing “jev typesafe” into the omnibox"),
+                                    .step(index: 2, description: "Typing “navi launcher” into the omnibox"),
                                     .step(index: 3, description: "Reading results, looking for the first organic link"),
                                    ],
                                    agentScreenshot: previewScreenshot))
@@ -143,7 +143,7 @@ private var previewScreenshot: NSImage {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
             PanelViewModel.preview(query: "email the invoice to sam",
-                                   decision: jev(.computerTask, 0.86, ms: 175, risky: true),
+                                   decision: routed(.computerTask, 0.86, ms: 175, risky: true),
                                    mode: .agent,
                                    agentTask: "Email the invoice to Sam",
                                    agentEvents: [
@@ -153,20 +153,20 @@ private var previewScreenshot: NSImage {
                                     .needsApproval(id: UUID(), description: "Click “Send”", risk: "Sending an email cannot be undone."),
                                    ],
                                    agentScreenshot: previewScreenshot,
-                                   pendingApproval: (UUID(), "Click “Send” in Mail", "Jev: 94% irreversible — the email goes out immediately.")))
+                                   pendingApproval: (UUID(), "Click “Send” in Mail", "Sending an email cannot be undone — it goes out immediately.")))
     }
 }
 
 #Preview("Agent · completed") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
-            PanelViewModel.preview(query: "open chrome and search for jev",
+            PanelViewModel.preview(query: "open chrome and search for navi launcher",
                                    mode: .agent,
                                    agentEvents: [
-                                    .planned("Open Chrome and search for Jev."),
+                                    .planned("Open Chrome and search for Navi launcher."),
                                     .step(index: 1, description: "Opened Google Chrome"),
-                                    .step(index: 2, description: "Searched for “jev typesafe”"),
-                                    .completed(summary: "Chrome is showing search results for “jev typesafe”."),
+                                    .step(index: 2, description: "Searched for “navi launcher”"),
+                                    .completed(summary: "Chrome is showing search results for “navi launcher”."),
                                    ],
                                    statusLine: "Done in 3 steps · 14 s"))
     }
@@ -185,10 +185,10 @@ private var previewScreenshot: NSImage {
 #Preview("Error banner") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(
-            PanelViewModel.preview(query: "what is jev",
+            PanelViewModel.preview(query: "what is dns",
                                    results: Array(PanelViewModel.sampleResults[7...7]),
                                    decision: .heuristic(.askQuestion),
-                                   error: "Missing API key: TYPESAFE_API_KEY. Add it in Navi → AI Providers."))
+                                   error: "Navi couldn’t reach the network. Check your connection and try again."))
     }
 }
 #endif

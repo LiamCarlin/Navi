@@ -9,14 +9,16 @@ enum Onboarding {
     }
 }
 
-/// First-launch sheet: Welcome → API keys → Permissions → Spotlight shortcut → Done.
+/// First-launch sheet: Welcome → Sign in → Permissions → Spotlight shortcut → Done.
 /// Each step reuses the same rows as the corresponding settings section.
 struct OnboardingView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var settings: NaviSettings
+    @ObservedObject private var account = NaviAccount.shared
+    @StateObject private var voicePerms = PermissionsModel()
     @State private var step = 0
 
-    private let steps = ["Welcome", "Keys", "Permissions", "Shortcut", "Done"]
+    private let steps = ["Welcome", "Sign in", "Permissions", "Shortcut", "Voice", "Done"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,9 +27,10 @@ struct OnboardingView: View {
             Group {
                 switch step {
                 case 0: welcome
-                case 1: keys
+                case 1: signIn
                 case 2: permissions
                 case 3: shortcut
+                case 4: voice
                 default: done
                 }
             }
@@ -36,6 +39,15 @@ struct OnboardingView: View {
             footer
         }
         .frame(width: 640, height: 520)
+        // The browser round trip lands back here: move on as soon as the session exists.
+        .onChange(of: account.isSignedIn) { _, signedIn in
+            if signedIn, step == 1 { withAnimation { step = 2 } }
+        }
+    }
+
+    /// Step 1 needs a session (or developer keys) before Continue works.
+    private var canContinue: Bool {
+        step != 1 || account.isSignedIn || account.hasDeveloperKeys
     }
 
     // MARK: Chrome
@@ -67,6 +79,7 @@ struct OnboardingView: View {
             if step < steps.count - 1 {
                 Button("Continue") { withAnimation { step += 1 } }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .disabled(!canContinue)
             } else {
                 Button("Start using Navi") { finish() }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
@@ -93,10 +106,11 @@ struct OnboardingView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 10) {
-                bullet("bolt.fill", "Jev (TypeSafe System One) decides what you want in about 100 ms — apps open instantly.")
-                bullet("text.bubble", "Claude answers questions and runs multi-step tasks on your Mac.")
-                bullet("brain", "Screen Memory turns your day into an Obsidian vault you can ask about.")
-                bullet("lock.fill", "Keys live in your Keychain. Screen data never leaves this Mac except to the models you choose.")
+                bullet("bolt.fill", "Navi decides what you want in under a second — apps open instantly.")
+                bullet("waveform", "Talk to it: press ⌥Space and say what you want. Navi acts on each instruction as you speak — in any app, in any browser.")
+                bullet("text.bubble", "Ask anything, or say what to do and Navi does it on your Mac.")
+                bullet("brain", "Recall turns your day into a private journal you can ask about.")
+                bullet("lock.fill", "One account, one subscription, no API keys. Your screen never leaves this Mac except as short summaries.")
             }
             Spacer()
         }
@@ -110,23 +124,45 @@ struct OnboardingView: View {
         }
     }
 
-    private var keys: some View {
-        Form {
-            Section {
-                Text("Navi needs a Jev key (TypeSafe direct, or Vercel AI Gateway — either works) and a Claude key. See AI Providers later for the full list of deals.")
-                    .font(.callout).foregroundStyle(.secondary)
+    private var signIn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Spacer()
+            if account.isSignedIn {
+                HStack(spacing: 14) {
+                    Image(systemName: "checkmark.seal.fill").font(.system(size: 40)).foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Signed in").font(.system(size: 24, weight: .bold, design: .rounded))
+                        Text("\(account.email ?? "Your account") · \(account.planLabel)")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("Sign in to Navi").font(.system(size: 24, weight: .bold, design: .rounded))
+                Text("One account, one subscription, no API keys. 7-day free trial of Pro — no card to start.")
+                    .font(.title3).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 12) {
+                    Button {
+                        account.signIn()
+                    } label: {
+                        Label(account.isSigningIn ? "Waiting for your browser…" : "Sign in with your browser", systemImage: "safari")
+                            .padding(.horizontal, 8)
+                    }
+                    .buttonStyle(.glassProminent).controlSize(.large)
+                    if account.isSigningIn { ProgressView().controlSize(.small) }
+                }
+                Text("A page opens in your browser; sign in with email or Google and you'll land back here.")
+                    .font(.caption).foregroundStyle(.tertiary)
+                if let err = account.lastError {
+                    Label(err, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                }
+                if account.hasDeveloperKeys {
+                    Label("Developer mode: your own keys are in use, so you can continue without signing in.", systemImage: "hammer")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Section {
-                APIKeyRow(key: .typesafe, title: "Jev (TypeSafe)", subtitle: "console.typesafe.ai/keys · early access",
-                          placeholder: "ts-…", optional: true, test: ProviderTests.jev)
-                APIKeyRow(key: .vercelGateway, title: "Jev via Vercel AI Gateway", subtitle: "vercel.com/ai-gateway → API Keys · no waitlist",
-                          placeholder: "vck_…", optional: true, test: ProviderTests.jevVercel)
-                APIKeyRow(key: .anthropic, title: "Anthropic (Claude)", subtitle: "platform.claude.com",
-                          placeholder: "sk-ant-…", test: ProviderTests.claude)
-            }
+            Spacer()
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .padding(28)
     }
 
     private var permissions: some View {
@@ -156,6 +192,47 @@ struct OnboardingView: View {
         .scrollContentBackground(.hidden)
     }
 
+    private var voice: some View {
+        Form {
+            Section {
+                Text("Voice control is the fastest way to use Navi: hold nothing, press nothing — say “open Safari, go to YouTube and play lo-fi beats” and watch it happen while you're still talking.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section {
+                PermissionRow(title: "Microphone",
+                              explanation: "Recognised on this Mac by Apple's on-device model. Audio never leaves the machine.",
+                              state: voicePerms.microphone,
+                              request: { Task { _ = await Permissions.requestMicrophone(); await voicePerms.refresh() } },
+                              open: { Permissions.openSettings(.microphone) })
+                    .task { await voicePerms.poll() }
+                ExplainedRow(title: "Voice shortcut", explanation: "Press anywhere to start or stop listening.") {
+                    HotKeyRecorderView(kind: .voice)
+                }
+            }
+            Section {
+                Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto mode").font(.headline)
+                        Text("Jev drives every step itself and only stops to ask before sending, paying or deleting. Turn it off to approve each action.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Button {
+                    finishSoftly()
+                    AppDelegate.shared?.toggleVoice()
+                } label: { Label("Try voice control now", systemImage: "waveform") }
+                .disabled(voicePerms.microphone == .denied)
+            } footer: {
+                Text("Say “stop” to abort, “undo” for ⌘Z, “stop listening” to close the island.")
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// Marks onboarding done without closing the window (the island appears over it).
+    private func finishSoftly() { Onboarding.hasCompleted = true }
+
     private var done: some View {
         VStack(spacing: 18) {
             Spacer()
@@ -164,7 +241,9 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 Text("Press")
                 SettingsKeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
-                Text("anywhere to open Navi.")
+                Text("to open Navi,")
+                SettingsKeyCap(HotKeyManager.describe(keyCode: settings.voiceHotKeyCode, modifiers: settings.voiceHotKeyModifiers))
+                Text("to talk to it.")
             }
             .font(.title3).foregroundStyle(.secondary)
             Button {

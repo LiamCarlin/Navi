@@ -254,6 +254,13 @@ final class Digester: @unchecked Sendable {
 
     func summarize(_ frames: [FrameRecord], provider: Provider) async throws -> DigestResult {
         guard provider != .local else { return Self.localDigest(frames) }
+        // One cloud run per digested session (`X-Navi-Run`), routed to `/v1/digest` under `recall_digest`.
+        return try await CloudRun.$current.withValue(CloudRun(feature: .recallDigest)) {
+            try await summarizeWithModel(frames, provider: provider)
+        }
+    }
+
+    private func summarizeWithModel(_ frames: [FrameRecord], provider: Provider) async throws -> DigestResult {
         let (prompt, thumbs) = Self.buildPrompt(for: frames)
         let images: [Data] = thumbs.compactMap { FileManager.default.contents(atPath: $0) }
         var text = try await complete(prompt: prompt, images: images, provider: provider)

@@ -4,38 +4,57 @@ import AppKit
 // MARK: - Sections & navigation
 
 /// The sidebar sections of the Navi window.
+///
+/// `.providers` is the hidden **Developer** section (keys, models, agent
+/// tuning, browser runtime, token usage — see `DeveloperView`). It is listed
+/// only while `DeveloperMode.isEnabled`; `SettingsRootView` still renders it
+/// through `ProvidersView`, which now shows `DeveloperView`.
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
-    case home, general, providers, permissions, memory, agent, voice, usage, about
+    case home, account, general, providers, permissions, memory, agent, voice, usage, about, developer
 
     var id: String { rawValue }
+
+    /// Sidebar order. The Developer section appears last, and only in developer mode.
+    static var allCases: [SettingsSection] {
+        var all: [SettingsSection] = [.home, .general, .permissions, .memory, .agent, .voice, .usage, .about]
+        if DeveloperMode.isEnabled { all.append(.providers) }
+        return all
+    }
 
     var title: String {
         switch self {
         case .home: return "Home"
+        case .account: return "Account"
         case .general: return "General"
-        case .providers: return "AI Providers"
+        case .providers: return "Developer"
         case .permissions: return "Permissions"
         case .memory: return "Screen Memory"
         case .agent: return "Agent"
         case .voice: return "Voice"
         case .usage: return "Usage"
         case .about: return "About"
+        case .developer: return "Developer"
         }
     }
 
     var symbol: String {
         switch self {
         case .home: return "sparkle"
+        case .account: return "person.crop.circle"
         case .general: return "gearshape"
-        case .providers: return "key.horizontal"
+        case .providers: return "hammer"
         case .permissions: return "lock.shield"
         case .memory: return "brain"
         case .agent: return "cursorarrow.click.2"
         case .voice: return "waveform"
         case .usage: return "chart.bar"
         case .about: return "info.circle"
+        case .developer: return "hammer"
         }
     }
+
+    /// Sections a user sees; `developer` only with `defaults write com.liamcarlin.navi developerMode -bool YES`.
+    var isVisible: Bool { self != .developer || NaviSettings.developerMode }
 }
 
 /// Shared selection state so any view (status cards, onboarding, the panel's
@@ -102,7 +121,7 @@ struct StatusCard: View {
     }
 }
 
-/// Small inline status pill ("OK · 142 ms", "Missing", ...).
+/// Small inline status pill ("Saved", "Missing", ...).
 struct StatusPill: View {
     let text: String
     let level: StatusLevel

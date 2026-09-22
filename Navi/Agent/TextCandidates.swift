@@ -170,6 +170,38 @@ enum FieldText {
         return value
     }
 
+    /// What the goal itself says to type, when it spells it out — no model
+    /// needed and nothing to invent: "type good night in the message box" →
+    /// "good night", "look up Matt Armstrong" into a search field → "Matt
+    /// Armstrong", "tell her I'm running late" → "I'm running late". nil when
+    /// the goal only *describes* the text ("write a love message"), when the
+    /// phrase was already typed, or when nothing in the goal reads as literal text.
+    static func localGuess(goal: String, field: AXElement, history: [JevDriver.HistoryEntry]) -> String? {
+        let typed = Set(history.compactMap { $0.kind == "type_text" ? $0.text?.lowercased() : nil })
+        func fresh(_ t: String) -> String? {
+            let v = t.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".,;:!?")))
+            guard v.count >= 1, !typed.contains(v.lowercased()) else { return nil }
+            // "write a love message", "type the address": a description, not the text.
+            let first = v.lowercased().split(separator: " ").first.map(String.init) ?? ""
+            if ["a", "an", "the", "some", "my", "your", "his", "her", "their", "this", "that", "it", "something"].contains(first) { return nil }
+            return v
+        }
+        if let q = TextCandidates.obviousText(in: goal), let v = fresh(q) { return v }
+        // "tell mom I'm late", "text her good night", "reply thanks", "message Sam see you at 5".
+        let addressed = TextCandidates.matches(#"(?i)\b(?:tell|text|message|reply(?: to)?|respond(?: to)?|answer|dm|say to|ask)\s+(?:[A-Z][\w']*|mom|mum|dad|her|him|them|me|us|everyone|the group|my \w+)\s*(?:that|to say|saying|:|,)?\s+(.+)$"#,
+                                              in: goal, group: 1)
+        for a in addressed { if let v = fresh(a) { return v } }
+        for phrase in TextCandidates.verbPhrases(in: goal) { if let v = fresh(phrase) { return v } }
+        // A search / address / query field with a lookup goal: the query is the goal minus its launcher words.
+        let hint = (field.label + " " + field.role + " " + (field.path)).lowercased()
+        let searchy = ["search", "query", "find", "address", "url", "omnibox", "look up", "ask", "prompt", "message"].contains { hint.contains($0) }
+        if searchy, AgentRun.isLookup(goal) || goal.lowercased().range(of: #"\b(search|look up|google|find|type|enter)\b"#, options: .regularExpression) != nil {
+            let q = UltrafastBridge.searchQuery(for: goal)
+            if q.lowercased() != goal.lowercased().trimmingCharacters(in: .whitespaces), let v = fresh(q) { return v }
+        }
+        return nil
+    }
+
     /// One Haiku call. Returns nil when no valid value came back (never guesses).
     static func generate(claude: ClaudeClient, context: [String: Any]) async throws -> (text: String?, latencyMs: Int) {
         let data = try JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])

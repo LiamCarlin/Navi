@@ -19,6 +19,14 @@ final class NaviSettings: ObservableObject {
     @Published var hotKeyModifiers: UInt32 { didSet { d.set(Int(hotKeyModifiers), forKey: "hotKeyModifiers"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
     @Published var appearance: Appearance { didSet { d.set(appearance.rawValue, forKey: "appearance") } }
 
+    // MARK: Navi Cloud (account transport)
+    /// Base URL of the Navi Cloud proxy. `defaults write com.liamcarlin.navi cloudBaseURL http://127.0.0.1:8787`
+    /// points a build at a mock server (see scripts/dev/mock-cloud.py).
+    @Published var cloudBaseURL: String { didSet { d.set(cloudBaseURL, forKey: CloudTransport.baseURLKey) } }
+    /// Route model calls through Navi Cloud when signed in. Off ⇒ developer
+    /// mode: the vendor keys in AI Providers are used directly.
+    @Published var useCloud: Bool { didSet { d.set(useCloud, forKey: CloudTransport.useCloudKey); NotificationCenter.default.post(name: .naviAccountChanged, object: nil) } }
+
     // MARK: AI
     @Published var jevModel: String { didSet { d.set(jevModel, forKey: "jevModel") } }
     /// Which transport reaches Jev: TypeSafe's API directly or Vercel AI Gateway.
@@ -59,6 +67,13 @@ final class NaviSettings: ObservableObject {
     /// Debounce after the last recognized word before Jev is asked whether the
     /// clause is complete. Lower = snappier, more false starts.
     @Published var voiceReactionMs: Int { didSet { d.set(voiceReactionMs, forKey: "voiceReactionMs") } }
+    /// A global shortcut that starts / stops voice control from anywhere (default ⌥Space),
+    /// so talking to Navi never needs the panel first.
+    @Published var voiceHotKeyEnabled: Bool { didSet { d.set(voiceHotKeyEnabled, forKey: "voiceHotKeyEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    @Published var voiceHotKeyCode: UInt32 { didSet { d.set(Int(voiceHotKeyCode), forKey: "voiceHotKeyCode"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    @Published var voiceHotKeyModifiers: UInt32 { didSet { d.set(Int(voiceHotKeyModifiers), forKey: "voiceHotKeyModifiers"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
+    /// Start listening as soon as Navi launches (hands-free from login).
+    @Published var voiceStartsAtLaunch: Bool { didSet { d.set(voiceStartsAtLaunch, forKey: "voiceStartsAtLaunch") } }
 
     // MARK: Memory (screen capture → Obsidian)
     @Published var memoryCaptureEnabled: Bool { didSet { d.set(memoryCaptureEnabled, forKey: "memoryCaptureEnabled"); NotificationCenter.default.post(name: .naviSettingsChanged, object: nil) } }
@@ -83,6 +98,8 @@ final class NaviSettings: ObservableObject {
             "hotKeyCode": 49,           // Space
             "hotKeyModifiers": 256,     // cmdKey (Carbon)
             "appearance": Appearance.system.rawValue,
+            CloudTransport.baseURLKey: CloudTransport.defaultBaseURL,
+            CloudTransport.useCloudKey: true,
             "jevModel": "jev-latest",
             "jevProvider": JevProvider.auto.rawValue,
             "answerModel": "claude-sonnet-5",
@@ -101,6 +118,10 @@ final class NaviSettings: ObservableObject {
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
             "voiceReactionMs": 150,
+            "voiceHotKeyEnabled": true,
+            "voiceHotKeyCode": 49,       // Space
+            "voiceHotKeyModifiers": 2048, // optionKey (Carbon)
+            "voiceStartsAtLaunch": false,
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
@@ -115,6 +136,8 @@ final class NaviSettings: ObservableObject {
         hotKeyCode = UInt32(d.integer(forKey: "hotKeyCode"))
         hotKeyModifiers = UInt32(d.integer(forKey: "hotKeyModifiers"))
         appearance = Appearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
+        cloudBaseURL = d.string(forKey: CloudTransport.baseURLKey) ?? CloudTransport.defaultBaseURL
+        useCloud = d.bool(forKey: CloudTransport.useCloudKey)
         jevModel = d.string(forKey: "jevModel") ?? "jev-latest"
         jevProvider = JevProvider(rawValue: d.string(forKey: "jevProvider") ?? "") ?? .auto
         answerModel = d.string(forKey: "answerModel") ?? "claude-sonnet-5"
@@ -133,6 +156,10 @@ final class NaviSettings: ObservableObject {
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
         voiceReactionMs = d.integer(forKey: "voiceReactionMs")
+        voiceHotKeyEnabled = d.bool(forKey: "voiceHotKeyEnabled")
+        voiceHotKeyCode = UInt32(d.integer(forKey: "voiceHotKeyCode"))
+        voiceHotKeyModifiers = UInt32(d.integer(forKey: "voiceHotKeyModifiers"))
+        voiceStartsAtLaunch = d.bool(forKey: "voiceStartsAtLaunch")
         memoryCaptureEnabled = d.bool(forKey: "memoryCaptureEnabled")
         memoryCaptureIntervalSeconds = d.integer(forKey: "memoryCaptureIntervalSeconds")
         memoryDigestIntervalMinutes = d.integer(forKey: "memoryDigestIntervalMinutes")
@@ -161,7 +188,31 @@ final class NaviSettings: ObservableObject {
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, $1 / $5 per MTok"),
     ]
 
+    // MARK: Auto mode
+
+    /// **Auto mode**: Navi acts on its own. Jev decides every step from what is
+    /// on screen (native apps and any browser alike), Claude is consulted only
+    /// when Jev is stuck, and nothing pauses for approval except actions that
+    /// cannot be undone — sending, paying, deleting. Off ⇒ every action asks
+    /// first. It is a preset over the agent settings, so the two stay in step.
+    var autoMode: Bool {
+        get { agentDriver == .jevFirst && agentApprovalMode != .alwaysAsk }
+        set {
+            if newValue {
+                agentDriver = .jevFirst
+                if agentApprovalMode == .alwaysAsk { agentApprovalMode = .askForRisky }
+                if agentJevConfidenceThreshold > 0.5 { agentJevConfidenceThreshold = 0.5 }
+            } else {
+                agentApprovalMode = .alwaysAsk
+            }
+            objectWillChange.send()
+        }
+    }
+
     // MARK: Derived
+
+    /// Hidden Developer section + vendor details: `defaults write com.liamcarlin.navi developerMode -bool YES`.
+    nonisolated static var developerMode: Bool { UserDefaults.standard.bool(forKey: "developerMode") }
 
     /// True when the selected Jev transport has a key.
     var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }

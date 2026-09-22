@@ -153,7 +153,10 @@ final class CaptureScheduler: @unchecked Sendable {
             let input = FrameTriage.Input(bundleID: bundleID, appName: front.appName ?? bundleID,
                                           windowTitle: front.windowTitle, url: url, timestamp: now,
                                           ocrText: ocr, previousApp: prev?.bundleID, previousTitle: prev?.title)
-            let triage = await FrameTriage.triage(input, jev: jev)
+            // One cloud run per frame (`X-Navi-Run`), metered under `recall_triage`.
+            let triage = await CloudRun.$current.withValue(CloudRun(feature: .recallTriage)) {
+                await FrameTriage.triage(input, jev: jev)
+            }
 
             var record = FrameRecord(timestamp: now, bundleID: bundleID, appName: front.appName ?? bundleID,
                                      windowTitle: front.windowTitle, url: url, ocrText: "",
