@@ -134,7 +134,7 @@ struct AskNaviHintRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Ask Navi")
                     .font(.system(size: 15, weight: .medium))
-                Text("Answer “\(query)” with Claude")
+                Text("Answer “\(query)”")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

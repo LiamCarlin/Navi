@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Bottom bar: status on the left ("Jev · Open app 92% · 140 ms"), key hints
-/// on the right. Hints depend on the mode.
+/// Bottom bar: what Navi is doing on the left ("Thinking…", "Navi · answering"),
+/// key hints on the right. Hints depend on the mode. Routing diagnostics only
+/// appear here in developer mode (`vm.statusLine`).
 struct PanelFooterView: View {
     @EnvironmentObject private var vm: PanelViewModel
-    @EnvironmentObject private var settings: NaviSettings
 
     var body: some View {
         HStack(spacing: 10) {
@@ -36,18 +36,18 @@ struct PanelFooterView: View {
     private var statusText: String {
         switch vm.mode {
         case .answer:
-            if vm.isAnswering { return "Navi · \(settings.answerModel) · streaming" }
-            return vm.statusLine.isEmpty ? "Navi · \(settings.answerModel)" : vm.statusLine
+            if vm.isAnswering { return "Navi · answering" }
+            return vm.statusLine.isEmpty ? "Navi" : vm.statusLine
         case .agent:
-            if vm.pendingApproval != nil { return "Jev flagged this step as risky" }
-            if vm.agentRun != nil { return "Navi · \(settings.agentModel) · Jev gating each step" }
-            return vm.statusLine.isEmpty ? "Navi · agent" : vm.statusLine
+            if vm.pendingApproval != nil { return "Navi will ask before anything irreversible" }
+            if vm.agentRun != nil { return "Navi · working" }
+            return vm.statusLine.isEmpty ? "Navi" : vm.statusLine
         case .results:
             if !vm.statusLine.isEmpty { return vm.statusLine }
-            return vm.isRouting ? "Jev is deciding…" : "Navi"
+            return vm.isRouting ? "Thinking…" : "Navi"
         case .clarify:
-            if vm.clarification == nil { return "Navi · \(settings.answerModel) · one question" }
-            return "Jev flagged this as ambiguous · pick one or type"
+            if vm.clarification == nil { return "Navi · one question" }
+            return "Pick one, or keep typing"
         }
     }
 
