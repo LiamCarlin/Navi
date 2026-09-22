@@ -108,6 +108,7 @@ struct MenuBarMenu: View {
             openWindow(id: WindowID.main)
             AppActivation.showDock()
         }
+        Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
         Menu("Model: \(shortModel(settings.answerModel))") {
             ForEach(NaviSettings.claudeModels, id: \.id) { m in
