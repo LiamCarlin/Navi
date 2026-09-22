@@ -11,9 +11,9 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     MACOSX_DEPLOYMENT_TARGET: "26.0"
-    # Sign with the local "Apple Development" identity so the code signature is
+    # Debug signs with the local "Apple Development" identity so the code signature is
     # stable across builds: Keychain ACLs and TCC grants (Accessibility, Screen
-    # Recording) then survive updates. Falls back to ad-hoc ("-") if absent.
+    # Recording) then survive rebuilds. scripts/build.sh falls back to ad-hoc ("-") if absent.
     CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: "M8ZP994J4T"
@@ -21,6 +21,13 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     SWIFT_EMIT_LOC_STRINGS: NO
     OTHER_SWIFT_FLAGS: "-D NAVI"
+  configs:
+    Release:
+      # Distribution: Developer ID + hardened runtime, notarized by scripts/release.sh.
+      # scripts/build.sh downgrades the identity (Apple Development → ad-hoc) when the
+      # certificate is not in the keychain so local Release builds keep working.
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      ENABLE_HARDENED_RUNTIME: YES
 targets:
   Navi:
     type: application
@@ -39,6 +46,8 @@ targets:
         CFBundleVersion: "1"
         LSMinimumSystemVersion: "26.0"
         LSUIElement: true
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: "© 2026 Liam Carlin. All rights reserved."
         NSHighResolutionCapable: true
         NSPrincipalClass: NSApplication
         NSAppleEventsUsageDescription: "Navi uses Apple Events to control apps (Chrome, Safari, Finder) when you ask it to perform tasks."
@@ -56,15 +65,30 @@ targets:
     entitlements:
       path: Navi/Navi.entitlements
       properties:
+        # No sandbox: Accessibility, ScreenCaptureKit and Apple Events need it off.
         com.apple.security.app-sandbox: false
         com.apple.security.automation.apple-events: true
         com.apple.security.network.client: true
+        # Hardened runtime resource access: the microphone for voice control. The bundled
+        # Python runtime needs no exceptions (tested: no JIT, no unsigned libraries).
+        com.apple.security.device.audio-input: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.liamcarlin.navi
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+    postBuildScripts:
+      - name: Bundle browser runtime (Release only)
+        shell: /bin/zsh
+        basedOnDependencyAnalysis: false
+        script: |
+          # Release ships the Python runtime for browser tasks inside the app
+          # (Contents/Resources/browser-runtime, see scripts/bundle-runtime.sh). Debug keeps
+          # using the repo checkout (vendor/jev-ultrafast/.venv) so iteration stays fast.
+          # NAVI_SKIP_RUNTIME=1 skips it; NAVI_UNIVERSAL=1 adds the x86_64 tree.
+          [[ "$CONFIGURATION" == "Release" && "${NAVI_SKIP_RUNTIME:-0}" != "1" ]] || exit 0
+          "$SRCROOT/scripts/bundle-runtime.sh" --into "$TARGET_BUILD_DIR/$WRAPPER_NAME" ${NAVI_UNIVERSAL:+--universal}
     dependencies: []
   NaviTests:
     type: bundle.unit-test
