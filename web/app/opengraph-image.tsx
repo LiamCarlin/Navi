@@ -16,6 +16,24 @@ function Star({ size, color }: { size: number; color: string }) {
   );
 }
 
+/* The default OG font has no ⌘ or ⏎ glyphs, so both are drawn as strokes. */
+function Command({ size, color }: { size: number; color: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />
+    </svg>
+  );
+}
+
+function Return({ size, color }: { size: number; color: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 10l-5 5 5 5" />
+      <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+    </svg>
+  );
+}
+
 export default function OpenGraphImage() {
   const rows = [
     { title: "Maps", kind: "App", hint: "Open", bg: "linear-gradient(135deg,#34d399,#0d9488)", active: true },
@@ -57,8 +75,33 @@ export default function OpenGraphImage() {
           Navi
         </div>
 
-        <div style={{ display: "flex", fontSize: 58, fontWeight: 600, letterSpacing: -2, marginTop: 20 }}>
-          Press ⌘Space. Say what you want.
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 14,
+            fontSize: 58,
+            fontWeight: 600,
+            letterSpacing: -2,
+            marginTop: 20,
+          }}
+        >
+          <span>Press</span>
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "0 14px",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Command size={44} color="#8b8cf8" />
+            <span>Space</span>
+          </span>
+          <span style={{ marginLeft: -10 }}>. Say what you want.</span>
         </div>
         <div style={{ display: "flex", fontSize: 26, color: "#a1a1b3", marginTop: 14 }}>
           Opens apps, answers questions, does things on your Mac — in under a second.
@@ -93,6 +136,8 @@ export default function OpenGraphImage() {
             <div
               style={{
                 display: "flex",
+                alignItems: "center",
+                gap: 5,
                 padding: "3px 9px",
                 borderRadius: 7,
                 border: "1px solid rgba(255,255,255,0.16)",
@@ -101,7 +146,8 @@ export default function OpenGraphImage() {
                 color: "#a1a1b3",
               }}
             >
-              ⌘ Space
+              <Command size={13} color="#a1a1b3" />
+              Space
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", padding: 8 }}>
@@ -127,6 +173,8 @@ export default function OpenGraphImage() {
                 <div
                   style={{
                     display: "flex",
+                    alignItems: "center",
+                    gap: 5,
                     padding: "3px 9px",
                     borderRadius: 7,
                     border: "1px solid rgba(255,255,255,0.16)",
@@ -136,7 +184,8 @@ export default function OpenGraphImage() {
                     opacity: r.active ? 1 : 0.5,
                   }}
                 >
-                  ⏎ {r.hint}
+                  <Return size={12} color="#a1a1b3" />
+                  {r.hint}
                 </div>
               </div>
             ))}
