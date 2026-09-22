@@ -60,7 +60,7 @@ struct VoiceSettingsView: View {
                     Slider(value: reaction, in: 120...600, step: 20) {
                         Text("Reaction time")
                     } minimumValueLabel: { Text("fast") } maximumValueLabel: { Text("careful") }
-                    Text("\(settings.voiceReactionMs) ms after your last word before Jev is asked whether the instruction is complete. Faster feels more immediate; slower avoids acting on half a sentence.")
+                    Text("Navi waits \(reactionSeconds) after your last word before deciding the instruction is complete. Faster feels more immediate; slower avoids acting on half a sentence.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -74,8 +74,8 @@ struct VoiceSettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     how("1", "Listen", "Apple's on-device recognizer streams words as you say them; nothing waits for you to stop talking.")
                     how("2", "Segment", "Navi splits the stream at “and”, “then” and pauses into candidate instructions.")
-                    how("3", "Decide (Jev)", "One System One call per candidate answers: complete or still coming? open an app, do something, browse, answer, system, or a word for Navi? Which app, which surface, is it risky? ~200 ms.")
-                    how("4", "Act", "Apps launch instantly; tasks run on the Jev-first driver with the surface already decided; questions stream from Claude into the island.")
+                    how("3", "Decide", "For each candidate Navi decides: complete, or still coming? Open an app, do something, browse, answer, or a word for Navi? Which app, and could it be hard to undo?")
+                    how("4", "Act", "Apps launch instantly; tasks run on your Mac; answers stream into the island.")
                 }
                 .padding(.vertical, 2)
             } header: {
@@ -91,6 +91,11 @@ struct VoiceSettingsView: View {
 
     private var reaction: Binding<Double> {
         Binding(get: { Double(settings.voiceReactionMs) }, set: { settings.voiceReactionMs = Int($0) })
+    }
+
+    /// "0.3 seconds" — the reaction time in words, not milliseconds.
+    private var reactionSeconds: String {
+        String(format: "%.1f seconds", Double(settings.voiceReactionMs) / 1000)
     }
 
     private func how(_ n: String, _ title: String, _ detail: String) -> some View {
