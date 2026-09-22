@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
-import { addToWaitlist, cleanNote, cleanSource, normalizeEmail } from "@/lib/waitlist";
+import { addToWaitlist, cleanNote, cleanSource, countWaitlist, normalizeEmail, refId } from "@/lib/waitlist";
 
 export const runtime = "nodejs";
 
 /**
- * POST /api/waitlist  { email, note?, source? }
- *   201 { ok: true, status: "created" }   new email
- *   200 { ok: true, status: "exists" }    already on the list
- *   400 { error }                         bad email / body
- *   500 { error }                         storage failure
+ * POST /api/waitlist  { email, note?, source?, ref? }
+ *   201 { ok: true, status: "created", position, ref }   new email
+ *   200 { ok: true, status: "exists",  position, ref }   already on the list
+ *   400 { error }                                        bad email / body
+ *   500 { error }                                        storage failure
+ * `position` is the list size after the insert; `ref` is the signup's share id for `?ref=`.
+ * Older clients that only read `ok`/`status` keep working.
  */
 export async function POST(req: Request) {
   let body: Record<string, unknown>;
@@ -26,11 +28,17 @@ export async function POST(req: Request) {
   try {
     const status = await addToWaitlist({
       email,
-      source: cleanSource(body.source),
+      source: cleanSource(body.source, body.ref),
       note: cleanNote(body.note),
       created_at: new Date().toISOString(),
     });
-    return NextResponse.json({ ok: true, status }, { status: status === "created" ? 201 : 200 });
+    let position: number | null = null;
+    try {
+      position = await countWaitlist({ fresh: true });
+    } catch {
+      // the signup succeeded; the position is a nicety
+    }
+    return NextResponse.json({ ok: true, status, position, ref: refId(email) }, { status: status === "created" ? 201 : 200 });
   } catch (err) {
     console.error("[waitlist]", err instanceof Error ? err.message : err);
     return NextResponse.json({ error: "Couldn't save that right now. Try again in a minute." }, { status: 500 });
