@@ -42,7 +42,7 @@ export const viewport: Viewport = {
 };
 
 /* Runs before first paint: a stored choice wins, else the system scheme. Every storage access is guarded. */
-const themeScript = `(function(){try{var t=localStorage.getItem("navi-theme");if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"}document.documentElement.dataset.theme=t}catch(e){}})();`;
+const themeScript = `(function(){try{var s=localStorage.getItem("navi-theme");var t=s;if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"}document.documentElement.dataset.theme=t;if(s==="light"||s==="dark"){var m=document.createElement("meta");m.name="theme-color";m.content=s==="light"?"#f7f7f5":"#0a0a0b";document.head.prepend(m)}}catch(e){}})();`;
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
