@@ -14,11 +14,13 @@ npm run lint
 
 | Path | What |
 |---|---|
-| `app/page.tsx` | The single landing page: nav, hero (animated panel), features, Recall, voice, pricing, FAQ, waitlist, footer |
-| `components/PanelDemo.tsx` | HTML/CSS recreation of the ⌘Space panel: cycling placeholder that types itself, results fade in |
+| `app/page.tsx` | The single landing page: nav, hero (MacBook + island loop), "Spotlight finds. Navi does.", "decides, not chats", voice, background mode, Recall, pricing, FAQ, waitlist, footer |
+| `components/MacBook.tsx` | CSS/SVG 14" MacBook Pro in perspective with pointer tilt. The screen is a container; everything on it is sized in `--u` (see `.screen` in `globals.css`) |
+| `components/HeroLoop.tsx` | The ~12 s hero loop as a pure function of time: island drops from the notch and ticks steps, then the ⌘Space bar shows task / calculator / app |
+| `components/Island.tsx`, `components/Panel.tsx` | The voice island and the ⌘Space bar, presentational; `useLoop.ts` drives any looping demo (pauses off-screen, static frame under reduced motion) |
 | `app/api/waitlist/route.ts` | `POST { email, note?, source? }` → 201 created · 200 already on the list · 400 bad email · 500 storage error |
 | `lib/waitlist.ts` | Storage: Supabase when configured, else `web/.waitlist.local.jsonl` (gitignored) |
-| `app/opengraph-image.tsx` | OG image (the panel on dark), generated at build time |
+| `app/opengraph-image.tsx` | OG image (the MacBook with the island down), generated at build time |
 | `app/icon.tsx`, `app/apple-icon.tsx` | Favicon / touch icon with the ✦ glyph |
 | `app/privacy`, `app/terms` | Placeholder legal pages |
 
