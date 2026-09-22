@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         Keychain.preload()   // background; UI never blocks on the Keychain ACL prompt
 
+        NaviAccount.shared.start()   // /v1/me on launch, wake and every 10 min; sign-in/out observers
         services = NaviServices.bootstrap()
         panelController = PanelController(services: services)
         panelController.viewModel.onVoiceRequested = { [weak self] in self?.toggleVoice() }
@@ -66,6 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if DebugPlanProbe.handle(url, claude: services.claude) { continue }   // navi://debug-plan?q=…
             #endif
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            // navi://auth/callback?code=… (sign-in) and navi://billing/{success,cancel} (Stripe).
+            if url.host == "auth" || url.host == "billing" {
+                if NaviAccount.shared.handle(url: url) { continue }
+            }
             if url.host == "voice" {
                 // navi://voice toggles voice control; navi://voice?file=/path.aiff feeds a recording (debug).
                 if let f = comps?.queryItems?.first(where: { $0.name == "file" })?.value, !f.isEmpty {

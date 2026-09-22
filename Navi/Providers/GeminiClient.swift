@@ -33,15 +33,19 @@ final class GeminiClient: @unchecked Sendable {
     }
 
     private let session: URLSession
+    /// The account transport: the same body goes to `POST <cloudBaseURL>/v1/digest`
+    /// (plus `model`), which the server forwards to Gemini and gates on `recall`.
+    let cloud: CloudTransport
 
-    init() {
+    init(cloud: CloudTransport = .shared) {
+        self.cloud = cloud
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 90
         cfg.httpAdditionalHeaders = ["User-Agent": "Navi/0.1 (macOS)"]
         session = URLSession(configuration: cfg)
     }
 
-    var isConfigured: Bool { Keychain.has(.gemini) }
+    var isConfigured: Bool { cloud.isActive || Keychain.has(.gemini) }
 
     /// One-shot generation. When `jsonMode` is true the model is constrained to
     /// emit `application/json`, which removes the usual code-fence noise.
@@ -52,7 +56,9 @@ final class GeminiClient: @unchecked Sendable {
                   jsonMode: Bool = true,
                   maxOutputTokens: Int = 1024,
                   temperature: Double = 0.2) async throws -> Reply {
-        guard let key = Keychain.get(.gemini), !key.isEmpty else { throw NaviError.missingAPIKey(.gemini) }
+        let viaCloud = cloud.isActive
+        let key = Keychain.get(.gemini) ?? ""
+        guard viaCloud || !key.isEmpty else { throw NaviError.missingAPIKey(.gemini) }
 
         var parts: [[String: Any]] = [["text": prompt]]
         for img in images {
@@ -72,6 +78,15 @@ final class GeminiClient: @unchecked Sendable {
         }
         if let system, !system.isEmpty {
             body["system_instruction"] = ["parts": [["text": system]]]
+        }
+
+        if viaCloud {
+            // `/v1/digest` takes `{ model?, ...gemini body }` and needs the `recall` entitlement (403 otherwise).
+            body["model"] = model
+            let run = CloudRun.resolve(fallback: .recallDigest)
+            let req = try cloud.request(path: "/v1/digest", json: body, run: run)
+            let (data, _) = try await cloud.send(req)
+            return try Self.parse(data)
         }
 
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("\(model):generateContent"))

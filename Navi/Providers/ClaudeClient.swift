@@ -19,20 +19,25 @@ final class ClaudeClient: @unchecked Sendable {
     static let apiVersion = "2023-06-01"
 
     private let session: URLSession
+    /// The account transport (`POST <cloudBaseURL>/v1/claude`, SSE passed
+    /// through); used whenever `cloud.isActive`, else the key in the Keychain.
+    let cloud: CloudTransport
 
-    init() {
+    init(cloud: CloudTransport = .shared) {
+        self.cloud = cloud
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 600
         cfg.httpAdditionalHeaders = ["User-Agent": "Navi/0.1 (macOS)"]
         session = URLSession(configuration: cfg)
     }
 
-    var isConfigured: Bool { Keychain.has(.anthropic) }
+    var isConfigured: Bool { cloud.isActive || Keychain.has(.anthropic) }
 
     /// Opens the TCP+TLS connection to the API host ahead of the first real
     /// call (`GET /v1/models`, free). Saves ~300 ms on the first answer,
     /// agent fallback or text-helper request. Fire-and-forget; never throws.
     func warm() {
+        if cloud.isActive { cloud.warm(); return }
         guard let key = Keychain.get(.anthropic), !key.isEmpty else { return }
         var req = URLRequest(url: baseURL.deletingLastPathComponent().appendingPathComponent("models"))
         req.setValue(key, forHTTPHeaderField: "x-api-key")
@@ -57,14 +62,23 @@ final class ClaudeClient: @unchecked Sendable {
         return Self.endpoint
     }
 
-    private func request(body: [String: Any], betas: [String] = []) throws -> URLRequest {
+    /// Builds the request for the active transport. Through the account the
+    /// body is the exact Messages body sent to `/v1/claude` (`/v1/digest` for
+    /// Recall digests) with `anthropic-version` preserved and the feature/run
+    /// headers added; the bearer is attached by `CloudTransport` on send.
+    func request(body: [String: Any], betas: [String] = [], fallbackFeature: CloudFeature) throws -> URLRequest {
+        var headers = ["anthropic-version": Self.apiVersion]
+        if !betas.isEmpty { headers["anthropic-beta"] = betas.joined(separator: ",") }
+        if cloud.isActive {
+            let run = CloudRun.resolve(fallback: fallbackFeature)
+            return try cloud.request(path: run.feature.claudePath, json: body, run: run, extraHeaders: headers)
+        }
         guard let key = Keychain.get(.anthropic), !key.isEmpty else { throw NaviError.missingAPIKey(.anthropic) }
         var req = URLRequest(url: baseURL)
         req.httpMethod = "POST"
         req.setValue(key, forHTTPHeaderField: "x-api-key")
-        req.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !betas.isEmpty { req.setValue(betas.joined(separator: ","), forHTTPHeaderField: "anthropic-beta") }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return req
     }
@@ -87,13 +101,19 @@ final class ClaudeClient: @unchecked Sendable {
                     if Self.supportsEffort(model) { body["output_config"] = ["effort": effort] }
                     if let system { body["system"] = system }
                     if !tools.isEmpty { body["tools"] = tools }
-                    let req = try request(body: body)
-                    let (bytes, resp) = try await session.bytes(for: req)
-                    guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response") }
-                    if !(200..<300).contains(http.statusCode) {
-                        var text = ""
-                        for try await line in bytes.lines { text += line }
-                        throw NaviError.http(status: http.statusCode, body: text)
+                    let req = try request(body: body, fallbackFeature: .answer)
+                    let bytes: URLSession.AsyncBytes
+                    if cloud.isActive {
+                        (bytes, _) = try await cloud.bytes(req)   // 401 refresh / 402 / 403 decided before the first byte
+                    } else {
+                        let (b, resp) = try await session.bytes(for: req)
+                        guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response") }
+                        if !(200..<300).contains(http.statusCode) {
+                            var text = ""
+                            for try await line in b.lines { text += line }
+                            throw NaviError.http(status: http.statusCode, body: text)
+                        }
+                        bytes = b
                     }
                     var inTok = 0, outTok = 0
                     for try await line in bytes.lines {
@@ -168,13 +188,19 @@ final class ClaudeClient: @unchecked Sendable {
         }
         if let system { body["system"] = system }
         if !tools.isEmpty { body["tools"] = tools }
-        let req = try request(body: body, betas: betas)
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response") }
-        guard (200..<300).contains(http.statusCode) else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            Log.claude.error("Claude HTTP \(http.statusCode): \(text.prefix(500))")
-            throw NaviError.http(status: http.statusCode, body: text)
+        let req = try request(body: body, betas: betas, fallbackFeature: .task)
+        let data: Data
+        if cloud.isActive {
+            (data, _) = try await cloud.send(req)
+        } else {
+            let (d, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response") }
+            guard (200..<300).contains(http.statusCode) else {
+                let text = String(data: d, encoding: .utf8) ?? ""
+                Log.claude.error("Claude HTTP \(http.statusCode): \(text.prefix(500))")
+                throw NaviError.http(status: http.statusCode, body: text)
+            }
+            data = d
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]] else {

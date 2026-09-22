@@ -36,6 +36,17 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     // MARK: MemoryServicing
 
     @MainActor func start() {
+        // Recall gate (account workstream): capture needs the `recall` entitlement.
+        // Developer mode (vendor keys, no cloud) is entitled locally.
+        guard NaviAccount.shared.entitlements.recall else {
+            if status.isRunning { stop() }
+            if !status.needsEntitlement {
+                Log.memory.info("Memory service not started: the account has no Recall entitlement")
+            }
+            status.needsEntitlement = true
+            return
+        }
+        status.needsEntitlement = false
         guard let stack = ensureStack() else { return }
         guard !status.isRunning else { return }
         stack.scheduler.start()
@@ -71,6 +82,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         pruneTask?.cancel(); pruneTask = nil
         if status.isRunning { Log.memory.info("Memory service stopped") }
         status.isRunning = false
+        status.needsEntitlement = false
     }
 
     func search(query: String, limit: Int) async -> [MemoryHit] {

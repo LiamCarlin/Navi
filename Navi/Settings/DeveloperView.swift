@@ -659,6 +659,7 @@ struct JevTransportStatus: View {
         switch t {
         case .typesafe: return "Active: TypeSafe API (api.typesafe.ai)"
         case .vercelGateway: return "Active: Vercel AI Gateway (ai-gateway.vercel.sh · typesafe-ai/jev)"
+        case .navi: return "Active: Navi Cloud (account)"
         case nil: return "No Jev key yet — Navi routes with local heuristics until one is added."
         }
     }

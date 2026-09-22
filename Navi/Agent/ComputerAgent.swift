@@ -197,8 +197,11 @@ final class AgentRun: @unchecked Sendable {
     // MARK: Control surface
 
     func start(handle: AgentRunHandle) {
+        // Integration hook (account workstream): every Jev/Claude call in this run
+        // is billed under one `X-Navi-Run` — the query's id — as `task` or `voice`.
+        let run = CloudRun(feature: context.spoken ? .voice : .task, runID: context.runID)
         let t = Task.detached(priority: .userInitiated) { [self] in
-            await self.main(handle)
+            await CloudRun.$current.withValue(run) { await self.main(handle) }
         }
         lock.lock(); worker = t; lock.unlock()
     }

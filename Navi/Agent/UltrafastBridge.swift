@@ -144,7 +144,9 @@ enum UltrafastBridge {
         case .vercelGateway:
             env["AI_GATEWAY_API_KEY"] = Keychain.get(.vercelGateway)
             env["NAVI_JEV_TRANSPORT"] = "vercel"
-        case nil:
+        case .navi, nil:
+            // Integration hook (account workstream): the Python runner still needs a vendor
+            // key of its own; the account transport does not reach it yet.
             return nil
         }
         if let k = Keychain.get(.anthropic) { env["ANTHROPIC_API_KEY"] = k }

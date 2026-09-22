@@ -4,22 +4,33 @@ import UniformTypeIdentifiers
 
 struct MemoryView: View {
     @EnvironmentObject private var settings: NaviSettings
+    @ObservedObject private var account = NaviAccount.shared
     @State private var status = MemoryStatus()
     @State private var digesting = false
     @State private var newBundleID = ""
 
     private var memory: MemoryServicing? { AppDelegate.shared?.services.memory }
+    /// Recall gate (account workstream): the toggle is replaced by the upsell without the entitlement.
+    private var entitled: Bool { account.entitlements.recall }
 
     var body: some View {
-        FormPage(title: "Screen Memory", subtitle: "Snapshots → on-device OCR → Jev triage → cheap LLM digest → Obsidian notes.") {
-            Section {
-                Toggle(isOn: $settings.memoryCaptureEnabled) {
-                    ExplainedRow(title: "Remember what I see", explanation: settings.memoryCaptureEnabled ? "Capturing in the background." : "Off. Nothing is captured.") { EmptyView() }
+        FormPage(title: "Recall", subtitle: "Snapshots → on-device text → a private journal Navi can answer from.") {
+            if entitled {
+                Section {
+                    Toggle(isOn: $settings.memoryCaptureEnabled) {
+                        ExplainedRow(title: "Remember what I see", explanation: settings.memoryCaptureEnabled ? "Capturing in the background." : "Off. Nothing is captured.") { EmptyView() }
+                    }
+                    .toggleStyle(.switch)
+                    if settings.memoryCaptureEnabled {
+                        pauseRow
+                    }
                 }
-                .toggleStyle(.switch)
-                if settings.memoryCaptureEnabled {
-                    pauseRow
+            } else {
+                Section {
+                    UpgradeCard.recall(account: account)
                 }
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
             }
 
             Section("Status") {
@@ -91,12 +102,12 @@ struct MemoryView: View {
             } header: {
                 Text("Never capture these apps")
             } footer: {
-                Text("Frames from excluded apps are dropped before OCR. Jev also drops any frame it flags as sensitive (passwords, banking, private messages), and password fields are never stored.")
+                Text("Frames from excluded apps are dropped before any text is read. Navi also drops any frame it judges sensitive (passwords, banking, private messages), and password fields are never stored.")
             }
 
             Section {
                 Label {
-                    Text("Everything stays on this Mac. Raw frames and OCR text live in ~/Library/Application Support/Navi; only frames Jev marks important are sent to the digest model, and only the digest is written to your vault.")
+                    Text("Everything stays on this Mac. Raw frames and their text live in ~/Library/Application Support/Navi; only the moments Navi judges important are summarised, and only the summary is written to your journal.")
                         .font(.callout).foregroundStyle(.secondary)
                 } icon: {
                     Image(systemName: "lock.fill").foregroundStyle(.secondary)

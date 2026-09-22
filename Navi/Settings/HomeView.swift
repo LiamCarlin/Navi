@@ -11,8 +11,7 @@ struct HomeView: View {
     @State private var spotlightLoaded = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var memoryStatus = MemoryStatus()
-    @State private var hasJev = false
-    @State private var hasClaude = false
+    @ObservedObject private var account = NaviAccount.shared
 
     private let columns = [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12)]
 
@@ -20,7 +19,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 hero
-                ModelsCard()
+                PlanCard()
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Status").font(.title3.weight(.semibold))
@@ -37,7 +36,6 @@ struct HomeView: View {
             .frame(maxWidth: 980, alignment: .leading)
         }
         .task { await poll() }
-        .onReceive(NotificationCenter.default.publisher(for: .naviKeysChanged)) { _ in refreshKeys() }
     }
 
     // MARK: Hero
@@ -79,10 +77,10 @@ struct HomeView: View {
     // MARK: Cards
 
     @ViewBuilder private var cards: some View {
-        StatusCard(title: "Jev API key", detail: hasJev ? "Connected — System One routing is on." : "Missing. Navi falls back to slow heuristics.",
-                   level: hasJev ? .ok : .bad, fixTitle: "Add key") { nav.go(.providers) }
-        StatusCard(title: "Claude API key", detail: hasClaude ? "Connected — answers and the agent are on." : "Missing. Answers and tasks won't work.",
-                   level: hasClaude ? .ok : .bad, fixTitle: "Add key") { nav.go(.providers) }
+        StatusCard(title: "Account", detail: accountDetail, level: accountLevel,
+                   fixTitle: account.isSignedIn ? "Open" : "Sign in") {
+            if account.isSignedIn { nav.go(.account) } else { account.signIn() }
+        }
         StatusCard(title: "Accessibility", detail: perms.accessibility == .granted ? "Granted. The agent can click and type." : "Needed for the agent to click and type.",
                    level: perms.accessibility.level, fixTitle: "Grant") { nav.go(.permissions) }
         StatusCard(title: "Screen Recording", detail: perms.screenRecording == .granted ? "Granted. Agent and Screen Memory can see the screen." : "Needed for the agent and Screen Memory.",
@@ -90,8 +88,8 @@ struct HomeView: View {
         StatusCard(title: "Automation", detail: automationDetail, level: perms.automation.level, fixTitle: "Grant") { nav.go(.permissions) }
         StatusCard(title: "Spotlight shortcut", detail: spotlightLoaded ? spotlight.summary : "Checking…",
                    level: spotlightLoaded ? spotlight.level : .off, fixTitle: "Fix") { nav.go(.general) }
-        StatusCard(title: "Screen Memory", detail: memoryDetail, level: memoryLevel,
-                   fixTitle: settings.memoryCaptureEnabled ? "Open" : "Turn on") { nav.go(.memory) }
+        StatusCard(title: "Recall", detail: memoryDetail, level: memoryLevel,
+                   fixTitle: !account.entitlements.recall ? "Unlock" : (settings.memoryCaptureEnabled ? "Open" : "Turn on")) { nav.go(.memory) }
         StatusCard(title: "Login item", detail: LoginItem.describe(loginStatus), level: LoginItem.level(loginStatus),
                    fixTitle: "Enable") { nav.go(.general) }
     }
@@ -105,7 +103,18 @@ struct HomeView: View {
         }
     }
 
+    private var accountDetail: String {
+        if account.isSignedIn { return "Signed in as \(account.email ?? "you") · \(account.tier.displayName)." }
+        if account.hasDeveloperKeys { return "Developer mode — your own keys are in use." }
+        return "Sign in for answers, tasks and voice control. 7-day free trial of Pro."
+    }
+
+    private var accountLevel: StatusLevel {
+        account.isSignedIn || account.hasDeveloperKeys ? .ok : .bad
+    }
+
     private var memoryDetail: String {
+        if !account.entitlements.recall { return "Not in your plan. Add Recall to ask \"what was I doing yesterday?\"" }
         if !settings.memoryCaptureEnabled { return "Off. Turn it on to ask \"what was I doing yesterday?\"" }
         if settings.memoryIsPaused, let u = settings.memoryPausedUntil { return "Paused until \(u.formatted(date: .omitted, time: .shortened))." }
         if memoryStatus.isRunning { return "Running · \(memoryStatus.framesToday) frames today · \(memoryStatus.vaultNoteCount) notes." }
@@ -113,6 +122,7 @@ struct HomeView: View {
     }
 
     private var memoryLevel: StatusLevel {
+        if !account.entitlements.recall { return .off }
         if !settings.memoryCaptureEnabled { return .off }
         if settings.memoryIsPaused { return .warn }
         return memoryStatus.isRunning ? .ok : .warn
@@ -120,8 +130,7 @@ struct HomeView: View {
 
     private var readyLine: String {
         var issues = 0
-        if !hasJev { issues += 1 }
-        if !hasClaude { issues += 1 }
+        if !(account.isSignedIn || account.hasDeveloperKeys) { issues += 1 }
         if perms.accessibility != .granted { issues += 1 }
         if perms.screenRecording != .granted { issues += 1 }
         if spotlightLoaded && spotlight.conflict { issues += 1 }
@@ -134,11 +143,11 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Try typing").font(.title3.weight(.semibold))
             LazyVGrid(columns: columns, spacing: 8) {
-                tip("maps", "opens Apple Maps — Jev decides in ~100 ms")
+                tip("maps", "opens Apple Maps — Navi decides in under a second")
                 tip("12% of 340", "instant math, currency and time zones")
-                tip("why is the sky blue", "streams an answer from Claude")
-                tip("open chrome and search for jev", "runs the computer-use agent")
-                tip("what was I reading yesterday", "recalls from Screen Memory")
+                tip("why is the sky blue", "streams an answer")
+                tip("open chrome and search for jev", "Navi does it for you")
+                tip("what was I reading yesterday", "asks Recall")
                 tip("sleep", "system commands: sleep, lock, dark mode, wifi")
             }
         }
@@ -157,13 +166,7 @@ struct HomeView: View {
 
     // MARK: Polling
 
-    private func refreshKeys() {
-        hasJev = settings.hasJevKey
-        hasClaude = Keychain.has(.anthropic)
-    }
-
     private func poll() async {
-        refreshKeys()
         spotlight = await SpotlightShortcutFix.detect(naviKeyCode: settings.hotKeyCode, naviCarbonModifiers: settings.hotKeyModifiers)
         spotlightLoaded = true
         while !Task.isCancelled {
@@ -190,55 +193,49 @@ struct SettingsKeyCap: View {
 }
 
 
-/// Quick model switcher shown on Home so the current models are always one click away.
-struct ModelsCard: View {
-    @EnvironmentObject private var settings: NaviSettings
+/// The plan card on Home: tier, trial, today's usage, one "Manage" button.
+/// Signed out: the sign-in call to action. Nothing here names a vendor.
+struct PlanCard: View {
+    @ObservedObject private var account = NaviAccount.shared
+    @ObservedObject private var nav = SettingsNavigator.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Models").font(.title3.weight(.semibold))
-                Spacer()
-                Text("Jev makes the decisions; Claude writes text and is the vision fallback.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 16) {
-                modelPicker("Answers", selection: $settings.answerModel, icon: "text.bubble")
-                modelPicker("Agent fallback", selection: $settings.agentModel, icon: "cursorarrow.motionlines")
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Decisions", systemImage: "bolt.fill").font(.caption).foregroundStyle(.secondary)
-                    Text("Jev · \(settings.jevModel)").font(.callout.weight(.medium))
-                    Text(JevClient.resolveTransport(preference: settings.jevProvider).map { $0 == .typesafe ? "TypeSafe direct" : "Vercel AI Gateway" } ?? "no key yet")
-                        .font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            Image(systemName: account.isSignedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.plus")
+                .font(.system(size: 28)).foregroundStyle(.tint)
+                .frame(width: 44, height: 44)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                if account.isSignedIn {
+                    Text(account.planLabel).font(.title3.weight(.semibold))
+                    Text(usageLine).font(.callout).foregroundStyle(.secondary)
+                } else if account.hasDeveloperKeys {
+                    Text("Developer mode").font(.title3.weight(.semibold))
+                    Text("Your own keys are in use. Sign in to use a Navi plan instead.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("Sign in to Navi").font(.title3.weight(.semibold))
+                    Text("One account, one subscription, no API keys. 7-day free trial of Pro.").font(.callout).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer()
+            if account.isSignedIn {
+                Button("Manage") { nav.go(.account) }.buttonStyle(.bordered)
+            } else {
+                Button {
+                    account.signIn()
+                } label: {
+                    Label("Sign in with your browser", systemImage: "safari").padding(.horizontal, 4)
+                }
+                .buttonStyle(.glassProminent)
             }
         }
         .padding(18)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func modelPicker(_ title: String, selection: Binding<String>, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(title, systemImage: icon).font(.caption).foregroundStyle(.secondary)
-            Picker("", selection: selection) {
-                ForEach(NaviSettings.claudeModels, id: \.id) { Text(shortLabel($0.id)).tag($0.id) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: 220, alignment: .leading)
-            Text(NaviSettings.claudeModels.first { $0.id == selection.wrappedValue }?.label.split(separator: "—").last?.trimmingCharacters(in: .whitespaces) ?? "")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func shortLabel(_ id: String) -> String {
-        switch id {
-        case "claude-sonnet-5": return "Claude Sonnet 5"
-        case "claude-opus-5": return "Claude Opus 5"
-        case "claude-haiku-4-5": return "Claude Haiku 4.5"
-        default: return id
-        }
+    private var usageLine: String {
+        var parts = [account.answersLine, account.tasksLine]
+        if account.entitlements.recall { parts.append("Recall on") }
+        return parts.joined(separator: " · ")
     }
 }

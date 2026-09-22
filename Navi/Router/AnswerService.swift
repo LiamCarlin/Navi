@@ -18,7 +18,11 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
 
     func streamAnswer(query: String, context: QueryContext, memory: [MemoryHit]) -> AsyncThrowingStream<String, Error> {
         let system = Self.systemPrompt(query: query, context: context, memory: memory)
-        return stream(system: system, user: query, maxTokens: 4000, effort: "medium")
+        // Integration hook (account workstream): the answer is one cloud run
+        // (`X-Navi-Run` = the query's id, feature `answer`); the stream's Task inherits it.
+        return CloudRun.$current.withValue(CloudRun(feature: .answer, runID: context.runID)) {
+            stream(system: system, user: query, maxTokens: 4000, effort: "medium")
+        }
     }
 
     /// One structured follow-up for an ambiguous request: a question plus 2–4
@@ -71,7 +75,9 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
 
     private func stream(system: String, user: String, maxTokens: Int, effort: String) -> AsyncThrowingStream<String, Error> {
         guard claude.isConfigured else {
-            return AsyncThrowingStream { c in c.yield(Self.missingKeyMessage); c.finish() }
+            // No Navi session and no developer key: the panel renders this as
+            // "Sign in to keep going" with a sign-in action.
+            return AsyncThrowingStream { c in c.finish(throwing: NaviError.signedOut) }
         }
         let claude = self.claude
         return AsyncThrowingStream { continuation in
