@@ -1,33 +1,143 @@
 @import "tailwindcss";
 
-/* ---------- Tokens: one near-black, one accent, hairlines at 8–12 % white ---------- */
+/* ------------------------------------------------------------------
+   Tokens. Dark is the default; light is a real palette (warm off-white,
+   ink text, black hairlines), not an inversion. Both accents clear AA
+   on their background. `data-theme` is set on <html> before first paint
+   by the inline script in layout.tsx; the media query covers no-JS.
+   ------------------------------------------------------------------ */
 :root {
   --bg: #0a0a0b;
   --bg-elev: #111113;
+  --bg-sunk: #050506;
   --fg: #f4f4f5;
   --fg-muted: #a3a3ad;
-  --fg-dim: #6e6e78;
+  --fg-dim: #85858f;
   --accent: #8b8cf8;
+  --accent-ink: #0a0a0b;
   --accent-soft: rgba(139, 140, 248, 0.14);
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
   --glass: rgba(255, 255, 255, 0.05);
+  --glass-strong: rgba(255, 255, 255, 0.08);
+  --shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.85);
+  /* macOS glass: the ⌘Space bar, Spotlight, mini windows */
+  --panel-bg: rgba(24, 24, 27, 0.82);
+  --panel-fg: #f4f4f5;
+  --panel-muted: #a3a3ad;
+  --panel-dim: #7d7d87;
+  --panel-line: rgba(255, 255, 255, 0.1);
+  --panel-row: rgba(255, 255, 255, 0.07);
+  --win-bg: #1c1c1f;
+  --win-bar: rgba(255, 255, 255, 0.05);
+  --win-line: rgba(255, 255, 255, 0.08);
+  --win-fg: rgba(255, 255, 255, 0.85);
+  --win-muted: rgba(255, 255, 255, 0.5);
+  --win-skel: rgba(255, 255, 255, 0.1);
+  --wall: radial-gradient(75% 65% at 22% 105%, rgba(139, 140, 248, 0.55), transparent 62%),
+    radial-gradient(55% 45% at 88% 10%, rgba(120, 90, 220, 0.35), transparent 60%),
+    linear-gradient(165deg, #1b1b30 0%, #131324 45%, #0c0c16 100%);
+  --menubar: rgba(0, 0, 0, 0.25);
+  --menubar-fg: rgba(255, 255, 255, 0.85);
+  --dock: rgba(255, 255, 255, 0.1);
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 16px;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f7f7f5;
+    --bg-elev: #ffffff;
+    --bg-sunk: #efefec;
+    --fg: #111111;
+    --fg-muted: #5c5c66;
+    --fg-dim: #6f6f78;
+    --accent: #5556e0;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(85, 86, 224, 0.1);
+    --line: rgba(0, 0, 0, 0.07);
+    --line-strong: rgba(0, 0, 0, 0.1);
+    --glass: rgba(0, 0, 0, 0.03);
+    --glass-strong: rgba(0, 0, 0, 0.05);
+    --shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.25);
+    --panel-bg: rgba(255, 255, 255, 0.72);
+    --panel-fg: #111111;
+    --panel-muted: #5c5c66;
+    --panel-dim: #7a7a84;
+    --panel-line: rgba(0, 0, 0, 0.08);
+    --panel-row: rgba(0, 0, 0, 0.05);
+    --win-bg: #ffffff;
+    --win-bar: #f1f1f0;
+    --win-line: rgba(0, 0, 0, 0.08);
+    --win-fg: #1d1d1f;
+    --win-muted: rgba(0, 0, 0, 0.5);
+    --win-skel: rgba(0, 0, 0, 0.09);
+    --wall: radial-gradient(75% 65% at 22% 105%, rgba(140, 150, 255, 0.55), transparent 62%),
+      radial-gradient(55% 45% at 88% 10%, rgba(255, 190, 210, 0.5), transparent 60%),
+      linear-gradient(165deg, #e6e8f6 0%, #d7dcf3 45%, #c9d0ee 100%);
+    --menubar: rgba(255, 255, 255, 0.45);
+    --menubar-fg: rgba(0, 0, 0, 0.8);
+    --dock: rgba(255, 255, 255, 0.45);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f7f7f5;
+  --bg-elev: #ffffff;
+  --bg-sunk: #efefec;
+  --fg: #111111;
+  --fg-muted: #5c5c66;
+  --fg-dim: #6f6f78;
+  --accent: #5556e0;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(85, 86, 224, 0.1);
+  --line: rgba(0, 0, 0, 0.07);
+  --line-strong: rgba(0, 0, 0, 0.1);
+  --glass: rgba(0, 0, 0, 0.03);
+  --glass-strong: rgba(0, 0, 0, 0.05);
+  --shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.25);
+  --panel-bg: rgba(255, 255, 255, 0.72);
+  --panel-fg: #111111;
+  --panel-muted: #5c5c66;
+  --panel-dim: #7a7a84;
+  --panel-line: rgba(0, 0, 0, 0.08);
+  --panel-row: rgba(0, 0, 0, 0.05);
+  --win-bg: #ffffff;
+  --win-bar: #f1f1f0;
+  --win-line: rgba(0, 0, 0, 0.08);
+  --win-fg: #1d1d1f;
+  --win-muted: rgba(0, 0, 0, 0.5);
+  --win-skel: rgba(0, 0, 0, 0.09);
+  --wall: radial-gradient(75% 65% at 22% 105%, rgba(140, 150, 255, 0.55), transparent 62%),
+    radial-gradient(55% 45% at 88% 10%, rgba(255, 190, 210, 0.5), transparent 60%),
+    linear-gradient(165deg, #e6e8f6 0%, #d7dcf3 45%, #c9d0ee 100%);
+  --menubar: rgba(255, 255, 255, 0.45);
+  --menubar-fg: rgba(0, 0, 0, 0.8);
+  --dock: rgba(255, 255, 255, 0.45);
+  color-scheme: light;
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-bg-elev: var(--bg-elev);
+  --color-bg-sunk: var(--bg-sunk);
   --color-fg: var(--fg);
   --color-fg-muted: var(--fg-muted);
   --color-fg-dim: var(--fg-dim);
   --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-glass: var(--glass);
+  --color-glass-strong: var(--glass-strong);
+  --color-panel-fg: var(--panel-fg);
+  --color-panel-muted: var(--panel-muted);
+  --color-panel-dim: var(--panel-dim);
+  --color-win-fg: var(--win-fg);
+  --color-win-muted: var(--win-muted);
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-sm: var(--r-sm);
@@ -36,7 +146,6 @@
 }
 
 html {
-  color-scheme: dark;
   scroll-behavior: smooth;
 }
 
@@ -44,43 +153,63 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   font-feature-settings: "ss01", "cv11";
+  transition: background-color 200ms, color 200ms;
 }
 
 ::selection {
-  background: rgba(139, 140, 248, 0.35);
+  background: var(--accent-soft);
 }
 
-/* ---------- Type scale ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Type scale: 13 / 15 / 17 / 22 / 32 / 48 / 72 ---------- */
 .h-display {
-  font-size: clamp(2.5rem, 2rem + 3.6vw, 4.5rem);
-  line-height: 1.02;
-  letter-spacing: -0.035em;
+  font-size: clamp(3rem, 2.2rem + 3.4vw, 4.5rem);
+  line-height: 1;
+  letter-spacing: -0.03em;
   font-weight: 600;
   text-wrap: balance;
 }
 .h-section {
-  font-size: clamp(1.75rem, 1.4rem + 1.6vw, 2.5rem);
-  line-height: 1.08;
-  letter-spacing: -0.028em;
+  font-size: clamp(2rem, 1.6rem + 1.4vw, 3rem);
+  line-height: 1.06;
+  letter-spacing: -0.025em;
   font-weight: 600;
   text-wrap: balance;
 }
-.eyebrow {
-  font-size: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent);
+.h-card {
+  font-size: 1.375rem;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  font-weight: 600;
 }
 .lede {
   font-size: 1.0625rem;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--fg-muted);
+  max-width: 60ch;
   text-wrap: pretty;
+}
+.num {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
 }
 
 /* ---------- Surfaces ---------- */
@@ -89,11 +218,22 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
 }
-.hairline-top {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+.glass {
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  border: 1px solid var(--panel-line);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.win {
+  background: var(--win-bg);
+  color: var(--win-fg);
+  border: 1px solid var(--win-line);
+  box-shadow: var(--shadow);
 }
 
-/* Real SF-style keycap: light face, darker bottom lip. */
+/* Keycap: light face, darker bottom lip. */
 .keycap {
   display: inline-flex;
   align-items: center;
@@ -101,53 +241,20 @@ body {
   height: 1.375rem;
   padding: 0 0.4rem;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, var(--glass-strong), var(--glass));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 1px 0 rgba(0, 0, 0, 0.6);
-  font-family: var(--font-sans);
-  font-size: 0.72rem;
+    0 1px 0 var(--line-strong);
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--fg-muted);
   line-height: 1;
   white-space: nowrap;
-}
-.keycap-lg {
-  height: 1.05em;
-  padding: 0 0.28em;
-  border-radius: 0.22em;
-  font-size: 0.9em;
-  gap: 0.1em;
-  vertical-align: -0.04em;
-  border-color: rgba(255, 255, 255, 0.16);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 2px 0 rgba(0, 0, 0, 0.7);
+  font-variant-numeric: tabular-nums;
 }
 
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 2.75rem;
-  padding: 0 1.25rem;
-  border-radius: 999px;
-  background: var(--fg);
-  color: var(--bg);
-  font-size: 0.9375rem;
-  font-weight: 500;
-  transition:
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 200ms;
-}
-.btn-primary:hover {
-  transform: translateY(-1px);
-  background: #fff;
-}
-.btn-primary:active {
-  transform: translateY(0) scale(0.98);
-}
+.btn-primary,
 .btn-secondary {
   display: inline-flex;
   align-items: center;
@@ -155,25 +262,61 @@ body {
   height: 2.75rem;
   padding: 0 1.25rem;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--glass);
-  color: var(--fg);
   font-size: 0.9375rem;
   font-weight: 500;
-  transition:
-    border-color 200ms,
-    background-color 200ms;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--fg);
+  color: var(--bg);
+  transition: opacity 150ms;
+}
+.btn-primary:hover {
+  opacity: 0.88;
+}
+.btn-primary:disabled {
+  opacity: 0.6;
+}
+.btn-secondary {
+  border: 1px solid var(--line-strong);
+  color: var(--fg);
+  transition: border-color 150ms;
 }
 .btn-secondary:hover {
-  border-color: rgba(255, 255, 255, 0.24);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--fg-dim);
+}
+
+/* Nav links: animated underline, one property on hover. */
+.navlink {
+  position: relative;
+  padding: 0.25rem 0;
+  color: var(--fg-muted);
+  transition: color 150ms;
+}
+.navlink::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.navlink:hover {
+  color: var(--fg);
+}
+.navlink:hover::after {
+  transform: scaleX(1);
 }
 
 /* ---------- Hero entrance: CSS only, so the fold renders before hydration ---------- */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -181,22 +324,11 @@ body {
   }
 }
 .rise {
-  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--rise-delay, 0ms);
 }
 
-/* ---------- Hero-only grain ---------- */
-.grain {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.035;
-  mix-blend-mode: screen;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 160px 160px;
-}
-
-/* ---------- Caret + waveform ---------- */
+/* ---------- Caret, waveform, spinner ---------- */
 .caret {
   display: inline-block;
   width: 0.1em;
@@ -206,6 +338,9 @@ body {
   vertical-align: -0.18em;
   background: var(--accent);
   animation: blink 1s steps(2, start) infinite;
+}
+.caret-ink {
+  background: currentColor;
 }
 @keyframes blink {
   to {
@@ -242,7 +377,7 @@ body {
 /* ---------- The MacBook screen coordinate system ----------
    Everything drawn on the screen is sized in "u", a unit derived from the
    screen's own width so the UI scales with the laptop and stays crisp.
-   --L is the logical screen width in u: 960 on desktop, 600 on phones so
+   --L is the logical screen width in u: 880 on desktop, 600 on phones so
    the island and the bar stay legible when the laptop is small. */
 .screen {
   container-type: inline-size;
@@ -268,5 +403,8 @@ body {
   }
   .voice-bar {
     transform: scaleY(0.6);
+  }
+  .navlink::after {
+    transition: none;
   }
 }
