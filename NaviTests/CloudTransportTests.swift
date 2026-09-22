@@ -233,6 +233,52 @@ struct CloudErrorTests {
         #expect(bodyJSON(sent.first!)["model"] as? String == GeminiClient.defaultModel)
     }
 
+    @Test func maps429And503ToPlainMessages() async {
+        let host = "busy.test"
+        StubProtocol.install(host: host) { req in
+            req.url!.path == "/v1/jev"
+                ? StubProtocol.json(429, ["error": "rate_limited", "retryAfterSeconds": 4])
+                : StubProtocol.json(503, ["error": "upstream_unconfigured"])
+        }
+        let cloud = transport(host: host)
+        do { _ = try await cloud.send(cloud.get(path: "/v1/jev")); Issue.record("expected 429 error") }
+        catch NaviError.other(let m) { #expect(m == "Navi is busy, try again in 4 seconds.") }
+        catch { Issue.record("wrong error: \(error)") }
+        do { _ = try await cloud.send(cloud.get(path: "/v1/me")); Issue.record("expected 503 error") }
+        catch NaviError.other(let m) { #expect(m == "Navi isn't set up yet.") }
+        catch { Issue.record("wrong error: \(error)") }
+    }
+
+    @Test func vendorErrorsPassThrough() async {
+        let host = "vendor.test"
+        StubProtocol.install(host: host) { _ in StubProtocol.json(529, ["type": "error", "error": ["type": "overloaded_error"]]) }
+        let cloud = transport(host: host)
+        do { _ = try await cloud.send(cloud.get(path: "/v1/claude")); Issue.record("expected http error") }
+        catch NaviError.http(let status, _) { #expect(status == 529) }
+        catch { Issue.record("wrong error: \(error)") }
+    }
+
+    @Test func tierHeaderIsSurfaced() async throws {
+        let host = "tier.test"
+        StubProtocol.install(host: host) { _ in
+            StubProtocol.Reply(status: 200, headers: ["Content-Type": "application/json", "X-Navi-Tier": "pro"], body: Data("{}".utf8))
+        }
+        let seen = Seen()
+        let token = NotificationCenter.default.addObserver(forName: .naviCloudTierSeen, object: nil, queue: nil) { note in
+            seen.set(note.userInfo?["tier"] as? String)
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        let cloud = transport(host: host)
+        _ = try await cloud.send(cloud.get(path: "/v1/me"))
+        #expect(seen.value == "pro")
+    }
+
+    private final class Seen: @unchecked Sendable {
+        private let lock = NSLock(); private var v: String?
+        func set(_ s: String?) { lock.withLock { v = s } }
+        var value: String? { lock.withLock { v } }
+    }
+
     @Test func refreshesOnceOn401AndRetriesWithTheNewToken() async throws {
         let host = "refresh.test"
         StubProtocol.install(host: host) { req in
@@ -353,5 +399,52 @@ struct AccountErrorPresentationTests {
         #expect(PanelViewModel.accountPresentation(for: NaviError.other("boom"), quotas: Quotas()) == nil)
         #expect(NaviError.quotaExceeded(feature: "answer", tier: "free", resetsAt: nil).isAccountError)
         #expect(!NaviError.cancelled.isAccountError)
+    }
+
+    @Test func missingVendorKeyReadsAsSignInOutsideDeveloperMode() {
+        let wasDev = UserDefaults.standard.bool(forKey: "developerMode")
+        UserDefaults.standard.set(false, forKey: "developerMode")
+        defer { UserDefaults.standard.set(wasDev, forKey: "developerMode") }
+        let e = NaviError.missingAPIKey(.anthropic)
+        #expect(e.errorDescription == "Sign in to Navi to keep going.")
+        #expect(PanelViewModel.accountPresentation(for: e, quotas: Quotas())?.actionTitle == "Sign in")
+        #expect(e.isAccountError)
+    }
+}
+
+// MARK: - Account (main actor, no network)
+
+@MainActor
+struct NaviAccountTests {
+    @Test func signInFailureCallbackSurfacesTheMessage() {
+        let cloud = transport(host: "acct-fail.test", tokens: MemoryTokenStore())
+        let account = NaviAccount(cloud: cloud)
+        let handled = account.handle(url: URL(string: "navi://auth/callback?error=sign_in_failed&message=Link%20expired")!)
+        #expect(handled)
+        #expect(account.lastError == "Sign-in failed: Link expired")
+        #expect(!account.isSignedIn && !account.isSigningIn)
+        #expect(StubProtocol.requests(host: "acct-fail.test").isEmpty)   // no /auth/exchange
+        #expect(!account.handle(url: URL(string: "navi://voice")!))
+    }
+
+    @Test func effectiveTierAndTrialLabel() throws {
+        let ends = LenientDate.string(Date().addingTimeInterval(3 * 86400 + 60))
+        let trial = try AccountInfo.decode(Data("""
+        {"user":{"id":"u","email":"a@b.c"},"tier":"pro","trialEndsAt":"\(ends)",
+         "entitlements":{"answers":true,"tasks":true,"voice":true},"quotas":{"tasksPerMonth":300},"usage":{}}
+        """.utf8))
+        #expect(trial.tier == .pro && trial.trialDaysLeft() == 4)
+        let signedOut = NaviAccount(cloud: transport(host: "acct-tier.test", tokens: MemoryTokenStore()))
+        #expect(signedOut.planLabel == "Free")
+        // Signed out: entitled locally only when developer keys exist; on the cloud the server decides.
+        #expect(signedOut.entitlements == (signedOut.hasDeveloperKeys ? Entitlements.all : Entitlements.none))
+    }
+
+    @Test func signOutClearsTokensAndState() {
+        let tokens = MemoryTokenStore(access: "acc-1", refresh: "ref-1")
+        let account = NaviAccount(cloud: transport(host: "acct-out.test", tokens: tokens))
+        #expect(account.isSignedIn)
+        account.signOut()
+        #expect(!account.isSignedIn && tokens.accessToken == nil && tokens.refreshToken == nil)
     }
 }

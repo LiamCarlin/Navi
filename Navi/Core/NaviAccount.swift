@@ -71,6 +71,13 @@ final class NaviAccount: ObservableObject {
     /// Whether the user can be asked to upgrade (there is an account to bill).
     var canUpgrade: Bool { isSignedIn && tier != .proRecall }
 
+    /// `/v1/me.tier` is the *effective* tier: during the 7-day trial it is
+    /// `pro` with a `trialEndsAt`. "Pro trial · 6 days left" / "Pro" / "Free".
+    var planLabel: String {
+        if let days = trialDaysLeft { return "\(tier.displayName) trial · \(days) day\(days == 1 ? "" : "s") left" }
+        return tier.displayName
+    }
+
     // MARK: Lifecycle
 
     /// Observers + the refresh schedule. Called once from `AppDelegate`.
@@ -84,6 +91,13 @@ final class NaviAccount: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if (note.userInfo?["signedOut"] as? Bool) == true { self.clearState(reason: "session expired") }
+            }
+        })
+        observers.append(nc.addObserver(forName: .naviCloudTierSeen, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let raw = note.userInfo?["tier"] as? String else { return }
+                // The proxy echoes the effective tier on every call: a change means /v1/me is stale.
+                if Tier(rawValue: raw) != self.info?.tier { self.refreshIfSignedIn(reason: "tier header \(raw)") }
             }
         })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -132,11 +146,15 @@ final class NaviAccount: ObservableObject {
         func query(_ name: String) -> String? { comps?.queryItems?.first { $0.name == name }?.value }
         switch url.host {
         case "auth":
+            if path == "signout" { signOut(); return true }   // dev: `open navi://auth/signout`
             guard path == "callback" || path.isEmpty else { return false }
             if let err = query("error") {
+                // `navi://auth/callback?error=sign_in_failed&message=…` — no exchange, surface the message.
                 isSigningIn = false
-                lastError = "Sign-in failed: \(err)"
-                Log.app.error("account: sign-in callback error \(err, privacy: .public)")
+                let message = query("message")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                lastError = "Sign-in failed: \((message?.isEmpty == false ? message! : err).replacingOccurrences(of: "_", with: " "))"
+                Log.app.error("account: sign-in callback error \(err, privacy: .public): \(message ?? "", privacy: .public)")
+                bringWindowForward()
                 return true
             }
             guard let code = query("code"), !code.isEmpty else {

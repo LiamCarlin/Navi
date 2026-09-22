@@ -247,7 +247,9 @@ enum NaviError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingAPIKey(let k): return "Missing API key: \(k.rawValue). Add it in Navi → AI Providers."
+        case .missingAPIKey(let k):
+            // Without a Navi session the product answer is "sign in"; the key name is a developer detail.
+            return NaviSettings.developerMode ? "Missing API key: \(k.rawValue). Add it in Navi → Developer." : "Sign in to Navi to keep going."
         case .http(let s, let b): return "HTTP \(s): \(b.prefix(300))"
         case .decoding(let m): return "Decoding error: \(m)"
         case .permissionDenied(let p): return "Permission needed: \(p)"
@@ -272,6 +274,7 @@ enum NaviError: LocalizedError {
     var isAccountError: Bool {
         switch self {
         case .quotaExceeded, .notEntitled, .signedOut: return true
+        case .missingAPIKey: return !NaviSettings.developerMode
         default: return false
         }
     }

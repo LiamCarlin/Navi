@@ -206,6 +206,7 @@ final class CloudTransport: @unchecked Sendable {
             if http.statusCode == 401 { await signOutLocally(); throw NaviError.signedOut }
         }
         try Self.check(http, body: data, path: req.url?.path ?? "")
+        noteTier(in: http)
         return (data, http)
     }
 
@@ -228,6 +229,7 @@ final class CloudTransport: @unchecked Sendable {
             for try await line in bytes.lines { text += line }
             try Self.check(http, body: Data(text.utf8), path: req.url?.path ?? "")
         }
+        noteTier(in: http)
         return (bytes, http)
     }
 
@@ -274,15 +276,18 @@ final class CloudTransport: @unchecked Sendable {
 
     // MARK: Errors
 
-    /// `{error, feature, tier, resetsAt}` from a 402/403.
+    /// The proxy's error body: `{error, feature, tier, resetsAt}` on 402/403,
+    /// `{error:"rate_limited", retryAfterSeconds}` on 429,
+    /// `{error:"upstream_unconfigured"|"billing_unconfigured"}` on 503.
     struct ErrorBody: Decodable {
         var error: String?
         var message: String?
         var feature: String?
         var tier: String?
         var resetsAt: Date?
+        var retryAfterSeconds: Double?
 
-        private enum CodingKeys: String, CodingKey { case error, message, feature, tier, resetsAt }
+        private enum CodingKeys: String, CodingKey { case error, message, feature, tier, resetsAt, retryAfterSeconds }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             error = try? c.decodeIfPresent(String.self, forKey: .error)
@@ -290,10 +295,12 @@ final class CloudTransport: @unchecked Sendable {
             feature = try? c.decodeIfPresent(String.self, forKey: .feature)
             tier = try? c.decodeIfPresent(String.self, forKey: .tier)
             resetsAt = try c.decodeLenientDateIfPresent(forKey: .resetsAt)
+            retryAfterSeconds = try? c.decodeIfPresent(Double.self, forKey: .retryAfterSeconds)
         }
     }
 
-    /// Maps a non-2xx proxy response to a typed `NaviError`.
+    /// Maps a non-2xx proxy response to a typed `NaviError`. Vendor errors the
+    /// proxy passes through keep their status and body (`.http`).
     static func check(_ http: HTTPURLResponse, body: Data, path: String) throws {
         guard !(200..<300).contains(http.statusCode) else { return }
         let text = String(data: body, encoding: .utf8) ?? ""
@@ -308,11 +315,26 @@ final class CloudTransport: @unchecked Sendable {
             Log.app.info("cloud: not entitled (\(parsed?.feature ?? "?", privacy: .public), \(parsed?.tier ?? "?", privacy: .public))")
             throw NaviError.notEntitled(feature: parsed?.feature ?? "", tier: parsed?.tier ?? "")
         case 429:
-            throw NaviError.other("Navi is busy right now — try again in a moment.")
+            let wait = parsed?.retryAfterSeconds.map { max(1, Int($0.rounded(.up))) }
+            Log.app.info("cloud: rate limited (retry after \(wait ?? 0)s)")
+            throw NaviError.other(wait.map { "Navi is busy, try again in \($0) second\($0 == 1 ? "" : "s")." }
+                                  ?? "Navi is busy, try again in a moment.")
+        case 503 where parsed?.error == "upstream_unconfigured" || parsed?.error == "billing_unconfigured":
+            Log.app.error("cloud: \(parsed?.error ?? "unconfigured", privacy: .public)")
+            throw NaviError.other("Navi isn't set up yet.")
         default:
             Log.app.error("cloud: HTTP \(http.statusCode) on \(path, privacy: .public): \(text.prefix(300))")
             throw NaviError.http(status: http.statusCode, body: parsed?.message ?? parsed?.error ?? text)
         }
+    }
+
+    /// The proxy echoes `X-Navi-Tier` on every response: a change (upgrade,
+    /// trial end) refreshes the cached account without waiting for the timer.
+    static let tierHeader = "X-Navi-Tier"
+
+    private func noteTier(in http: HTTPURLResponse) {
+        guard let tier = http.value(forHTTPHeaderField: Self.tierHeader), !tier.isEmpty else { return }
+        NotificationCenter.default.post(name: .naviCloudTierSeen, object: nil, userInfo: ["tier": tier])
     }
 
     // MARK: Session lifecycle
@@ -442,4 +464,6 @@ final class CloudTransport: @unchecked Sendable {
 extension Notification.Name {
     /// Sign-in, sign-out, or a fresh `/v1/me` snapshot. userInfo `signedOut: true` on forced sign-out.
     static let naviAccountChanged = Notification.Name("navi.accountChanged")
+    /// A proxy response carried `X-Navi-Tier` (userInfo `tier`). `NaviAccount` refreshes when it differs.
+    static let naviCloudTierSeen = Notification.Name("navi.cloudTierSeen")
 }

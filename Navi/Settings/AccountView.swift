@@ -105,23 +105,19 @@ struct AccountView: View {
         Section("Plan") {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text(account.tier.displayName).font(.title3.weight(.semibold))
-                        if let days = account.trialDaysLeft {
-                            Text("Trial · \(days) day\(days == 1 ? "" : "s") left")
-                                .font(.caption.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.15), in: Capsule())
-                        }
-                    }
-                    Text(account.tier.summary).font(.callout).foregroundStyle(.secondary)
+                    Text(account.planLabel).font(.title3.weight(.semibold))
+                    Text(account.trialDaysLeft != nil
+                         ? "\(account.tier.summary) After the trial, keep Pro for $20/mo or drop to Free."
+                         : account.tier.summary)
+                        .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding(.vertical, 2)
 
             HStack(spacing: 10) {
-                if account.tier == .free {
-                    Button("Upgrade to Pro · $20/mo") { account.openCheckout(plan: .pro, interval: .month) }
+                if account.tier == .free || account.trialDaysLeft != nil {
+                    Button(account.tier == .free ? "Upgrade to Pro · $20/mo" : "Keep Pro · $20/mo") { account.openCheckout(plan: .pro, interval: .month) }
                         .buttonStyle(.borderedProminent)
                     Button("Pro yearly · $192") { account.openCheckout(plan: .pro, interval: .year) }
                 }

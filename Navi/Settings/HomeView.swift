@@ -207,14 +207,7 @@ struct PlanCard: View {
                 .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 if account.isSignedIn {
-                    HStack(spacing: 8) {
-                        Text("\(account.tier.displayName) plan").font(.title3.weight(.semibold))
-                        if let days = account.trialDaysLeft {
-                            Text("Trial · \(days) day\(days == 1 ? "" : "s") left")
-                                .font(.caption.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.15), in: Capsule())
-                        }
-                    }
+                    Text(account.planLabel).font(.title3.weight(.semibold))
                     Text(usageLine).font(.callout).foregroundStyle(.secondary)
                 } else if account.hasDeveloperKeys {
                     Text("Developer mode").font(.title3.weight(.semibold))

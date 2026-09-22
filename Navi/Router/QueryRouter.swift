@@ -435,7 +435,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
 
     func askRow(_ q: String, context: QueryContext, memory: [MemoryHit], score: Double = 0.05) -> SearchResult {
         let answers = self.answers
-        let subtitle = memory.isEmpty ? (claude.isConfigured ? "Answer with Claude" : "Sign in to Navi to ask")
+        let subtitle = memory.isEmpty ? (claude.isConfigured ? "Answer this question" : "Sign in to Navi to ask")
                                       : "Answer using \(memory.count) moment\(memory.count == 1 ? "" : "s") from screen memory"
         return SearchResult(id: "ask:\(q)", kind: .answer, title: "Ask Navi: \(q)", subtitle: subtitle,
                             icon: .system("sparkle"), score: score, shortcutHint: "⏎ Ask") {

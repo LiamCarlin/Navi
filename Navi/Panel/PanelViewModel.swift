@@ -132,7 +132,7 @@ final class PanelViewModel: ObservableObject {
             errorMessage = message
             upgradeActionTitle = title
             switch error as? NaviError {
-            case .signedOut: upgradeAction = { account.signIn() }
+            case .signedOut, .missingAPIKey: upgradeAction = { account.signIn() }
             case .notEntitled(let feature, _):
                 let recall = feature.hasPrefix("recall")
                 upgradeAction = { account.openCheckout(plan: recall ? .proRecall : .pro, interval: .month) }
@@ -178,6 +178,9 @@ final class PanelViewModel: ObservableObject {
             default: return ("That isn't included in the \(plan) plan.", "Upgrade")
             }
         case .signedOut:
+            return ("Sign in to Navi to keep going.", "Sign in")
+        case .missingAPIKey where !NaviSettings.developerMode:
+            // A BYOK key can only be "missing" when the account transport is not active: sign in.
             return ("Sign in to Navi to keep going.", "Sign in")
         default:
             return nil

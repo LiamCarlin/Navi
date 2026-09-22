@@ -129,7 +129,7 @@ struct OnboardingView: View {
                     Image(systemName: "checkmark.seal.fill").font(.system(size: 40)).foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Signed in").font(.system(size: 24, weight: .bold, design: .rounded))
-                        Text("\(account.email ?? "Your account") · \(account.tier.displayName)" + (account.trialDaysLeft.map { " · trial, \($0) days left" } ?? ""))
+                        Text("\(account.email ?? "Your account") · \(account.planLabel)")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }
