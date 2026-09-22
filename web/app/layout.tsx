@@ -32,15 +32,24 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0a0b",
-  colorScheme: "dark",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0b" },
+    { media: "(prefers-color-scheme: light)", color: "#f7f7f5" },
+  ],
+  colorScheme: "dark light",
   width: "device-width",
   initialScale: 1,
 };
 
+/* Runs before first paint: a stored choice wins, else the system scheme. Every storage access is guarded. */
+const themeScript = `(function(){try{var s=localStorage.getItem("navi-theme");var t=s;if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"}document.documentElement.dataset.theme=t;if(s==="light"||s==="dark"){var m=document.createElement("meta");m.name="theme-color";m.content=s==="light"?"#f7f7f5":"#0a0a0b";document.head.prepend(m)}}catch(e){}})();`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="min-h-dvh antialiased">{children}</body>
     </html>
   );

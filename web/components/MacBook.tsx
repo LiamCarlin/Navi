@@ -116,10 +116,7 @@ function Wallpaper() {
     <div
       className="absolute inset-0"
       aria-hidden="true"
-      style={{
-        background:
-          "radial-gradient(75% 65% at 22% 105%, rgba(139,140,248,0.55), transparent 62%), radial-gradient(55% 45% at 88% 10%, rgba(120,90,220,0.35), transparent 60%), radial-gradient(40% 40% at 60% 60%, rgba(60,80,180,0.18), transparent 70%), linear-gradient(165deg,#1b1b30 0%,#131324 45%,#0c0c16 100%)",
-      }}
+      style={{ background: "var(--wall)" }}
     />
   );
 }
@@ -127,24 +124,24 @@ function Wallpaper() {
 function MenuBar() {
   return (
     <div
-      className="absolute inset-x-0 top-0 z-10 flex items-center bg-black/25 text-white/80 backdrop-blur-md"
-      style={{ height: u(24), padding: `0 ${u(12)}`, fontSize: u(11) }}
+      className="absolute inset-x-0 top-0 z-10 flex items-center backdrop-blur-md"
+      style={{ height: u(24), padding: `0 ${u(12)}`, fontSize: u(11), background: "var(--menubar)", color: "var(--menubar-fg)" }}
       aria-hidden="true"
     >
-      <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: u(12), height: u(12), marginRight: u(14) }} className="text-white/90">
+      <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: u(12), height: u(12), marginRight: u(14) }}>
         <path d="M16.4 12.7c0-2.4 2-3.6 2-3.7-1.1-1.6-2.8-1.8-3.4-1.9-1.5-.1-2.8.9-3.6.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.1.8c1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.6 1.3-2.7 0 0-2.6-1-2.6-3.8zM14 5.6c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z" />
       </svg>
-      <span className="font-semibold text-white/90">Finder</span>
+      <span className="font-semibold">Finder</span>
       <span style={{ marginLeft: u(14) }}>File</span>
       <span style={{ marginLeft: u(14) }}>Edit</span>
       <span style={{ marginLeft: u(14) }}>View</span>
-      <span className="ml-auto flex items-center text-white/80" style={{ gap: u(12) }}>
-        <span className="flex items-center text-accent" style={{ gap: u(4) }}>
-          <Glyph style={{ width: u(11), height: u(11) }} />
-          <span className="text-white/85">Navi</span>
+      <span className="ml-auto flex items-center" style={{ gap: u(12) }}>
+        <span className="flex items-center" style={{ gap: u(4) }}>
+          <Glyph className="text-accent" style={{ width: u(11), height: u(11) }} />
+          <span>Navi</span>
         </span>
-        <span className="rounded-[2px] border border-white/60" style={{ width: u(16), height: u(8), padding: u(1) }}>
-          <span className="block h-full w-[80%] rounded-[1px] bg-white/85" />
+        <span className="rounded-[2px] border border-current opacity-80" style={{ width: u(16), height: u(8), padding: u(1) }}>
+          <span className="block h-full w-[80%] rounded-[1px] bg-current" />
         </span>
         <span>Mon 9:41</span>
       </span>
@@ -157,8 +154,8 @@ const DOCK = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6", 
 function Dock() {
   return (
     <div
-      className="absolute bottom-0 left-1/2 z-10 flex -translate-x-1/2 items-center border border-white/10 bg-white/10 backdrop-blur-md"
-      style={{ gap: u(6), padding: u(5), marginBottom: u(8), borderRadius: u(12) }}
+      className="absolute bottom-0 left-1/2 z-10 flex -translate-x-1/2 items-center backdrop-blur-md"
+      style={{ gap: u(6), padding: u(5), marginBottom: u(8), borderRadius: u(12), background: "var(--dock)", border: "1px solid var(--panel-line)" }}
       aria-hidden="true"
     >
       {DOCK.map((c, i) => (

@@ -2,7 +2,6 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useState } from "react";
-import { Reveal } from "./Reveal";
 
 const items = [
   {
@@ -31,49 +30,55 @@ export function FAQ() {
   const [open, setOpen] = useState<number | null>(0);
   const reduce = useReducedMotion();
   return (
-    <section id="faq" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
-      <div className="mx-auto max-w-3xl">
-        <Reveal>
+    <section id="faq" className="scroll-mt-16 px-6 py-24 md:py-32">
+      <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-12">
+        <div className="lg:col-span-4">
           <h2 className="h-section">Questions</h2>
-        </Reveal>
-        <Reveal delay={0.05}>
-          <div className="mt-8 divide-y divide-line border-y border-line">
-            {items.map((it, i) => {
-              const isOpen = open === i;
-              return (
-                <div key={it.q}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-4 py-5 text-left text-[15px] font-medium transition-colors duration-200 hover:text-accent"
-                    aria-expanded={isOpen}
-                    aria-controls={`faq-${i}`}
-                    onClick={() => setOpen(isOpen ? null : i)}
+        </div>
+        <div className="divide-y divide-line border-y border-line lg:col-span-7 lg:col-start-6">
+          {items.map((it, i) => {
+            const isOpen = open === i;
+            return (
+              <div key={it.q}>
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-4 py-5 text-left text-[17px] font-medium text-fg transition-colors duration-150 hover:text-fg-muted"
+                  aria-expanded={isOpen}
+                  aria-controls={`faq-${i}`}
+                  onClick={() => setOpen(isOpen ? null : i)}
+                >
+                  {it.q}
+                  <svg
+                    viewBox="0 0 24 24"
+                    className={`h-4 w-4 shrink-0 text-fg-dim transition-transform duration-200 ${isOpen ? "rotate-45" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    aria-hidden="true"
                   >
-                    {it.q}
-                    <span className={`shrink-0 text-fg-dim transition-transform duration-200 ${isOpen ? "rotate-45" : ""}`} aria-hidden="true">
-                      +
-                    </span>
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {isOpen && (
-                      <motion.div
-                        id={`faq-${i}`}
-                        key="content"
-                        initial={reduce ? false : { height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={reduce ? undefined : { height: 0, opacity: 0 }}
-                        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-                        className="overflow-hidden"
-                      >
-                        <p className="pb-5 text-sm leading-relaxed text-fg-muted">{it.a}</p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            })}
-          </div>
-        </Reveal>
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+                <AnimatePresence initial={false}>
+                  {isOpen && (
+                    <motion.div
+                      id={`faq-${i}`}
+                      key="content"
+                      initial={reduce ? false : { height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={reduce ? undefined : { height: 0, opacity: 0 }}
+                      transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <p className="max-w-[60ch] pb-5 text-[15px] leading-relaxed text-fg-muted">{it.a}</p>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </section>
   );

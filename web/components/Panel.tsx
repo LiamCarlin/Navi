@@ -20,6 +20,7 @@ export function Panel({
   rows,
   placeholder = "Ask Navi anything",
   showCaret = true,
+  pressed = false,
   className = "",
 }: {
   query: string;
@@ -27,6 +28,8 @@ export function Panel({
   rows: Row[] | null;
   placeholder?: string;
   showCaret?: boolean;
+  /** Return was pressed on the first row: it reads as selected and its keycap sits down. */
+  pressed?: boolean;
   className?: string;
 }) {
   const reduce = useReducedMotion();
@@ -35,15 +38,15 @@ export function Panel({
 
   return (
     <div
-      className={`overflow-hidden bg-[rgba(24,24,27,0.82)] text-fg shadow-[0_24px_60px_-16px_rgba(0,0,0,0.85),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl ${className}`}
-      style={{ borderRadius: u(16), border: `1px solid rgba(255,255,255,0.12)` }}
+      className={`glass overflow-hidden ${className}`}
+      style={{ borderRadius: u(16) }}
       role="img"
       aria-label={rows ? `Navi: ${query}` : "Navi bar"}
     >
       <div className="flex items-center" style={{ height: u(56), padding: `0 ${u(18)}`, gap: u(12) }}>
         <Glyph className="shrink-0 text-accent" style={{ width: u(18), height: u(18) }} />
         <div className="min-w-0 flex-1 truncate leading-none" style={{ fontSize: u(17) }}>
-          {text.length === 0 ? <span className="text-fg-dim">{placeholder}</span> : <span>{text}</span>}
+          {text.length === 0 ? <span className="text-panel-dim">{placeholder}</span> : <span>{text}</span>}
           {showCaret && <span className="caret" />}
         </div>
         <Keycap>⌘ Space</Keycap>
@@ -60,8 +63,7 @@ export function Panel({
         {rows && (
           <motion.ul
             key={rowKey}
-            className="border-t border-line"
-            style={{ padding: u(6) }}
+            style={{ padding: u(6), borderTop: "1px solid var(--panel-line)" }}
             initial={reduce ? false : { opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={reduce ? undefined : { opacity: 0, height: 0 }}
@@ -73,19 +75,21 @@ export function Panel({
                 initial={reduce ? false : { opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.04 + i * 0.05, duration: 0.22 }}
-                className={`flex items-center ${i === 0 ? "bg-accent-soft text-fg" : "text-fg-muted"}`}
-                style={{ gap: u(12), padding: `${u(8)} ${u(10)}`, borderRadius: u(10) }}
+                className={`flex items-center ${i === 0 ? "text-panel-fg" : "text-panel-muted"}`}
+                style={{ gap: u(12), padding: `${u(8)} ${u(10)}`, borderRadius: u(10), background: i === 0 ? "var(--accent-soft)" : undefined }}
               >
                 <RowIcon icon={row.icon} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate leading-tight" style={{ fontSize: u(14) }}>
                     {row.title}
                   </div>
-                  <div className="text-fg-dim" style={{ fontSize: u(11), marginTop: u(2) }}>
+                  <div className="text-panel-dim" style={{ fontSize: u(11), marginTop: u(2) }}>
                     {row.kind}
                   </div>
                 </div>
-                <Keycap dim={i !== 0}>⏎ {row.hint}</Keycap>
+                <Keycap dim={i !== 0} down={pressed && i === 0}>
+                  ⏎ {row.hint}
+                </Keycap>
               </motion.li>
             ))}
           </motion.ul>
@@ -95,16 +99,18 @@ export function Panel({
   );
 }
 
-function Keycap({ children, dim = false }: { children: React.ReactNode; dim?: boolean }) {
+function Keycap({ children, dim = false, down = false }: { children: React.ReactNode; dim?: boolean; down?: boolean }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center whitespace-nowrap border border-white/12 bg-white/6 text-fg-muted ${dim ? "opacity-50" : ""}`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap text-panel-muted transition-transform duration-100 ${dim ? "opacity-50" : ""} ${down ? "translate-y-px" : ""}`}
       style={{
         height: u(20),
         padding: `0 ${u(6)}`,
         borderRadius: u(5),
         fontSize: u(11),
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 0 rgba(0,0,0,0.5)",
+        border: "1px solid var(--panel-line)",
+        background: "var(--panel-row)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
       }}
     >
       {children}
