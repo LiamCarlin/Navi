@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.viewModel.onVoiceRequested = { [weak self] in self?.toggleVoice() }
         hotKey = HotKeyManager()
         hotKey.onActivate = { [weak self] in self?.togglePanel() }
+        hotKey.onVoice = { [weak self] in self?.toggleVoice() }
         hotKey.register(settings: NaviSettings.shared)
 
         services.startBackgroundServices()
@@ -43,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.openMainWindow()
             }
+        } else if NaviSettings.shared.voiceStartsAtLaunch, Permissions.microphone == .granted {
+            // Hands-free from login: the island comes down on its own.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.voiceController.start() }
         }
         Log.app.info("Navi launched")
     }

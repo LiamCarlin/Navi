@@ -182,6 +182,27 @@ struct VoiceBrowserTests {
         #expect(!JevDriver.isSubmit(.init(action: "Press ⌘N", kind: "key", text: nil, pageChanged: true)))
     }
 
+    // MARK: Browser chrome in the AX table
+
+    @Test func browserChromeIsTidied() {
+        func el(_ role: String, _ label: String, web: Bool) -> AXElement {
+            AXElement(id: "", role: role, label: label, frame: CGRect(x: 0, y: 0, width: 40, height: 20), actions: ["AXPress"], isWebContent: web)
+        }
+        let raw = [
+            el("AXButton", "close button", web: false), el("AXButton", "this button also has an action to zoom the window", web: false),
+            el("AXButton", "Close", web: false), el("AXPopUpButton", "ChatGPT\nHas access to this site", web: false),
+            el("AXRadioButton", "Stories • Instagram - Memory usage - 473 MB", web: false),
+            el("AXButton", "Back", web: false), el("AXTextField", "Address and search bar", web: false),
+            el("AXButton", "Close", web: true), el("AXLink", "greglav Verified", web: true), el("AXButton", "Install Instagram", web: false),
+        ]
+        let tidy = AXSnapshot.tidyBrowserChrome(raw)
+        let labels = tidy.map(\.label)
+        #expect(labels == ["Stories • Instagram", "Back", "Address and search bar", "Close", "greglav Verified"])
+        #expect(tidy[0].path == "Browser UI › Tabs")
+        #expect(tidy[1].path == "Browser UI")
+        #expect(tidy[3].path == "")            // the page's own Close button is untouched
+    }
+
     // MARK: Runner vs native browser
 
     @Test func runnerIsOnlyForChromiumAndUnavailabilityIsRecognised() {
