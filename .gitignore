@@ -10,3 +10,6 @@ vendor/jev-ultrafast/.venv/
 vendor/jev-ultrafast/**/__pycache__/
 scripts/ultrafast/__pycache__/
 .claude/
+# Release signing keys never live in the repo (docs/RELEASE.md)
+*.pem
+*.p12

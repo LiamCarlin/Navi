@@ -109,6 +109,7 @@ struct MenuBarMenu: View {
             AppActivation.showDock()
         }
         Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
+        Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
         if NaviSettings.developerMode {
             // Vendor models are a developer detail; the product has one plan, not a model picker.

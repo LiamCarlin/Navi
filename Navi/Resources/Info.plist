@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>
@@ -45,6 +47,8 @@
 	<string>Navi can look up contacts when you ask.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Liam Carlin. All rights reserved.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Navi uses your location for Maps and weather queries.</string>
 	<key>NSMicrophoneUsageDescription</key>

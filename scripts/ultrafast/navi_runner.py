@@ -1141,13 +1141,55 @@ def reveal_tab(agent):
         pass
 
 
+def selftest():
+    """`--version` / `--selftest`: prove this interpreter can run a browser task —
+    every dependency imports — without touching Chrome or the network. Prints one
+    JSON object; exit 0 when everything imported. Used by scripts/dev/runtime-smoke.sh
+    and by Navi's Settings → Browser tasks status for the bundled runtime."""
+    import importlib
+    import platform
+
+    info = {
+        "python": platform.python_version(),
+        "executable": sys.executable,
+        "runner": os.path.abspath(__file__),
+        "bundled": "/Contents/Resources/browser-runtime/" in os.path.abspath(__file__),
+        "modules": {},
+    }
+    ok = True
+    for name in ("jev_ultrafast", "jev_ultrafast.agent", "jev_ultrafast.browser", "jev_ultrafast.model",
+                 "jev_ultrafast.questions", "browser_harness", "browser_harness.admin", "browser_harness.helpers",
+                 "browser_harness.run", "cdp_use", "httpx", "h2", "websockets", "certifi", "ssl"):
+        try:
+            mod = importlib.import_module(name)
+            info["modules"][name] = getattr(mod, "__version__", "ok")
+        except Exception as exc:  # noqa: BLE001 — report every failure, not the first
+            info["modules"][name] = f"ERROR: {exc}"
+            ok = False
+    try:
+        import importlib.metadata as metadata
+
+        info["browser_harness"] = metadata.version("browser-harness")
+    except Exception:  # noqa: BLE001 — dist-info stripped; not fatal
+        pass
+    info["ok"] = ok
+    print(json.dumps(info))
+    return 0 if ok else 1
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--goal", required=True)
+    parser.add_argument("--url")
+    parser.add_argument("--goal")
     parser.add_argument("--screenshots", action="store_true")
     parser.add_argument("--max-steps", type=int, default=0)
+    parser.add_argument("--version", "--selftest", dest="selftest", action="store_true",
+                        help="print the runtime's Python + dependency status as JSON and exit")
     args = parser.parse_args()
+    if args.selftest:
+        return selftest()
+    if not args.url or not args.goal:
+        parser.error("--url and --goal are required")
 
     speculative, rejected = install_adaptations()
     playbook = Playbook(goal=args.goal)

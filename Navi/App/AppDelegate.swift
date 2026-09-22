@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         services.startBackgroundServices()
         UltrafastBridge.prewarm()
+        Updater.shared.start()   // appcast check 30 s after launch, then daily (App/Updater.swift)
         NotificationCenter.default.addObserver(forName: .naviShowCurrentTask, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.showCurrentTask() }
         }
