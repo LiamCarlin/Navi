@@ -167,14 +167,14 @@ enum FrontmostProbe {
         guard let window = AXSnapshotter.attr(ax, kAXFocusedWindowAttribute) as! AXUIElement? ?? (AXSnapshotter.attr(ax, kAXMainWindowAttribute) as! AXUIElement?) else { return nil }
         var stack: [(AXUIElement, Int)] = [(window, 0)]
         var visited = 0
-        while let (el, depth) = stack.popLast(), visited < 400 {
+        while let (el, depth) = stack.popLast(), visited < 250 {
             visited += 1
             if let role = AXSnapshotter.attr(el, kAXRoleAttribute) as? String, role == "AXWebArea" {
                 if let u = AXSnapshotter.attr(el, "AXURL") as? URL { return u.absoluteString }
                 if let u = AXSnapshotter.attr(el, "AXURL") as? String { return u }
                 if let doc = AXSnapshotter.attr(el, kAXDocumentAttribute) as? String { return doc }
             }
-            guard depth < 12, let children = AXSnapshotter.elements(AXSnapshotter.attr(el, kAXChildrenAttribute)) else { continue }
+            guard depth < 10, let children = AXSnapshotter.elements(AXSnapshotter.attr(el, kAXChildrenAttribute)) else { continue }
             for c in children.prefix(40) { stack.append((c, depth + 1)) }
         }
         return nil
