@@ -51,10 +51,13 @@ echo
 
 (( TASK )) || { echo "▸ 3/3 task skipped (--no-task)"; exit 0; }
 echo "▸ 3/3 one-step task: \"$GOAL\" on $URL (background tab, closed afterwards)"
-KEYS="$(security find-generic-password -s com.liamcarlin.navi -a keys -w 2>/dev/null || true)"
-JEV="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("TYPESAFE_API_KEY",""))' 2>/dev/null || true)"
-ANTH="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ANTHROPIC_API_KEY",""))' 2>/dev/null || true)"
-[[ -n "$JEV" ]] || JEV="${TYPESAFE_API_KEY:-}"
+# Keys: the environment first (no Keychain prompt), else Navi's Keychain item (may prompt once).
+JEV="${TYPESAFE_API_KEY:-}"; ANTH="${ANTHROPIC_API_KEY:-}"
+if [[ -z "$JEV" ]]; then
+  KEYS="$(security find-generic-password -s com.liamcarlin.navi -a keys -w 2>/dev/null || true)"
+  JEV="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("TYPESAFE_API_KEY",""))' 2>/dev/null || true)"
+  [[ -n "$ANTH" ]] || ANTH="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ANTHROPIC_API_KEY",""))' 2>/dev/null || true)"
+fi
 [[ -n "$JEV" ]] || { echo "    no TYPESAFE_API_KEY (Keychain or env) — cannot run a task"; exit 1; }
 [[ "$DOCTOR" == "ready" ]] || { echo "    Chrome is not reachable ($DOCTOR) — open Chrome and allow remote debugging (chrome://inspect/#remote-debugging)"; exit 1; }
 "${CLEAN[@]}" TYPESAFE_API_KEY="$JEV" ANTHROPIC_API_KEY="${ANTH:-${ANTHROPIC_API_KEY:-}}" TYPESAFE_MODEL=jev-latest \
