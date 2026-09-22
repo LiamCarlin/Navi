@@ -12,6 +12,58 @@ import Foundation
 enum UltrafastBridge {
     // MARK: Runtime location
 
+    /// The Python that runs browser tasks. Release builds carry one inside the app
+    /// (`Contents/Resources/browser-runtime`, built by `scripts/bundle-runtime.sh`);
+    /// Debug builds use the source checkout's `vendor/jev-ultrafast/.venv`.
+    struct Runtime: Equatable {
+        let python: URL             // interpreter to launch
+        let runner: URL             // navi_runner.py
+        let scripts: URL            // doctor.sh / approve.sh
+        let workingDirectory: URL
+        let isBundled: Bool
+        /// `-I -B` for the bundle: it is sealed by codesign, so Python must not write
+        /// bytecode into it, and no user site-packages or PYTHON* variables leak in.
+        var interpreterFlags: [String] { isBundled ? ["-I", "-B"] : [] }
+    }
+
+    /// Resolution order: bundled runtime → repo checkout → nil ("not installed").
+    /// `NAVI_DISABLE_BUNDLED_RUNTIME=1` / `NAVI_DISABLE_REPO_RUNTIME=1` skip a source
+    /// (scripts/dev/runtime-smoke.sh checks the bundle with the checkout hidden).
+    static var runtime: Runtime? {
+        let env = ProcessInfo.processInfo.environment
+        if env["NAVI_DISABLE_BUNDLED_RUNTIME"] != "1", let bundled = bundledRuntime { return bundled }
+        if env["NAVI_DISABLE_REPO_RUNTIME"] != "1", let repo = repoRuntime { return repo }
+        return nil
+    }
+
+    /// `Navi.app/Contents/Resources/browser-runtime/python-<arch>` (see scripts/bundle-runtime.sh).
+    static var bundledRuntime: Runtime? {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let root = res.appendingPathComponent("browser-runtime")
+        #if arch(x86_64)
+        let tree = "python-x86_64"
+        #else
+        let tree = "python-arm64"
+        #endif
+        let python = root.appendingPathComponent("\(tree)/bin/python3.12")
+        let runner = root.appendingPathComponent("navi_runner.py")
+        guard FileManager.default.isExecutableFile(atPath: python.path),
+              FileManager.default.fileExists(atPath: runner.path) else { return nil }
+        return Runtime(python: python, runner: runner, scripts: root.appendingPathComponent("bin"),
+                       workingDirectory: root, isBundled: true)
+    }
+
+    /// The source checkout (`vendor/jev-ultrafast/.venv`, installed by scripts/ultrafast/setup.sh).
+    /// Its interpreter may not exist yet — `runtimeStatus()` reports `.missingVenv`.
+    static var repoRuntime: Runtime? {
+        guard let root = repoRoot else { return nil }
+        let vendor = root.appendingPathComponent("vendor/jev-ultrafast")
+        return Runtime(python: vendor.appendingPathComponent(".venv/bin/python"),
+                       runner: root.appendingPathComponent("scripts/ultrafast/navi_runner.py"),
+                       scripts: root.appendingPathComponent("scripts/ultrafast"),
+                       workingDirectory: vendor, isBundled: false)
+    }
+
     /// Repo root that holds `vendor/jev-ultrafast` and `scripts/ultrafast`.
     /// Order: explicit setting → bundled copy → the source checkout.
     static var repoRoot: URL? {
@@ -53,16 +105,23 @@ enum UltrafastBridge {
     }
 
     static func runtimeStatus() -> RuntimeStatus {
+        let probe = ["-c", "import sys, jev_ultrafast, browser_harness; print(sys.version.split()[0])"]
+        if let rt = runtime, rt.isBundled {
+            let (out, code) = shell(rt.python.path, rt.interpreterFlags + probe, cwd: rt.workingDirectory)
+            return code == 0 ? .ready("Python " + out.trimmingCharacters(in: .whitespacesAndNewlines) + " · bundled with Navi")
+                             : .error("Bundled runtime failed: " + String(out.suffix(160)))
+        }
         guard uvPath != nil else { return .missingUV }
-        guard let vendor = vendorDir else { return .missingRepo }
-        let py = vendor.appendingPathComponent(".venv/bin/python").path
-        guard FileManager.default.isExecutableFile(atPath: py) else { return .missingVenv }
-        let (out, code) = shell(py, ["-c", "import sys, jev_ultrafast, browser_harness; print(sys.version.split()[0])"], cwd: vendor)
+        guard let rt = runtime else { return .missingRepo }
+        guard FileManager.default.isExecutableFile(atPath: rt.python.path) else { return .missingVenv }
+        let (out, code) = shell(rt.python.path, probe, cwd: rt.workingDirectory)
         return code == 0 ? .ready("Python " + out.trimmingCharacters(in: .whitespacesAndNewlines)) : .missingVenv
     }
 
-    /// `scripts/ultrafast/setup.sh` — installs uv deps into vendor/.venv.
+    /// `scripts/ultrafast/setup.sh` — installs uv deps into vendor/.venv (dev builds only;
+    /// the bundled runtime has nothing to install).
     static func installRuntime() async -> (ok: Bool, log: String) {
+        if let rt = runtime, rt.isBundled { return (true, "The browser runtime ships inside Navi — nothing to install.") }
         guard let root = repoRoot else { return (false, "vendor/jev-ultrafast not found") }
         return await Task.detached {
             let (out, code) = shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/setup.sh").path], cwd: root, timeout: 600)
@@ -84,9 +143,10 @@ enum UltrafastBridge {
     }
 
     static func chromeStatus() async -> ChromeStatus {
-        guard let root = repoRoot else { return .runtimeMissing }
+        guard let rt = runtime else { return .runtimeMissing }
         return await Task.detached {
-            let (out, _) = shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/doctor.sh").path], cwd: root, timeout: 40)
+            let (out, _) = shell("/bin/zsh", [rt.scripts.appendingPathComponent("doctor.sh").path], cwd: rt.workingDirectory,
+                                 timeout: 40, extraEnv: ["NAVI_PYTHON": rt.python.path])
             let line = out.split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
             switch line {
             case "ready": return .ready
@@ -108,9 +168,10 @@ enum UltrafastBridge {
     }
 
     static func approveChromeConnection() async -> String {
-        guard let root = repoRoot else { return "runtime missing" }
+        guard let rt = runtime else { return "runtime missing" }
         return await Task.detached {
-            shell("/bin/zsh", [root.appendingPathComponent("scripts/ultrafast/approve.sh").path], cwd: root, timeout: 45).0
+            shell("/bin/zsh", [rt.scripts.appendingPathComponent("approve.sh").path], cwd: rt.workingDirectory,
+                  timeout: 45, extraEnv: ["NAVI_PYTHON": rt.python.path]).0
         }.value
     }
 
@@ -119,11 +180,10 @@ enum UltrafastBridge {
     /// Starts the Browser Harness daemon (Chrome CDP bridge) in the background so
     /// the first browser task skips the ~1 s connect. Safe to call repeatedly.
     static func prewarm() {
-        guard let vendor = vendorDir else { return }
-        let python = vendor.appendingPathComponent(".venv/bin/python").path
-        guard FileManager.default.isExecutableFile(atPath: python) else { return }
+        guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else { return }
         Task.detached(priority: .utility) {
-            let (out, code) = shell(python, ["-c", "from browser_harness.admin import ensure_daemon; ensure_daemon(); print('warm')"], cwd: vendor, timeout: 30)
+            let (out, code) = shell(rt.python.path, rt.interpreterFlags + ["-c", "from browser_harness.admin import ensure_daemon; ensure_daemon(); print('warm')"],
+                                    cwd: rt.workingDirectory, timeout: 30)
             Log.agent.info("ultrafast prewarm: \(code == 0 ? "ready" : out.suffix(160))")
         }
     }
@@ -156,6 +216,17 @@ enum UltrafastBridge {
         env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
         // Web-app playbooks (`AppSkills`): the runner adds the one matching each page to Jev's state.
         env["NAVI_PLAYBOOKS_JSON"] = AppSkills.webPlaybooksJSON()
+        if let rt = runtime {
+            env["NAVI_PYTHON"] = rt.python.path            // doctor.sh / approve.sh and the daemon
+            if rt.isBundled {
+                env["PYTHONDONTWRITEBYTECODE"] = "1"      // the bundle is sealed by codesign
+                env["PYTHONNOUSERSITE"] = "1"
+                // The static OpenSSL in python-build-standalone has no system trust store path.
+                let certs = rt.python.deletingLastPathComponent().deletingLastPathComponent()
+                    .appendingPathComponent("lib/python3.12/site-packages/certifi/cacert.pem")
+                if FileManager.default.fileExists(atPath: certs.path) { env["SSL_CERT_FILE"] = certs.path }
+            }
+        }
         return env
     }
 
@@ -266,9 +337,7 @@ enum UltrafastBridge {
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
                         allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false,
                         attachURL: String? = nil) async -> (outcome: RunOutcome, text: String?) {
-        guard let vendor = vendorDir, let runner = runnerScript,
-              case let python = vendor.appendingPathComponent(".venv/bin/python").path,
-              FileManager.default.isExecutableFile(atPath: python) else {
+        guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else {
             handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
             return (.failed, nil)
         }
@@ -285,13 +354,13 @@ enum UltrafastBridge {
         var outcome: RunOutcome = .failed
         var finalText: String?
         let proc = Process()
-        // The venv's interpreter directly: no uv resolution, no lockfile check per task.
-        proc.executableURL = URL(fileURLWithPath: python)
-        var args = ["-u", runner.path, "--url", url, "--goal", task]
+        // The interpreter directly: no uv resolution, no lockfile check per task.
+        proc.executableURL = rt.python
+        var args = rt.interpreterFlags + ["-u", rt.runner.path, "--url", url, "--goal", task]
         if maxSteps > 0 { args += ["--max-steps", String(maxSteps)] }
         if screenshots { args.append("--screenshots") }
         proc.arguments = args
-        proc.currentDirectoryURL = vendor
+        proc.currentDirectoryURL = rt.workingDirectory
         proc.environment = env
         let out = Pipe(), err = Pipe()
         proc.standardOutput = out
@@ -511,13 +580,16 @@ enum UltrafastBridge {
     }
 
     @discardableResult
-    static func shell(_ launchPath: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval = 20) -> (String, Int32) {
+    static func shell(_ launchPath: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval = 20,
+                      extraEnv: [String: String] = [:]) -> (String, Int32) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = args
         p.currentDirectoryURL = cwd
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env.merge(extraEnv) { $1 }
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
