@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 
 /// Spotlight-index file search (`NSMetadataQuery`) scoped to the home folder.
 /// Hard-capped at 400 ms: whatever has been gathered by then is returned.
@@ -9,6 +10,8 @@ enum FileSearch {
         let path: String
         let name: String
         let modified: Date?
+        /// Spotlight's localized kind ("PDF document", "Folder"); nil when the index has none.
+        var kind: String? = nil
     }
 
     static let filePrefixes = ["open file ", "find file ", "find ", "open ", "file ", "show ", "search "]
@@ -47,11 +50,10 @@ enum FileSearch {
     @MainActor
     static func results(for query: String, limit: Int = 8) async -> [SearchResult] {
         let hits = await search(query, limit: limit)
-        let rel = RelativeDateTimeFormatter(); rel.unitsStyle = .abbreviated
+        let now = Date()
         return hits.enumerated().map { (i, h) in
-            let dir = ((h.path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
-            var subtitle = dir
-            if let m = h.modified { subtitle += " · \(rel.localizedString(for: m, relativeTo: Date()))" }
+            let kind = h.kind ?? kindDescription(forPath: h.path)
+            let subtitle = subtitle(kind: kind, modified: h.modified, relativeTo: now)
             let url = URL(fileURLWithPath: h.path)
             return SearchResult(id: "file:\(h.path)", kind: .file, title: h.name, subtitle: subtitle,
                                 icon: .file(h.path), score: 0.7 - Double(i) * 0.01, shortcutHint: "⏎ Open") {
@@ -59,6 +61,40 @@ enum FileSearch {
                 return .dismiss
             }
         }
+    }
+
+    // MARK: - Subtitle (never a path)
+
+    /// "PDF document · Modified 2 days ago": the kind, then when it changed.
+    /// The directory is never shown — Spotlight doesn't either.
+    static func subtitle(kind: String?, modified: Date?, relativeTo now: Date = Date(),
+                         locale: Locale = .autoupdatingCurrent) -> String {
+        let trimmed = kind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var s = trimmed.isEmpty ? "File" : trimmed
+        if let modified {
+            let rel = RelativeDateTimeFormatter()
+            rel.unitsStyle = .full
+            rel.locale = locale
+            s += " · Modified \(rel.localizedString(for: modified, relativeTo: now))"
+        }
+        return s
+    }
+
+    /// The system's localized kind for a file name: "PDF document",
+    /// "Swift Source", "Application"; "Folder" for a directory without a
+    /// meaningful extension; "File" when nothing better is known.
+    static func kindDescription(extension ext: String, isDirectory: Bool) -> String {
+        if !ext.isEmpty, let type = UTType(filenameExtension: ext), !type.isDynamic,
+           let d = type.localizedDescription, !d.isEmpty {
+            return d
+        }
+        return isDirectory ? "Folder" : "File"
+    }
+
+    static func kindDescription(forPath path: String) -> String {
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        return kindDescription(extension: (path as NSString).pathExtension, isDirectory: isDir.boolValue)
     }
 
     /// Owns one NSMetadataQuery lifecycle on the main thread.
@@ -107,7 +143,8 @@ enum FileSearch {
                           let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
                     let name = (item.value(forAttribute: NSMetadataItemDisplayNameKey) as? String) ?? (path as NSString).lastPathComponent
                     let mod = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
-                    hits.append(Hit(path: path, name: name, modified: mod))
+                    let kind = item.value(forAttribute: NSMetadataItemKindKey) as? String
+                    hits.append(Hit(path: path, name: name, modified: mod, kind: kind))
                 }
             }
             query.stop()

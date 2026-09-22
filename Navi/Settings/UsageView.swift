@@ -1,61 +1,61 @@
 import SwiftUI
 
-/// Local, rough cost tracking. Token counts come from provider responses;
-/// prices are list prices per million tokens (Sept 2026).
-enum Pricing {
-    struct Rate { let input: Double; let output: Double }   // $ per MTok
+/// What Navi has done for you this month, counted on this Mac: answers
+/// streamed and tasks run from the ⌘Space panel. The counters live in
+/// `UserDefaults` and roll over at the start of each month. (Token counts and
+/// price estimates are a developer concern — see `TokenUsageSection`.)
+enum UsageCounters {
+    enum Kind { case answer, task }
 
-    static func claude(_ model: String) -> Rate {
-        if model.contains("opus") { return Rate(input: 5, output: 25) }
-        if model.contains("sonnet") { return Rate(input: 2, output: 10) }
-        return Rate(input: 1, output: 5)                     // haiku 4.5
+    static let answersKey = "usageAnswersThisMonth"
+    static let tasksKey = "usageTasksThisMonth"
+    static let monthKey = "usageMonth"
+
+    /// "2026-09" — the bucket a date's counts belong to.
+    static func month(of date: Date, calendar: Calendar = .current) -> String {
+        let c = calendar.dateComponents([.year, .month], from: date)
+        return String(format: "%04d-%02d", c.year ?? 0, c.month ?? 0)
     }
-    static let jevInputPerMTok = 0.042
-    /// Typical Navi Jev request (structured state + a few questions).
-    static let jevTokensPerCall = 1_200.0
+
+    static func record(_ kind: Kind, in defaults: UserDefaults = .standard, now: Date = Date()) {
+        rollOverIfNeeded(in: defaults, now: now)
+        let key = kind == .answer ? answersKey : tasksKey
+        defaults.set(defaults.integer(forKey: key) + 1, forKey: key)
+    }
+
+    static func counts(in defaults: UserDefaults = .standard, now: Date = Date()) -> (answers: Int, tasks: Int) {
+        rollOverIfNeeded(in: defaults, now: now)
+        return (defaults.integer(forKey: answersKey), defaults.integer(forKey: tasksKey))
+    }
+
+    static func reset(in defaults: UserDefaults = .standard, now: Date = Date()) {
+        defaults.set(0, forKey: answersKey)
+        defaults.set(0, forKey: tasksKey)
+        defaults.set(month(of: now), forKey: monthKey)
+    }
+
+    /// A new month starts both counters at zero.
+    static func rollOverIfNeeded(in defaults: UserDefaults, now: Date) {
+        if defaults.string(forKey: monthKey) != month(of: now) { reset(in: defaults, now: now) }
+    }
 }
 
 struct UsageView: View {
     @EnvironmentObject private var settings: NaviSettings
+    @AppStorage(UsageCounters.answersKey) private var answers = 0
+    @AppStorage(UsageCounters.tasksKey) private var tasks = 0
     @State private var confirmReset = false
 
-    private var rate: Pricing.Rate { Pricing.claude(settings.answerModel) }
-    private var claudeCost: Double {
-        Double(settings.usageClaudeInputTokens) / 1e6 * rate.input + Double(settings.usageClaudeOutputTokens) / 1e6 * rate.output
-    }
-    private var jevCost: Double {
-        Double(settings.usageJevCalls) * Pricing.jevTokensPerCall / 1e6 * Pricing.jevInputPerMTok
-    }
-
     var body: some View {
-        FormPage(title: "Usage", subtitle: "Counted on this Mac since the last reset. Dollar figures are estimates from list prices.") {
+        FormPage(title: "Usage", subtitle: "What Navi has done for you this month, counted on this Mac.") {
             Section {
                 HStack(spacing: 12) {
-                    tile("Jev calls", Fmt.tokens(settings.usageJevCalls), Fmt.usd(jevCost), "bolt.fill")
-                    tile("Claude in", Fmt.tokens(settings.usageClaudeInputTokens), Fmt.usd(Double(settings.usageClaudeInputTokens) / 1e6 * rate.input), "arrow.down.circle")
-                    tile("Claude out", Fmt.tokens(settings.usageClaudeOutputTokens), Fmt.usd(Double(settings.usageClaudeOutputTokens) / 1e6 * rate.output), "arrow.up.circle")
-                    tile("Digested frames", Fmt.tokens(settings.usageDigestFrames), "", "photo.stack")
+                    tile("Answers this month", answers, "text.bubble")
+                    tile("Tasks this month", tasks, "cursorarrow.motionlines")
                 }
                 .padding(.vertical, 4)
-                LabeledContent("Estimated total") {
-                    Text(Fmt.usd(claudeCost + jevCost)).font(.title3.weight(.semibold)).monospacedDigit()
-                }
-            }
-
-            Section("Prices used") {
-                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 4) {
-                    GridRow {
-                        Text("Model").font(.caption).foregroundStyle(.secondary)
-                        Text("Input / MTok").font(.caption).foregroundStyle(.secondary)
-                        Text("Output / MTok").font(.caption).foregroundStyle(.secondary)
-                    }
-                    priceRow("Jev (jev-latest)", "$0.042", "free")
-                    priceRow("claude-opus-5", "$5", "$25", highlight: settings.answerModel.contains("opus"))
-                    priceRow("claude-sonnet-5", "$2", "$10", highlight: settings.answerModel.contains("sonnet"))
-                    priceRow("claude-haiku-4-5", "$1", "$5", highlight: settings.answerModel.contains("haiku"))
-                }
-                Text("Claude tokens are pooled across models; the estimate applies your Answers model's rate (\(settings.answerModel)). Jev cost assumes ~\(Int(Pricing.jevTokensPerCall)) input tokens per call.")
-                    .font(.caption).foregroundStyle(.secondary)
+            } footer: {
+                Text("Answers are questions Navi answered in the panel; tasks are things it did for you on your Mac. Counters start over on the first of each month.")
             }
 
             Section {
@@ -63,8 +63,9 @@ struct UsageView: View {
                     Button("Reset counters", role: .destructive) { confirmReset = true }
                     Spacer()
                 }
-                .confirmationDialog("Reset all usage counters?", isPresented: $confirmReset) {
+                .confirmationDialog("Reset the usage counters?", isPresented: $confirmReset) {
                     Button("Reset", role: .destructive) {
+                        UsageCounters.reset()
                         settings.usageJevCalls = 0
                         settings.usageClaudeInputTokens = 0
                         settings.usageClaudeOutputTokens = 0
@@ -73,25 +74,16 @@ struct UsageView: View {
                 }
             }
         }
+        .onAppear { UsageCounters.rollOverIfNeeded(in: .standard, now: Date()) }
     }
 
-    private func tile(_ label: String, _ value: String, _ cost: String, _ symbol: String) -> some View {
+    private func tile(_ label: String, _ value: Int, _ symbol: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(label, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title2.weight(.semibold)).monospacedDigit()
-            Text(cost.isEmpty ? " " : "≈ \(cost)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Text(Fmt.tokens(value)).font(.title2.weight(.semibold)).monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func priceRow(_ m: String, _ i: String, _ o: String, highlight: Bool = false) -> some View {
-        GridRow {
-            Text(m).fontWeight(highlight ? .semibold : .regular)
-            Text(i).monospacedDigit()
-            Text(o).monospacedDigit()
-        }
-        .font(.callout)
     }
 }
