@@ -8,16 +8,24 @@ import Carbon.HIToolbox
 @MainActor
 final class HotKeyManager {
     var onActivate: (() -> Void)?
+    /// The voice shortcut (⌥Space by default): start / stop listening from anywhere.
+    var onVoice: (() -> Void)?
 
     private var hotKeyRef: EventHotKeyRef?
+    private var voiceHotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private var settingsObserver: NSObjectProtocol?
     private static let signature: OSType = 0x4E415649 // 'NAVI'
+    private static let panelID: UInt32 = 1
+    private static let voiceID: UInt32 = 2
 
     func register(settings: NaviSettings) {
         unregister()
         let keyCode = settings.hotKeyCode
         let mods = settings.hotKeyModifiers
+        let voiceOn = settings.voiceHotKeyEnabled
+        let voiceCode = settings.voiceHotKeyCode
+        let voiceMods = settings.voiceHotKeyModifiers
 
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
@@ -28,25 +36,33 @@ final class HotKeyManager {
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                               nil, MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             if hkID.signature == HotKeyManager.signature {
-                DispatchQueue.main.async { MainActor.assumeIsolated { me.onActivate?() } }
+                let isVoice = hkID.id == HotKeyManager.voiceID
+                DispatchQueue.main.async { MainActor.assumeIsolated { isVoice ? me.onVoice?() : me.onActivate?() } }
             }
             return noErr
         }, 1, &spec, selfPtr, &handlerRef)
 
-        let id = EventHotKeyID(signature: Self.signature, id: 1)
+        let id = EventHotKeyID(signature: Self.signature, id: Self.panelID)
         let status = RegisterEventHotKey(keyCode, mods, id, GetApplicationEventTarget(), 0, &hotKeyRef)
         if status != noErr {
             Log.app.error("RegisterEventHotKey failed: \(status)")
         } else {
             Log.app.info("Hotkey registered: code=\(keyCode) mods=\(mods)")
         }
+        if voiceOn, !(voiceCode == keyCode && voiceMods == mods) {
+            let vid = EventHotKeyID(signature: Self.signature, id: Self.voiceID)
+            let vs = RegisterEventHotKey(voiceCode, voiceMods, vid, GetApplicationEventTarget(), 0, &voiceHotKeyRef)
+            if vs != noErr { Log.app.error("Voice hotkey registration failed: \(vs)") } else { Log.app.info("Voice hotkey registered: code=\(voiceCode) mods=\(voiceMods)") }
+        }
 
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
         settingsObserver = NotificationCenter.default.addObserver(forName: .naviSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                if NaviSettings.shared.hotKeyCode != keyCode || NaviSettings.shared.hotKeyModifiers != mods {
-                    self.register(settings: NaviSettings.shared)
+                let s = NaviSettings.shared
+                if s.hotKeyCode != keyCode || s.hotKeyModifiers != mods
+                    || s.voiceHotKeyEnabled != voiceOn || s.voiceHotKeyCode != voiceCode || s.voiceHotKeyModifiers != voiceMods {
+                    self.register(settings: s)
                 }
             }
         }
@@ -54,11 +70,13 @@ final class HotKeyManager {
 
     func unregister() {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }
+        if let voiceHotKeyRef { UnregisterEventHotKey(voiceHotKeyRef); self.voiceHotKeyRef = nil }
         if let handlerRef { RemoveEventHandler(handlerRef); self.handlerRef = nil }
     }
 
     deinit {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        if let voiceHotKeyRef { UnregisterEventHotKey(voiceHotKeyRef) }
         if let handlerRef { RemoveEventHandler(handlerRef) }
     }
 

@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 
 struct AboutView: View {
+    @State private var developerCaption: String?
+    @State private var updateNote: String?
+
+    static let privacyURL = "https://navi.app/privacy"
+    static let termsURL = "https://navi.app/terms"
+    static let supportEmail = "support@navi.app"
+
     private var version: String {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
@@ -15,38 +22,61 @@ struct AboutView: View {
                     NaviMark(size: 56)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Navi").font(.title2.weight(.semibold))
-                        Text("A Jev-powered Spotlight replacement for macOS 26.").foregroundStyle(.secondary)
-                        Text("System One decisions by Jev (TypeSafe) · System Two by Claude (Anthropic)")
-                            .font(.caption).foregroundStyle(.tertiary)
+                        Text("Press ⌘Space and say what you want.").foregroundStyle(.secondary)
                     }
                 }
                 .padding(.vertical, 4)
             }
 
-            Section("Links") {
-                LinkPill(title: "Jev / TypeSafe docs", url: "https://docs.typesafe.ai")
-                LinkPill(title: "TypeSafe console", url: "https://console.typesafe.ai")
-                LinkPill(title: "Claude API docs", url: "https://platform.claude.com/docs")
-                LinkPill(title: "Navi source", url: "https://github.com/liamcarlin/Navi")
+            Section {
+                LabeledContent("Version") {
+                    Text(version)
+                        .textSelection(.enabled)
+                        .contentShape(Rectangle())
+                        .onTapGesture { versionTapped() }
+                        .help("Option-click to toggle developer mode")
+                }
+                HStack(spacing: 12) {
+                    Button("Check for updates…") { checkForUpdates() }
+                    if let updateNote {
+                        Text(updateNote).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                if let developerCaption {
+                    Label(developerCaption, systemImage: "hammer")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
-            Section("Diagnostics") {
-                LabeledContent("Bundle") { Text(Bundle.main.bundleIdentifier ?? "—").textSelection(.enabled) }
-                LabeledContent("Data") { Text(NaviSettings.dataDirectory.path).textSelection(.enabled).lineLimit(1).truncationMode(.middle) }
-                LabeledContent("Logs") {
-                    Text("log stream --predicate 'subsystem == \"com.liamcarlin.navi\"'")
-                        .font(.caption.monospaced()).textSelection(.enabled)
-                }
+            Section("Links") {
+                LinkPill(title: "Privacy policy", url: Self.privacyURL)
+                LinkPill(title: "Terms of use", url: Self.termsURL)
+                LinkPill(title: Self.supportEmail, url: "mailto:\(Self.supportEmail)")
             }
 
             Section {
                 HStack {
                     Button("Quit Navi", role: .destructive) { NSApp.terminate(nil) }
-                    Text("Stops the hotkey and background capture.").font(.caption).foregroundStyle(.secondary)
+                    Text("Stops the hotkey, voice control and Screen Memory.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                 }
             }
         }
+    }
+
+    /// ⌥-click on the version toggles the hidden Developer section.
+    private func versionTapped() {
+        guard NSEvent.modifierFlags.contains(.option) else { return }
+        DeveloperMode.isEnabled.toggle()
+        developerCaption = DeveloperMode.isEnabled ? "Developer mode on" : "Developer mode off"
+        // The sidebar lists sections from `SettingsSection.allCases`; nudge it to re-read.
+        SettingsNavigator.shared.objectWillChange.send()
+    }
+
+    /// Placeholder until the updater ships (distribution workstream).
+    private func checkForUpdates() {
+        updateNote = "You're on \(version). Automatic updates are coming soon."
     }
 }
 

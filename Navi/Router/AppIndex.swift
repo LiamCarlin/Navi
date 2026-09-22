@@ -361,9 +361,13 @@ final class AppIndex: @unchecked Sendable {
         }
     }
 
+    /// Row subtitle: the kind, never the folder the bundle lives in.
+    static func subtitle(isRunning: Bool) -> String {
+        isRunning ? "Running" : "App"
+    }
+
     static func result(for entry: AppEntry, score: Double, isRunning: Bool) -> SearchResult {
-        let folder = (entry.path as NSString).deletingLastPathComponent
-        let subtitle = isRunning ? "Running · \(abbreviate(folder))" : abbreviate(folder)
+        let subtitle = AppIndex.subtitle(isRunning: isRunning)
         return SearchResult(id: "app:\(entry.key)", kind: .app, title: entry.name, subtitle: subtitle,
                             icon: .appBundle(entry.path), score: score,
                             shortcutHint: isRunning ? "⏎ Switch to" : "⏎ Open") {
@@ -381,9 +385,5 @@ final class AppIndex: @unchecked Sendable {
             if let error { Log.router.error("launch \(entry.name) failed: \(error.localizedDescription)") }
         }
         recordLaunch(entry.key)
-    }
-
-    static func abbreviate(_ path: String) -> String {
-        (path as NSString).abbreviatingWithTildeInPath
     }
 }

@@ -327,6 +327,38 @@ No screenshots are taken in this loop. A 400 px thumbnail goes to the panel
 every third step when the live overlay is on and Screen Recording is granted;
 it is never sent to Jev.
 
+### Any browser (`Agent/NativeBrowser.swift`)
+
+Web steps have two drivers and the browser the user is looking at picks one:
+
+- **Chromium + the jev-ultrafast runtime installed** → the CDP runner
+  (`UltrafastBridge`): DOM element table, background tab. Fastest and richest,
+  but it needs `uv`, the Python venv and Chrome's remote debugging switched on.
+- **Anything else** — Safari, Arc, Firefox, Edge, Brave, Orion, or a fresh
+  install with no runtime — → the same Jev-first loop on the browser's
+  **accessibility tree**. The page is opened in that browser
+  (`NativeBrowser.open`), the step is pinned to it like any app, and
+  `AXSnapshotter` walks the `AXWebArea` (Chromium/Electron get
+  `AXEnhancedUserInterface`). `AXSnapshot.tidyBrowserChrome` drops the
+  browser's own controls Jev must never see (window buttons, tab-close ×,
+  extension pop-ups, promos), keeps Back / Reload / address bar / tabs marked
+  `Browser UI`, and the web skill for the page URL rides in `state.playbook`.
+  A runner that cannot connect (`NativeBrowser.isRunnerUnavailable`) falls
+  back to this path mid-run instead of failing.
+
+Browser-level instructions — *close the tab, go back, reload, next tab,
+scroll down, zoom in, address bar* — never reach either driver:
+`BrowserControls.match` recognises them locally and presses the shortcut in
+the browser (`VoiceCommand.browser`). They used to reach the page driver,
+which correctly found no element, answered BLOCKED and paid for a Claude
+diagnosis to say so.
+
+Page actions ("click …", "type …", "scroll …", "select …") spoken with a
+browser in front stay on the **current tab** (`TaskSurface.isPageAction`,
+`VoiceCommandExecutor.continuesOnCurrentTab`) even when Jev's `start_from`
+head said *web search* for a fragment — Googling the sentence once produced a
+results page explaining that Google cannot click things.
+
 ### Background mode (`NaviSettings.agentRunInBackground`, default on)
 
 The user asked for a task and went back to work; the loop above must not
@@ -497,23 +529,35 @@ task_complete > 0.8 or operation == DONE        → .completed(summary from hist
    … unless nothing has been done yet on an effect goal and confidence < 0.95
                                                 → .prematureDone: re-observe, ask once more
 operation head fails validate_choice            → fallback to Claude
-   (choice offered, probabilities cover exactly the offered ids, all finite in [0,1],
-    Σ ≈ 1 ± 0.02, chosen == argmax — same as jev-ultrafast model.validate_choice)
+   (choice offered and == argmax, all finite in [0,1]; ids the API omitted count as 0,
+    unoffered keys are ignored, Σ may drift by rounding — looser than jev-ultrafast's
+    validate_choice on purpose: a 24 % ⌘N once failed on a missing key and cost 10 s of vision)
 operation == NEED_VISION                        → fallback to Claude
 operation == BLOCKED, 3 consecutive non-WAIT actions with page_changed == false,
    or FailureTracker ≥ 3 (no change / same element again / action error)
                                                 → Claude COACHES once (see below), then .failed
-operation confidence < agentJevConfidenceThreshold (0.5) → fallback to Claude
+operation confidence < agentJevConfidenceThreshold (0.5):
+   task_complete ≥ 0.5 and something was done  → .completed (nothing sure left to do = done)
+   confidence ≥ actFloor (0.22) and the action is cheap to undo
+      (CLICK / TYPE_TEXT / SELECT / SCROLL / WAIT / OPEN_*, KEY ∈ tentativeKeys —
+       never ⌘W, ⌘↩, Delete, ⌘S)                → .actTentatively: taken as a hunch; the
+                                                  FailureTracker → coach catches a wrong one
+   otherwise                                    → fallback to Claude
 target head for the operation fails validation  → fallback to Claude
 TYPE_TEXT: text = the task's single quoted string (zero-latency) else Claude Haiku
-   with jev-ultrafast's TEXT_VALUE prompt; {"text": null} / invalid JSON → fallback to Claude
+   with jev-ultrafast's TEXT_VALUE prompt; {"text": null} / invalid JSON →
+   FieldText.localGuess (what the goal spells out: "tell her I'm late", "look up X" into a
+   search field) → only then fallback to Claude
+state.progress carries last_action / last_typed / last_action_submitted so task_complete
+   can see that the Return after the typed message was the end of the goal
 approval: JevGate.decide(is_irreversible, is_prohibited ∨ keyword heuristic, mode, readOnly = WAIT/SCROLL)
    — same rules as the Claude-only driver; a declined action proposed again ends the run
 ```
 
 **Claude fallback** is one bounded turn of the existing `computer_toolset_20260801`
 loop (≤ 3 tool rounds, then a one-line "Did:/Done:/Stopped:" summary that is
-appended to Jev's history). Budget: `agentMaxClaudeFallbacks` (6). Needs an
+appended to Jev's history). Budget: `agentMaxClaudeFallbacks` (6; voice runs
+cap it at 2 — the user is watching and can say the next thing). Needs an
 Anthropic key **and** Screen Recording; without them the run continues
 Jev-only and fails with a clear message the first time a fallback is needed.
 If Jev itself errors mid-run, Claude takes over the remaining steps.

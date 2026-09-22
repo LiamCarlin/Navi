@@ -58,15 +58,17 @@ struct SearchBarView: View {
     }
 
     /// Right side of the bar: a toast (when the panel is bar-only), otherwise
-    /// the intent Jev decided.
+    /// the intent pill — for users only the "Asks first" safety note on a
+    /// request that looks irreversible; the full decision in developer mode.
     @ViewBuilder
     private var trailingSlot: some View {
         ZStack(alignment: .trailing) {
             if let toast = vm.toast, !vm.hasContent {
                 ToastPill(text: toast)
                     .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
-            } else if let d = vm.decision, !vm.query.isEmpty {
-                IntentPill(decision: d)
+            } else if let d = vm.decision, !vm.query.isEmpty,
+                      let text = PanelWording.pillText(d, developer: DeveloperMode.isEnabled) {
+                IntentPill(decision: d, text: text, developer: DeveloperMode.isEnabled)
                     .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
             }
         }
@@ -135,7 +137,7 @@ struct VoiceButton: View {
 
 // MARK: - Sparkle
 
-/// Navi's sparkle. Rotates gently while Jev is routing, pulses while an answer streams.
+/// Navi's sparkle. Rotates gently while a query is being routed, pulses while an answer streams.
 struct SparkleGlyph: View {
     var isRouting: Bool
     var isAnswering: Bool
@@ -156,11 +158,19 @@ struct SparkleGlyph: View {
 
 // MARK: - Pills
 
-/// "Open app · 92%" — or a muted "local" pill when the heuristic router decided.
+/// The safety note ("Asks first", with the shield) on a request that looks
+/// irreversible. In developer mode: "Open app · 92%" — or a muted "local"
+/// pill when the heuristic router decided — with latency and transport in
+/// the tooltip. `text` comes from `PanelWording.pillText`.
 struct IntentPill: View {
     let decision: RouteDecision
+    let text: String
+    var developer: Bool = false
+
+    private var muted: Bool { developer && decision.source == .heuristic }
 
     private var tint: Color {
+        if !developer { return .orange }
         switch decision.intent {
         case .askQuestion: return .purple
         case .computerTask: return .pink
@@ -174,32 +184,30 @@ struct IntentPill: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if decision.source == .heuristic {
+            if muted {
                 Image(systemName: "cpu").font(.system(size: 9, weight: .bold))
-                Text("local")
-            } else {
-                if decision.isRisky {
-                    Image(systemName: "exclamationmark.shield.fill").font(.system(size: 9, weight: .bold))
-                }
-                Text(decision.intent.displayName)
-                Text("·").foregroundStyle(.tertiary)
-                Text("\(percent)%").monospacedDigit()
+            } else if decision.isRisky {
+                Image(systemName: "exclamationmark.shield.fill").font(.system(size: 9, weight: .bold))
             }
+            Text(text).monospacedDigit()
         }
         .font(.system(size: 11, weight: .semibold, design: .rounded))
-        .foregroundStyle(decision.source == .heuristic ? AnyShapeStyle(.secondary) : AnyShapeStyle(tint))
+        .foregroundStyle(muted ? AnyShapeStyle(.secondary) : AnyShapeStyle(tint))
         .padding(.horizontal, 10)
         .frame(height: 24)
-        .background(Capsule().fill(decision.source == .heuristic ? Color.primary.opacity(0.06) : tint.opacity(0.13)))
-        .overlay(Capsule().strokeBorder(decision.source == .heuristic ? Color.primary.opacity(0.08) : tint.opacity(0.28)))
+        .background(Capsule().fill(muted ? Color.primary.opacity(0.06) : tint.opacity(0.13)))
+        .overlay(Capsule().strokeBorder(muted ? Color.primary.opacity(0.08) : tint.opacity(0.28)))
         .fixedSize()
-        .help(decision.source == .heuristic
-              ? "Decided locally (Jev unavailable)"
-              : "Jev · \(decision.intent.displayName) · \(percent)% · \(decision.latencyMs) ms")
+        .help(tooltip)
     }
 
-    private var percent: Int {
-        Int(((decision.probabilities[decision.intent] ?? decision.confidence) * 100).rounded())
+    private var tooltip: String {
+        guard developer else { return "Navi will ask before anything irreversible" }
+        switch decision.source {
+        case .heuristic: return "Decided locally (Jev unavailable)"
+        case .cache: return "Jev (cached) · \(decision.intent.displayName)"
+        case .jev: return "Jev · \(decision.intent.displayName) · \(decision.latencyMs) ms"
+        }
     }
 }
 

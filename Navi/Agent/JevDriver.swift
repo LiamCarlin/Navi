@@ -190,6 +190,12 @@ struct JevDriver: Sendable {
         if let p = input.playbook { state["playbook"] = p }
         if !input.experience.isEmpty { state["experience"] = input.experience }
         var progress: [String: Any] = ["actions_taken": input.actionsTaken]
+        if let last = input.history.last(where: { $0.kind != "coach" && $0.kind != "declined" }) {
+            progress["last_action"] = last.action
+            if last.kind == "type_text", let t = last.text { progress["last_typed"] = t }
+            // A submit that changed the screen is usually the end of a "type … and send" goal.
+            if Self.isSubmit(last) { progress["last_action_submitted"] = true }
+        }
         if input.doneRejected {
             progress["note"] = "DONE was rejected once because nothing had been done yet; choose DONE again only if the result is already visible."
         }
@@ -199,6 +205,14 @@ struct JevDriver: Sendable {
                                      "earlier": input.conversation]
         }
         return state
+    }
+
+    /// Did this history entry submit something (Return / ⌘↩ / a Send-like button)?
+    static func isSubmit(_ e: HistoryEntry) -> Bool {
+        let a = e.action.lowercased()
+        if e.kind == "key" { return a.contains("return") || a.contains("⏎") || a.contains("↩") || a.contains("enter") }
+        if e.kind == "click" { return ["send", "submit", "post", "reply", "search", "go", "done", "save", "create", "confirm"].contains { a.contains("‘\($0)") || a.hasSuffix("\($0)’") } }
+        return false
     }
 
     static func serialize(_ obj: Any) -> String {
@@ -345,18 +359,24 @@ struct JevDriver: Sendable {
         var latencyMs: Int = 0
     }
 
-    /// jev-ultrafast `validate_choice`: the choice is offered, the distribution
-    /// covers exactly the offered ids, every number is finite in [0, 1], the
-    /// probabilities sum to ≈1 and the chosen option is the arg-max.
+    /// jev-ultrafast `validate_choice`, loosened where the API is merely
+    /// untidy rather than wrong: the choice must be an offered id and the
+    /// arg-max of the distribution, every number finite in [0, 1]. Keys the
+    /// distribution leaves out count as 0 (the API omits or rounds away small
+    /// probabilities on big heads), keys that were never offered are ignored,
+    /// and the sum may drift by rounding. A validation failure used to hand
+    /// the step to Claude — a 24 % ⌘N in Messages once cost a 10 s vision turn
+    /// because the distribution didn't list every one of 30 key combos.
     static func validate(_ head: Head?, ids: [String]) -> Bool {
         guard let head, ids.contains(head.choice) else { return false }
-        guard Set(head.probabilities.keys) == Set(ids) else { return false }
-        let numbers = Array(head.probabilities.values) + [head.confidence]
+        let offered = Set(ids)
+        let probs = head.probabilities.filter { offered.contains($0.key) }
+        let numbers = Array(probs.values) + [head.confidence]
         guard numbers.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return false }
-        let sum = head.probabilities.values.reduce(0, +)
-        guard abs(sum - 1) < 0.02 else { return false }
-        let top = head.probabilities.values.max() ?? 0
-        return (head.probabilities[head.choice] ?? -1) >= top - 1e-6
+        let sum = probs.values.reduce(0, +)
+        guard sum > 0.5, sum < 1.5 else { return false }
+        let top = probs.values.max() ?? 0
+        return (probs[head.choice] ?? -1) >= top - 1e-6
     }
 
     // MARK: Ask
@@ -395,10 +415,37 @@ struct JevDriver: Sendable {
     enum Decision: Equatable, Sendable {
         case finish(reason: String)
         case act(AgentAction)
+        /// Jev's best guess below the confidence threshold, for an action that is
+        /// cheap to undo: taken anyway (see `actFloor`) — `reason` for the timeline.
+        case actTentatively(AgentAction, reason: String)
         case fallbackToClaude(reason: String)
         case blocked(reason: String)
         /// DONE with nothing done yet on an effect goal: re-observe and ask once more.
         case prematureDone(reason: String)
+    }
+
+    /// Below `threshold` a step used to go to the vision model: 3–10 s and a
+    /// screenshot per step, when a wrong click costs ~300 ms, shows on screen
+    /// and is caught by the failure tracker (which then asks the coach once).
+    /// So a moderately unsure Jev acts anyway when the operation is reversible;
+    /// only a very unsure one, NEED_VISION or an unusable answer reach Claude.
+    static let actFloor = 0.22
+    /// P(task_complete) above which a low-confidence "what next?" means "nothing
+    /// — it's done" (the message went out, the field emptied) rather than
+    /// "hand it to Claude to find out".
+    static let finishWhenUnsureP = 0.5
+
+    /// Key presses safe to take on a hunch. Not here: closing (⌘W), sending
+    /// (⌘↩), deleting, saving — those need Jev to be sure or the gate to ask.
+    static let tentativeKeys: Set<String> = ["return", "escape", "tab", "space", "up", "down", "left", "right",
+                                             "cmd+l", "cmd+t", "cmd+f", "cmd+a", "cmd+n", "cmd+c", "ctrl+tab", "cmd+shift+t"]
+
+    /// May `action` be taken on a below-threshold hunch?
+    static func isTentativelySafe(_ action: AgentAction) -> Bool {
+        switch action {
+        case .click, .typeText, .select, .scroll, .wait, .openApp, .openURL: return true
+        case .key(let k): return tentativeKeys.contains(k.lowercased())
+        }
     }
 
     /// A DONE before any action, for a goal that asks for an effect, must be
@@ -445,8 +492,23 @@ struct JevDriver: Sendable {
         if op == .needVision { return .fallbackToClaude(reason: "Jev says the accessibility tree is insufficient for this step") }
         if op == .blocked { return .blocked(reason: "Jev chose BLOCKED: no supported operation can make progress") }
         let keepTyping = op == .typeText && typingGoal && opHead.confidence >= typeTextFloor
-        if opHead.confidence < threshold, !keepTyping {
-            return .fallbackToClaude(reason: "Jev is only \(Int(opHead.confidence * 100))% sure about \(op.rawValue) (threshold \(Int(threshold * 100))%)")
+        let unsure = opHead.confidence < threshold && !keepTyping
+        let unsureReason = "Jev is only \(Int(opHead.confidence * 100))% sure about \(op.rawValue) (threshold \(Int(threshold * 100))%)"
+        if unsure {
+            // Nothing obvious left to do and the goal looks satisfied: that is "done",
+            // not a reason to ask the vision model what else there might be.
+            if v.taskComplete >= finishWhenUnsureP, actionsTaken > 0 {
+                return .finish(reason: "Jev sees the goal satisfied (\(Int(v.taskComplete * 100))%) and nothing sure left to do")
+            }
+            if opHead.confidence < actFloor {
+                return .fallbackToClaude(reason: unsureReason)
+            }
+        }
+        // Resolve the action; below the threshold it is a hunch — taken only when cheap to undo.
+        func resolved(_ action: AgentAction) -> Decision {
+            guard unsure else { return .act(action) }
+            guard isTentativelySafe(action) else { return .fallbackToClaude(reason: unsureReason) }
+            return .actTentatively(action, reason: unsureReason)
         }
         if let headName = op.targetHead {
             let ids = request.heads[headName] ?? []
@@ -454,25 +516,25 @@ struct JevDriver: Sendable {
                 return .fallbackToClaude(reason: "Jev's \(headName) answer failed validation")
             }
             switch op {
-            case .click: return .act(.click(elementID: "e\(t.choice)"))
-            case .typeText: return .act(.typeText(elementID: "e\(t.choice)"))
+            case .click: return resolved(.click(elementID: "e\(t.choice)"))
+            case .typeText: return resolved(.typeText(elementID: "e\(t.choice)"))
             case .select:
                 guard let s = request.selectTargets[t.choice] else { return .fallbackToClaude(reason: "unknown select target") }
-                return .act(.select(elementID: s.element, option: s.option))
-            case .key: return .act(.key(t.choice))
+                return resolved(.select(elementID: s.element, option: s.option))
+            case .key: return resolved(.key(t.choice))
             case .openApp:
                 guard let a = request.appTargets[t.choice] else { return .fallbackToClaude(reason: "unknown app target") }
-                return .act(.openApp(a))
+                return resolved(.openApp(a))
             case .openURL:
                 guard let u = request.urlTargets[t.choice] else { return .fallbackToClaude(reason: "unknown url target") }
-                return .act(.openURL(u))
+                return resolved(.openURL(u))
             default: break
             }
         }
         switch op {
-        case .scrollUp: return .act(.scroll(up: true))
-        case .scrollDown: return .act(.scroll(up: false))
-        case .wait: return .act(.wait)
+        case .scrollUp: return resolved(.scroll(up: true))
+        case .scrollDown: return resolved(.scroll(up: false))
+        case .wait: return resolved(.wait)
         default: return .fallbackToClaude(reason: "unhandled operation \(op.rawValue)")
         }
     }

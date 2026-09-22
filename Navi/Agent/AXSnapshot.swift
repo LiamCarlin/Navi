@@ -216,6 +216,44 @@ struct AXSnapshot: @unchecked Sendable {
         return rd.lowercased() == el.role.dropFirst(2).lowercased() ? "" : rd
     }
 
+    // MARK: Browser chrome (pure, testable)
+
+    /// Browser controls Jev must never be offered from the tree: window buttons,
+    /// tab-close ×, extension pop-ups, promos. Matched on the lower-cased label.
+    static let browserChromeNoise: [String] = [
+        "close button", "minimize button", "zoom the window", "zoom button", "has access to this site", "extensions",
+        "open gemini in chrome", "install ", "turn off in settings", "finish update", "view site information",
+        "bookmark this tab", "tab search", "tab overview", "share", "sidebar", "reader", "reading list", "profile", "update chrome",
+        "relaunch to update", "new incognito", "show tab overview", "customize chrome", "chrome menu", "google chrome menu",
+        "toolbar", "translate this page", "zoom:", "media controls", "downloads", "privacy report", "screen time",
+    ]
+
+    /// A browser window mixes the page with the browser's own controls. Jev
+    /// needs the page; of the browser it needs only navigation, the address bar
+    /// and the tabs. Everything else in the chrome is dropped, tab labels lose
+    /// their memory-usage suffix, and what is kept is marked “Browser UI” in
+    /// its path so it is never mistaken for part of the page.
+    static func tidyBrowserChrome(_ raw: [AXElement]) -> [AXElement] {
+        var out: [AXElement] = []
+        out.reserveCapacity(raw.count)
+        for var e in raw {
+            if e.isWebContent || e.isMenuBarItem { out.append(e); continue }
+            let lower = e.label.lowercased()
+            // Tab-close × buttons and anything in the noise list.
+            if e.role == "AXButton", lower == "close" || lower == "close tab" { continue }
+            if browserChromeNoise.contains(where: { lower.contains($0) }) { continue }
+            if e.role == "AXRadioButton" || e.role == "AXTab" {
+                if let r = e.label.range(of: #" - Memory usage - .*$"#, options: .regularExpression) { e.label.removeSubrange(r) }
+                e.label = e.label.trimmingCharacters(in: .whitespaces)
+                e.path = "Browser UI › Tabs"
+            } else {
+                e.path = e.path.isEmpty ? "Browser UI" : "Browser UI › " + e.path
+            }
+            out.append(e)
+        }
+        return out
+    }
+
     // MARK: Ranking (pure, testable)
 
     /// Dedupe → cap → order: focused first, then reading order (rows of ~12 pt, then x).
@@ -269,8 +307,14 @@ final class AXSnapshotter: @unchecked Sendable {
     static let pressOnlyRoles: Set<String> = ["AXImage", "AXStaticText", "AXGroup", "AXRow", "AXUnknown", "AXHeading"]
 
     static let chromiumBundles: Set<String> = [
-        "com.google.Chrome", "com.google.Chrome.canary", "com.brave.Browser", "com.microsoft.edgemac",
-        "com.vivaldi.Vivaldi", "org.chromium.Chromium", "company.thebrowser.Browser", "com.operasoftware.Opera",
+        "com.google.Chrome", "com.google.Chrome.canary", "com.google.Chrome.beta", "com.google.Chrome.dev",
+        "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "org.chromium.Chromium",
+        "company.thebrowser.Browser", "company.thebrowser.dia", "com.operasoftware.Opera", "com.sigmaos.sigmaos",
+    ]
+    /// Browsers that are not Chromium but expose their pages through AX just as well.
+    static let otherBrowserBundles: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition",
+        "org.mozilla.nightly", "com.kagi.kagimacOS", "app.zen-browser.zen", "org.torproject.torbrowser",
     ]
 
     /// Target app (or, when nil, the frontmost app) + its focused window →
@@ -299,7 +343,8 @@ final class AXSnapshotter: @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(150))
             }
         }
-        var snap = await AXQueue.run { Self.walk(pid: pid, near: near, includeMenuBar: includeMenuBar) }
+        let browser = bundleID.map(Self.isBrowser) ?? false
+        var snap = await AXQueue.run { Self.walk(pid: pid, near: near, includeMenuBar: includeMenuBar, isBrowser: browser) }
         snap.bundleID = bundleID
         snap.appName = front.2
         return snap
@@ -400,7 +445,7 @@ final class AXSnapshotter: @unchecked Sendable {
     }
 
     static func isBrowser(_ bundleID: String) -> Bool {
-        bundleID == "com.apple.Safari" || chromiumBundles.contains(bundleID)
+        otherBrowserBundles.contains(bundleID) || chromiumBundles.contains(bundleID)
     }
 
     static func needsEnhancedUI(bundleID: String?) -> Bool {
@@ -432,7 +477,7 @@ final class AXSnapshotter: @unchecked Sendable {
     /// doing anything, so the executor clicks those elements for real.
     static func pressIsUnreliable(bundleID: String?) -> Bool { needsEnhancedUI(bundleID: bundleID) }
 
-    static func walk(pid: pid_t, near: CGRect?, includeMenuBar: Bool) -> AXSnapshot {
+    static func walk(pid: pid_t, near: CGRect?, includeMenuBar: Bool, isBrowser: Bool = false) -> AXSnapshot {
         let deadline = Date().addingTimeInterval(AXSnapshot.walkBudgetSeconds)
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)   // a hung app must not blow the time box
@@ -536,7 +581,9 @@ final class AXSnapshotter: @unchecked Sendable {
 
             guard node.depth < AXSnapshot.maxDepth, let children = elements(vals[8]) else { continue }
             var ancestors = node.ancestors
-            if !label.isEmpty, role != "AXStaticText", !isText { ancestors.append(String(label.prefix(30))) }
+            // The window's and the web area's titles are the page title twice over —
+            // no help telling elements apart; real containers (forms, sections, toolbars) are.
+            if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" { ancestors.append(String(label.prefix(30))) }
             let inWebArea = node.inWebArea || role == "AXWebArea"
             // Push in reverse so the DFS visits children in their natural (reading) order.
             for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea)) }
@@ -548,6 +595,7 @@ final class AXSnapshotter: @unchecked Sendable {
             if !named.isEmpty { raw[u.index].label = named }
         }
 
+        if isBrowser { raw = AXSnapshot.tidyBrowserChrome(raw) }
         let ranked = AXSnapshot.rank(raw, windowFrame: windowFrame, near: near)
         snap.elements = ranked
         snap.focused = ranked.first(where: \.isFocused)?.id

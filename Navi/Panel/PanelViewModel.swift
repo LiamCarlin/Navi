@@ -56,7 +56,8 @@ final class PanelViewModel: ObservableObject {
     }
     /// 0..<options.count selects an option; options.count selects the text box.
     @Published var clarifySelection: Int = 0
-    @Published private(set) var statusLine: String = ""   // e.g. "Jev · openApp 92% · 140ms"
+    /// Footer diagnostics ("Jev · Open app 92% · 140 ms"); empty unless developer mode is on.
+    @Published private(set) var statusLine: String = ""
     @Published private(set) var isRouting = false
 
     // Panel UI hooks (additive; see Panel/Views/NaviPanelView.swift)
@@ -239,10 +240,7 @@ final class PanelViewModel: ObservableObject {
             let d = await self.services.router.route(query: q, context: self.context)
             guard !Task.isCancelled, self.query.trimmingCharacters(in: .whitespacesAndNewlines) == q else { return }
             self.decision = d
-            let pct = Int((d.probabilities[d.intent] ?? d.confidence) * 100)
-            self.statusLine = d.source == .jev
-                ? "Jev · \(d.intent.displayName) \(pct)% · \(d.latencyMs) ms"
-                : "\(d.intent.displayName)"
+            self.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.isEnabled)
             let full = await self.services.router.results(for: q, decision: d, context: self.context)
             guard !Task.isCancelled, self.query.trimmingCharacters(in: .whitespacesAndNewlines) == q else { return }
             self.results = Self.merge(instant: self.services.router.instantResults(for: q, context: self.context), routed: full, decision: d)
@@ -347,6 +345,7 @@ final class PanelViewModel: ObservableObject {
         answerText = ""
         isAnswering = true
         mode = .answer
+        UsageCounters.record(.answer)
         answerTask = Task { [weak self] in
             do {
                 for try await chunk in stream {
@@ -369,6 +368,7 @@ final class PanelViewModel: ObservableObject {
         agentDismissed = false
         pendingApproval = nil
         mode = .agent
+        UsageCounters.record(.task)
         // Background mode: nothing activates, so the panel would stay over the
         // user's work. Give them a beat to see the run start, then get out of
         // the way — the overlay pill and ⌘Space bring it back (same as the
@@ -541,8 +541,7 @@ extension PanelViewModel {
         if let statusLine {
             vm.statusLine = statusLine
         } else if let d = decision {
-            let pct = Int((d.probabilities[d.intent] ?? d.confidence) * 100)
-            vm.statusLine = d.source == .jev ? "Jev · \(d.intent.displayName) \(pct)% · \(d.latencyMs) ms" : d.intent.displayName
+            vm.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.isEnabled)
         }
         return vm
     }
@@ -554,14 +553,14 @@ extension PanelViewModel {
             SearchResult(id: id, kind: kind, title: title, subtitle: subtitle, icon: icon, shortcutHint: hint) { .dismiss }
         }
         return [
-            row("app:maps", .app, "Maps", "Application", .appBundle("/System/Applications/Maps.app"), hint: "⏎ Open"),
-            row("app:mail", .app, "Mail", "Application", .appBundle("/System/Applications/Mail.app"), hint: "⏎ Open"),
+            row("app:maps", .app, "Maps", "Running", .appBundle("/System/Applications/Maps.app"), hint: "⏎ Switch to"),
+            row("app:mail", .app, "Mail", "App", .appBundle("/System/Applications/Mail.app"), hint: "⏎ Open"),
             row("calc", .calculation, "= 40.8", "12% of 340", .system("equal"), hint: "⏎ Copy"),
             row("url", .url, "maps.google.com", "Open in browser", .system("globe"), hint: "⏎ Open"),
-            row("file", .file, "Q3 roadmap.md", "~/Documents/Notes", .file(NSHomeDirectory()), hint: "⏎ Open"),
+            row("file", .file, "Q3 roadmap.md", "Markdown document · Modified 2 days ago", .file(NSHomeDirectory()), hint: "⏎ Open"),
             row("web", .webSearch, "Search the web for “maps”", "Google", .system("magnifyingglass")),
-            row("mem", .memory, "You read the Jev docs yesterday at 4:12 pm", "Safari · docs.typesafe.ai", .system("clock.arrow.circlepath")),
-            row("ask", .answer, "Ask Navi", "Stream an answer from Claude", .system("sparkle"), hint: "⌘⏎ Ask"),
+            row("mem", .memory, "You read the launch roadmap yesterday at 4:12 pm", "Safari · Launch roadmap", .system("clock.arrow.circlepath")),
+            row("ask", .answer, "Ask Navi", "Answer “maps”", .system("sparkle"), hint: "⌘⏎ Ask"),
             row("task", .task, "Do it for me", "Open Chrome, search and click", .system("cursorarrow.motionlines")),
             row("sys", .systemCommand, "Toggle Dark Mode", "System", .system("moon.fill")),
         ]
@@ -571,7 +570,7 @@ extension PanelViewModel {
         """
         ## DNS in one minute
 
-        **DNS** (Domain Name System) turns names like `api.typesafe.ai` into IP addresses.
+        **DNS** (Domain Name System) turns names like `api.example.com` into IP addresses.
 
         1. Your Mac asks its **resolver** (usually your router or `1.1.1.1`).
         2. The resolver walks the hierarchy: root → `.ai` TLD → the authoritative server.
@@ -581,7 +580,7 @@ extension PanelViewModel {
         - Lookups are UDP on port 53, with DoH/DoT for privacy
 
         ```bash
-        dig +short api.typesafe.ai
+        dig +short api.example.com
         ```
 
         > Tip: `sudo dscacheutil -flushcache` clears the local cache.

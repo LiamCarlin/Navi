@@ -7,10 +7,23 @@ import Carbon.HIToolbox
 /// `NaviSettings`. While recording, the live global hotkey is unregistered so
 /// the current combo (e.g. ⌘Space) can be re-captured instead of toggling the panel.
 struct HotKeyRecorderView: View {
+    /// Which shortcut this recorder edits: the panel's (⌘Space) or voice control's (⌥Space).
+    enum Kind { case panel, voice }
+    var kind: Kind = .panel
+
     @EnvironmentObject private var settings: NaviSettings
     @State private var recording = false
     @State private var monitor: Any?
     @State private var hint: String?
+
+    private var code: UInt32 { kind == .panel ? settings.hotKeyCode : settings.voiceHotKeyCode }
+    private var mods: UInt32 { kind == .panel ? settings.hotKeyModifiers : settings.voiceHotKeyModifiers }
+    private var defaultCode: UInt32 { 49 }
+    private var defaultMods: UInt32 { kind == .panel ? UInt32(cmdKey) : UInt32(optionKey) }
+    private func set(code: UInt32, mods: UInt32) {
+        if kind == .panel { settings.hotKeyModifiers = mods; settings.hotKeyCode = code }
+        else { settings.voiceHotKeyModifiers = mods; settings.voiceHotKeyCode = code }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -22,7 +35,7 @@ struct HotKeyRecorderView: View {
                         Image(systemName: "record.circle").foregroundStyle(.red).symbolEffect(.pulse)
                         Text("Press a shortcut…")
                     } else {
-                        Text(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
+                        Text(HotKeyManager.describe(keyCode: code, modifiers: mods))
                             .font(.system(.body, design: .rounded).weight(.medium))
                             .monospacedDigit()
                     }
@@ -34,10 +47,9 @@ struct HotKeyRecorderView: View {
 
             if recording {
                 Button("Cancel") { stop() }.buttonStyle(.borderless).controlSize(.small)
-            } else if settings.hotKeyCode != 49 || settings.hotKeyModifiers != UInt32(cmdKey) {
-                Button("Reset to ⌘Space") {
-                    settings.hotKeyModifiers = UInt32(cmdKey)
-                    settings.hotKeyCode = 49
+            } else if code != defaultCode || mods != defaultMods {
+                Button("Reset to \(HotKeyManager.describe(keyCode: defaultCode, modifiers: defaultMods))") {
+                    set(code: defaultCode, mods: defaultMods)
                 }
                 .buttonStyle(.borderless).controlSize(.small)
             }
@@ -65,8 +77,7 @@ struct HotKeyRecorderView: View {
             }
             let code = UInt32(ev.keyCode)
             MainActor.assumeIsolated {
-                settings.hotKeyModifiers = carbon
-                settings.hotKeyCode = code   // posts .naviSettingsChanged → HotKeyManager re-registers
+                set(code: code, mods: carbon)   // posts .naviSettingsChanged → HotKeyManager re-registers
                 hint = nil
                 stop()
             }

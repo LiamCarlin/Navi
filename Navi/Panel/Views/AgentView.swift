@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// Live computer-use run: task header, step timeline, screenshot thumbnail,
-/// and the approval card when Jev flags a risky action.
+/// and the approval card when an action looks irreversible. Engine chatter in
+/// the timeline (vendor names, latencies, probabilities) is hidden unless
+/// developer mode is on — see `PanelWording`.
 struct AgentView: View {
     @EnvironmentObject private var vm: PanelViewModel
     @State private var timelineHeight: CGFloat = 0
@@ -12,7 +14,7 @@ struct AgentView: View {
         if let t = vm.agentRun?.task, !t.isEmpty { return t }
         if !vm.agentTaskTitle.isEmpty { return vm.agentTaskTitle }
         let q = vm.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return q.isEmpty ? "Agent task" : q
+        return q.isEmpty ? "Task" : q
     }
 
     private var outcome: AgentEvent? {
@@ -45,7 +47,8 @@ struct AgentView: View {
                 }
             }
             if let p = vm.pendingApproval {
-                ApprovalCard(description: p.description, risk: p.risk,
+                ApprovalCard(description: p.description,
+                             risk: DeveloperMode.isEnabled ? p.risk : PanelWording.userFacing(p.risk),
                              approve: { vm.approvePending(true) },
                              deny: { vm.approvePending(false) })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -205,11 +208,11 @@ struct AgentEventRow: View {
             }
             .fixedSize(horizontal: false, vertical: true)
         case .status(let s):
-            Text(s)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 32)
-                .padding(.bottom, 8)
+            if DeveloperMode.isEnabled {
+                statusRow(s)
+            } else if !PanelWording.isDiagnostic(s) {
+                statusRow(PanelWording.userFacing(s))
+            }
         case .needsApproval(_, let description, _):
             HStack(spacing: 8) {
                 Image(systemName: "hand.raised.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(.orange)
@@ -229,7 +232,8 @@ struct AgentEventRow: View {
             card(tint: .red, icon: "exclamationmark.triangle.fill") {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Failed").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.red)
-                    Text(message).font(.system(size: 13)).lineSpacing(2.5)
+                    Text(DeveloperMode.isEnabled ? message : PanelWording.userFacing(message))
+                        .font(.system(size: 13)).lineSpacing(2.5)
                 }
             }
         case .cancelled:
@@ -239,6 +243,14 @@ struct AgentEventRow: View {
         case .screenshot:
             EmptyView()
         }
+    }
+
+    private func statusRow(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11.5))
+            .foregroundStyle(.tertiary)
+            .padding(.leading, 32)
+            .padding(.bottom, 8)
     }
 
     private func card<C: View>(tint: Color, icon: String, @ViewBuilder content: () -> C) -> some View {
@@ -321,7 +333,7 @@ struct ScreenshotThumbnail: View {
     }
 }
 
-/// "Approve (⌘⏎) / Deny (⌘⌫)" card for an action Jev flagged as irreversible.
+/// "Approve (⌘⏎) / Deny (⌘⌫)" card for an action that looks irreversible.
 struct ApprovalCard: View {
     let description: String
     let risk: String

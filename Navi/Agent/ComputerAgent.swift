@@ -75,6 +75,10 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
         var surface: TaskSurface.Surface = .unsure
         /// Browser steps: continue on the tab that is open now.
         var useCurrentTab = false
+        /// Cap on bounded Claude vision turns for this run (nil ⇒ Settings). Voice
+        /// control keeps this small: the user is watching and can simply say what to
+        /// do next, which beats a 10 s screenshot loop every time.
+        var maxClaudeFallbacks: Int? = nil
     }
 
     @MainActor
@@ -86,7 +90,7 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
                                      showOverlay: options.showOverlay ?? s.agentShowLiveOverlay,
                                      driver: s.agentDriver,
                                      jevConfidenceThreshold: min(max(s.agentJevConfidenceThreshold, 0), 1),
-                                     maxClaudeFallbacks: max(0, s.agentMaxClaudeFallbacks),
+                                     maxClaudeFallbacks: max(0, options.maxClaudeFallbacks ?? s.agentMaxClaudeFallbacks),
                                      background: options.background ?? s.agentRunInBackground,
                                      revealWhenDone: s.agentRevealWhenDone,
                                      planWithClaude: options.planWithClaude,
@@ -390,15 +394,24 @@ final class AgentRun: @unchecked Sendable {
         }
         var result: String?
         var summaries: [String] = []
-        for (i, step) in plan.steps.enumerated() {
+        /// The last step ran on the native driver (an app, or a browser driven natively).
+        var lastStepNative = false
+        for (i, var step) in plan.steps.enumerated() {
             try checkCancelled()
             task = TaskPlanner.resolve(step.goal, result: result)
             if plan.isMultiStep {
                 handle.emit(.status("Step \(i + 1) of \(plan.steps.count) · \(step.surface == .browser ? "browser" : (step.app ?? "app"))"))
             }
-            let outcome: StepOutcome
+            var outcome: StepOutcome = .failed("The step did not run")
             var pageText: String?
-            if step.surface == .browser, let browserRunner {
+            var ranRunner = false
+            // Web steps: the browser the user is looking at decides how. Chromium with the
+            // jev-ultrafast runtime → the CDP runner; anything else (Safari, Arc, Firefox, a
+            // fresh install without the runtime) → the native Jev driver on the browser's
+            // accessibility tree. `NativeBrowser` has the rule.
+            let browserBundle: String? = step.surface == .browser ? await MainActor.run { NativeBrowser.choose(frontmost: frontmost, context: context) } : nil
+            if step.surface == .browser, let browserRunner, let bb = browserBundle, NativeBrowser.runnerUsable(for: bb) {
+                ranRunner = true
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 // The start URL is the page that is open now: continue on that tab.
                 let attach = frontmost.url != nil && url == frontmost.url
@@ -410,14 +423,35 @@ final class AgentRun: @unchecked Sendable {
                     text = await browserRunner(goal, url, child, background, attach)
                 }
                 pageText = text
-            } else {
+                if case .failed(let msg) = outcome, NativeBrowser.isRunnerUnavailable(msg) {
+                    handle.emit(.status("Chrome runner unavailable (\(AgentAction.short(msg, 80))) — driving \(NativeBrowser.displayName(bb)) directly instead"))
+                    ranRunner = false
+                }
+            }
+            if !ranRunner {
                 var opened: String?
-                if let app = step.app {
+                if step.surface == .browser, let bb = browserBundle {
+                    // Native web step: open the page in the user's browser, then drive that
+                    // browser like any app. The page already in front is simply continued.
+                    let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
+                    let attach = frontmost.url != nil && url == frontmost.url
+                    step.app = bb
+                    if !attach {
+                        handle.emit(.status("Opening \(URL(string: url)?.host ?? url) in \(NativeBrowser.displayName(bb))"))
+                        _ = await NativeBrowser.open(url, in: bb, activate: !config.background)
+                        try? await Task.sleep(for: .milliseconds(700))
+                        opened = bb
+                    }
+                }
+                if let app = step.app, opened == nil {
                     handle.emit(.status("Opening \(app.contains(".") ? AppSkills.displayName(bundleID: app) : app)"))
                     do { opened = try await AgentCustomTools.openApp(named: app, activate: !config.background) } catch {
                         handle.emit(.status("Couldn't open \(app): \((error as? NaviError)?.errorDescription ?? error.localizedDescription)"))
                     }
                     try? await Task.sleep(for: .milliseconds(350))
+                } else if let app = step.app, !config.background {
+                    // The browser already holds the page: just make sure it is in front.
+                    _ = try? await AgentCustomTools.openApp(named: app, activate: true)
                 }
                 if config.background {
                     await pinTarget(opened: opened)
@@ -448,6 +482,7 @@ final class AgentRun: @unchecked Sendable {
                 }
                 pageText = lastSnapshotText
             }
+            lastStepNative = !ranRunner
             try checkCancelled()
             switch outcome {
             case .cancelled:
@@ -472,7 +507,7 @@ final class AgentRun: @unchecked Sendable {
         // note", "create the event"): a background run leaves it behind the user's
         // windows, so bring it forward now that the run is over. Lookups stay put —
         // their answer is in the panel. Browser steps do the same for their tab.
-        if config.background, config.revealWhenDone, !Self.isLookup(originalTask), plan.steps.last?.surface == .app, let t = target {
+        if config.background, config.revealWhenDone, !Self.isLookup(originalTask), lastStepNative, let t = target {
             await t.reveal()
         }
     }
@@ -866,6 +901,9 @@ final class AgentRun: @unchecked Sendable {
                     continue
                 case .act(let a):
                     action = a
+                case .actTentatively(let a, let reason):
+                    handle.emit(.status("\(reason) — trying it anyway (cheap to undo; Claude only if this leads nowhere)"))
+                    action = a
                 }
             }
 
@@ -892,6 +930,13 @@ final class AgentRun: @unchecked Sendable {
                         try checkCancelled()
                         text = nil
                     }
+                }
+                // The helper declined ({"text": null}) or isn't available: what the goal
+                // itself says to type ("search for X", "tell her good night") is better
+                // than a 6 s vision turn that often ends in "it was already there".
+                if text == nil, let local = FieldText.localGuess(goal: task, field: field, history: history) {
+                    text = local
+                    handle.emit(.status("Typing what the goal says (no text model needed)"))
                 }
                 guard text != nil else {
                     if try await !fallback("the text for \(field.displayName) must be composed by the vision model", step: step) { return }

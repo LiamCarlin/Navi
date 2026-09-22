@@ -82,6 +82,18 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     implies ("text mom" → Messages) when no planner runs, and `AppSkills.startURL`
     turns "play X on youtube" into the results page. When a new app misbehaves, add or
     fix its skill first; run the live A/B probe (see memory notes) before trusting it.
+  - **Fewer Claude turns** (`JevDriver.decide`): below the confidence threshold Jev's
+    pick is still taken when it is cheap to undo (`actFloor` 0.22; never ⌘W/⌘↩/Delete);
+    a low-confidence step with `task_complete ≥ 0.5` after work was done is *done*;
+    validation tolerates untidy distributions; `FieldText.localGuess` types what the
+    goal spells out before any vision turn. Voice runs allow 2 Claude turns.
+  - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
+    when the user's browser is Chromium *and* the runtime is installed; otherwise
+    (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
+    same Jev loop drives it from the AX tree (`AXSnapshot.tidyBrowserChrome` hides the
+    browser's own controls). `BrowserControls` handles "close the tab / go back /
+    reload / next tab / scroll / zoom" with one key press, no agent. Page actions with a
+    browser in front stay on the current tab (`TaskSurface.isPageAction`).
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,
@@ -129,8 +141,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     function words ("you", "to the") or 1–2 words Jev can't classify are dropped
     locally — each used to cost a 2 s agent run. A spoken task may run for as long
     as it keeps reporting steps (minutes); only one silent for 2 min is stopped.
+    Goals are normalised first (`VoiceDecider.normalizedGoal`: "can you", "please",
+    "navi", a leftover "you" stripped). ⌥Space (`voiceHotKey*`) starts/stops listening
+    from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
+    **Auto mode** (`NaviSettings.autoMode`, on by default) is the preset users see:
+    Jev-first driver + approvals only for irreversible actions; off ⇒ ask for every action.
     Debug: `navi://voice?file=/path.aiff` replays a recording
-    (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`.
+    (`say -o clip.aiff "…"`), trace in `~/Library/Logs/Navi/debug.log`;
+    `scripts/axprobe/build.sh` builds a CLI that snapshots a running app's AX table and
+    asks Jev what it would do for a goal (live A/B without driving anything).
 - Always pass **structured state** (labelled sections, not prose) — Jev is trained on program state.
 - Cache identical requests (JevClient does this) and never block the UI on Jev: instant
   local results render first, Jev's answer re-ranks.
