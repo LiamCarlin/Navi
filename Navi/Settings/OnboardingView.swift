@@ -14,9 +14,10 @@ enum Onboarding {
 struct OnboardingView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var settings: NaviSettings
+    @StateObject private var voicePerms = PermissionsModel()
     @State private var step = 0
 
-    private let steps = ["Welcome", "Keys", "Permissions", "Shortcut", "Done"]
+    private let steps = ["Welcome", "Keys", "Permissions", "Shortcut", "Voice", "Done"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,7 @@ struct OnboardingView: View {
                 case 1: keys
                 case 2: permissions
                 case 3: shortcut
+                case 4: voice
                 default: done
                 }
             }
@@ -94,7 +96,8 @@ struct OnboardingView: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 bullet("bolt.fill", "Jev (TypeSafe System One) decides what you want in about 100 ms — apps open instantly.")
-                bullet("text.bubble", "Claude answers questions and runs multi-step tasks on your Mac.")
+                bullet("waveform", "Talk to it: press ⌥Space and say what you want. Navi acts on each instruction as you speak — in any app, in any browser.")
+                bullet("text.bubble", "Claude answers questions and steps in only when Jev is stuck.")
                 bullet("brain", "Screen Memory turns your day into an Obsidian vault you can ask about.")
                 bullet("lock.fill", "Keys live in your Keychain. Screen data never leaves this Mac except to the models you choose.")
             }
@@ -156,6 +159,47 @@ struct OnboardingView: View {
         .scrollContentBackground(.hidden)
     }
 
+    private var voice: some View {
+        Form {
+            Section {
+                Text("Voice control is the fastest way to use Navi: hold nothing, press nothing — say “open Safari, go to YouTube and play lo-fi beats” and watch it happen while you're still talking.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section {
+                PermissionRow(title: "Microphone",
+                              explanation: "Recognised on this Mac by Apple's on-device model. Audio never leaves the machine.",
+                              state: voicePerms.microphone,
+                              request: { Task { _ = await Permissions.requestMicrophone(); await voicePerms.refresh() } },
+                              open: { Permissions.openSettings(.microphone) })
+                    .task { await voicePerms.poll() }
+                ExplainedRow(title: "Voice shortcut", explanation: "Press anywhere to start or stop listening.") {
+                    HotKeyRecorderView(kind: .voice)
+                }
+            }
+            Section {
+                Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto mode").font(.headline)
+                        Text("Jev drives every step itself and only stops to ask before sending, paying or deleting. Turn it off to approve each action.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Button {
+                    finishSoftly()
+                    AppDelegate.shared?.toggleVoice()
+                } label: { Label("Try voice control now", systemImage: "waveform") }
+                .disabled(voicePerms.microphone == .denied)
+            } footer: {
+                Text("Say “stop” to abort, “undo” for ⌘Z, “stop listening” to close the island.")
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// Marks onboarding done without closing the window (the island appears over it).
+    private func finishSoftly() { Onboarding.hasCompleted = true }
+
     private var done: some View {
         VStack(spacing: 18) {
             Spacer()
@@ -164,7 +208,9 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 Text("Press")
                 SettingsKeyCap(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))
-                Text("anywhere to open Navi.")
+                Text("to open Navi,")
+                SettingsKeyCap(HotKeyManager.describe(keyCode: settings.voiceHotKeyCode, modifiers: settings.voiceHotKeyModifiers))
+                Text("to talk to it.")
             }
             .font(.title3).foregroundStyle(.secondary)
             Button {

@@ -343,6 +343,10 @@ enum TaskSurface {
         if let site = UltrafastBridge.knownSiteURL(in: task) { return site }
         let lower = task.lowercased()
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
+            // "Click the write-a-message area", "scroll down", "pick the second one": an
+            // action on whatever page is open. Googling the sentence instead once
+            // produced a results page explaining that Google cannot click things.
+            if isPageAction(task) { return u }
             if let start { return start == .currentTab ? u : UltrafastBridge.searchURL(for: task) }
             let refersToTab = ["this page", "this tab", "current page", "current tab", "here", "on this site", "this site"].contains { lower.contains($0) }
             let host = URL(string: u)?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
@@ -350,5 +354,30 @@ enum TaskSurface {
             if refersToTab || namesHost { return u }
         }
         return UltrafastBridge.searchURL(for: task)
+    }
+
+    /// Does the task act on the page in front rather than ask for something to be
+    /// found on the web? It starts with a UI verb (click, type, scroll, select,
+    /// close, fill…) and neither names a site nor asks to search / look up.
+    static func isPageAction(_ task: String) -> Bool {
+        let t = " " + task.lowercased().replacingOccurrences(of: #"[^a-z0-9' ]"#, with: " ", options: .regularExpression)
+            .split(separator: " ").joined(separator: " ") + " "
+        if t.range(of: #" (search for|search the web|search google|google|look up|lookup|look for|find me|go to|navigate to|visit|browse to|open (up )?(the )?(website|site|page for)|pull up|bring up) "#,
+                   options: .regularExpression) != nil { return false }
+        // Verbs that only make sense against a page already on screen. Composing
+        // verbs ("write", "send", "add", "post") are not here: "send an email to Bob"
+        // on a YouTube tab is not about YouTube.
+        let verbs = ["click", "tap", "press", "hit", "type", "enter", "scroll", "select", "choose", "pick", "check",
+                     "uncheck", "tick", "toggle", "fill", "fill in", "fill out", "close", "dismiss", "expand", "collapse", "play", "pause",
+                     "mute", "unmute", "like", "reply", "comment", "remove", "delete", "sign in", "log in", "sign out", "log out",
+                     "submit", "highlight", "copy", "drag", "zoom", "click on", "click in", "click into",
+                     "inside", "in the", "on the", "under", "next to", "at the top", "at the bottom", "read", "summarize", "what does",
+                     "what is on", "what's on", "accept", "decline", "skip", "continue", "next", "previous", "back", "download", "upload",
+                     "attach", "star", "follow", "subscribe", "join", "leave", "answer", "respond"]
+        let leading = ["please ", "can you ", "could you ", "now ", "then ", "and ", "just ", "also "]
+        var s = t.trimmingCharacters(in: .whitespaces)
+        var stripped = true
+        while stripped { stripped = false; for l in leading where s.hasPrefix(l) { s = String(s.dropFirst(l.count)); stripped = true } }
+        return verbs.contains { s == $0 || s.hasPrefix($0 + " ") }
     }
 }

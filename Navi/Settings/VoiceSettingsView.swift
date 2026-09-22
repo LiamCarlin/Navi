@@ -49,6 +49,29 @@ struct VoiceSettingsView: View {
             }
 
             Section {
+                Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto mode").font(.headline)
+                        Text(settings.autoMode
+                             ? "Navi acts on its own: Jev decides every step from what is on screen — native apps and any browser — and Claude is consulted only when Jev is stuck. Only sending, paying and deleting pause for a “yes”."
+                             : "Every action waits for your approval before it happens. Slower, but nothing moves without you.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Toggle("Global shortcut to start talking", isOn: $settings.voiceHotKeyEnabled)
+                if settings.voiceHotKeyEnabled {
+                    ExplainedRow(title: "Voice shortcut", explanation: "Press it anywhere to drop the island out of the notch and start listening; press again to stop.") {
+                        HotKeyRecorderView(kind: .voice)
+                    }
+                }
+                Toggle("Start listening when Navi launches", isOn: $settings.voiceStartsAtLaunch)
+            } header: {
+                Text("Hands-free")
+            } footer: {
+                Text("Speech stays on this Mac. What Navi does with it — opening apps, driving them, browsing — is decided by Jev in about 200 ms per instruction.")
+            }
+
+            Section {
                 Toggle("Bring apps to the front while I talk", isOn: $settings.voiceBringsAppsForward)
                 Text(settings.voiceBringsAppsForward
                      ? "Apps you name come forward and Navi uses the real cursor and keyboard, so you watch it happen. Hands off the mouse while it works."
