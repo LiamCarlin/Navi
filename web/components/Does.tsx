@@ -66,14 +66,23 @@ const EXAMPLES: Example[] = [
   },
 ];
 
-/* Per example: type (~35 ms/char), Spotlight lists, Navi runs, the app does the thing, outcome; then the next. */
-const PER = 5600;
+/* Per example: ⌘ then Space press, both bars drop, the query types (~34 ms/char), Spotlight lists,
+   Navi runs, the app does the thing, outcome; then the next. */
+const PER = 6400;
 const REST = 2400;
 const LOOP = PER * EXAMPLES.length + REST;
 const CHAR_MS = 34;
+const CMD_AT = 150;
+const SPACE_AT = 420;
+const RELEASE_AT = 600;
+const DROP_AT = 640;
+const TYPE_AT = 950;
 
 type Frame = {
   i: number;
+  cmd: boolean;
+  space: boolean;
+  shown: boolean;
   typedN: number;
   spotRows: number;
   naviRows: boolean;
@@ -87,22 +96,26 @@ function derive(t: number): Frame {
   const i = Math.min(EXAMPLES.length - 1, Math.floor(t / PER));
   const ex = EXAMPLES[i];
   const lt = t - i * PER;
-  const typedN = Math.min(ex.chip.length, Math.floor(lt / CHAR_MS));
-  const T = ex.chip.length * CHAR_MS;
+  const cmd = lt >= CMD_AT && lt < RELEASE_AT;
+  const space = lt >= SPACE_AT && lt < RELEASE_AT;
+  const shown = lt >= DROP_AT;
+  const typedN = lt < TYPE_AT ? 0 : Math.min(ex.chip.length, Math.floor((lt - TYPE_AT) / CHAR_MS));
+  const T = TYPE_AT + ex.chip.length * CHAR_MS;
   const spotRows = lt < T + 150 ? 0 : Math.min(ex.spotlight.length, Math.floor((lt - T - 150) / 90) + 1);
   const naviRows = lt >= T + 120;
   const pressed = lt >= T + 600;
   const window = lt >= T + 850;
   const p = Math.max(0, Math.min(1, (lt - (T + 950)) / 1600));
   const done = lt >= T + 2650;
-  return { i, typedN, spotRows, naviRows, pressed, window, p: Math.round(p * 40) / 40, done };
+  return { i, cmd, space, shown, typedN, spotRows, naviRows, pressed, window, p: Math.round(p * 40) / 40, done };
 }
-const keyOf = (f: Frame) => `${f.i}|${f.typedN}|${f.spotRows}|${f.naviRows}|${f.pressed}|${f.window}|${f.p}|${f.done}`;
+const keyOf = (f: Frame) =>
+  `${f.i}|${f.cmd}|${f.space}|${f.shown}|${f.typedN}|${f.spotRows}|${f.naviRows}|${f.pressed}|${f.window}|${f.p}|${f.done}`;
 
 export function Does() {
   const ref = useRef<HTMLDivElement>(null);
   const reduce = useReducedMotion();
-  const { frame: f, seek } = useLoop(ref, { duration: LOOP, derive, key: keyOf, staticT: 4200 });
+  const { frame: f, seek } = useLoop(ref, { duration: LOOP, derive, key: keyOf, staticT: 5000 });
   const ex = EXAMPLES[f.i];
 
   return (
@@ -129,15 +142,21 @@ export function Does() {
             ))}
           </div>
 
-          <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2" style={{ "--u": "1px" } as React.CSSProperties}>
+          <KeyRow cmd={f.cmd} space={f.space} />
+
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2" style={{ "--u": "1px" } as React.CSSProperties}>
             <Pane label="Spotlight">
-              <SpotlightMock query={ex.chip} typedN={f.typedN} results={ex.spotlight} shown={f.spotRows} />
+              <Drop shown={f.shown}>
+                <SpotlightMock query={ex.chip} typedN={f.typedN} results={ex.spotlight} shown={f.spotRows} />
+              </Drop>
               <div className="mt-4 flex h-[200px] items-end text-[13px] text-fg-dim">
                 {f.spotRows >= ex.spotlight.length && <span>…and now you do it yourself.</span>}
               </div>
             </Pane>
             <Pane label="Navi">
-              <Panel query={ex.chip} typed={f.typedN} rows={f.naviRows ? ex.navi : null} showCaret={f.typedN < ex.chip.length} pressed={f.pressed} />
+              <Drop shown={f.shown}>
+                <Panel query={ex.chip} typed={f.typedN} rows={f.naviRows ? ex.navi : null} showCaret={f.typedN < ex.chip.length} pressed={f.pressed} />
+              </Drop>
               <div className="relative mt-4 h-[200px]">
                 <AnimatePresence initial={false}>
                   {f.window && (
@@ -179,6 +198,53 @@ export function Does() {
     >
       Spotlight hands you a list. Navi runs the command in the app it needs, then tells you it’s done.
     </Section>
+  );
+}
+
+/** The bars drop from above when ⌘Space lands, the way they do on a Mac. Transform + opacity only. */
+function Drop({ shown, children }: { shown: boolean; children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        transform: shown ? "none" : "translateY(-10px) scale(0.985)",
+        opacity: shown ? 1 : 0,
+        transition: shown ? "transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms" : "opacity 120ms",
+        willChange: "transform",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** A real-looking key row: ⌘ then Space depress with a small bounce on release. */
+function KeyRow({ cmd, space }: { cmd: boolean; space: boolean }) {
+  return (
+    <div className="mt-6 flex items-end gap-2" aria-hidden="true">
+      <Key down={cmd} className="w-14">
+        <span className="text-[13px]">⌘</span>
+        <span className="text-[9px] opacity-70">command</span>
+      </Key>
+      <Key down={space} className="w-48 sm:w-64">
+        <span className="text-[9px] opacity-70">space</span>
+      </Key>
+    </div>
+  );
+}
+
+function Key({ down, className = "", children }: { down: boolean; className?: string; children: React.ReactNode }) {
+  return (
+    <div
+      className={`flex h-11 flex-col items-center justify-end rounded-[7px] border border-line-strong bg-bg-elev pb-1.5 text-fg-muted ${className}`}
+      style={{
+        transform: down ? "translateY(2px) scale(0.985)" : "none",
+        boxShadow: down ? "inset 0 1px 0 rgba(255,255,255,0.04), 0 0 0 var(--line-strong)" : "inset 0 1px 0 rgba(255,255,255,0.1), 0 2px 0 var(--line-strong)",
+        transition: "transform 90ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 90ms",
+        background: down ? "var(--bg-sunk)" : undefined,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 

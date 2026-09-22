@@ -25,7 +25,8 @@ const BOOKED_AT = 6100;
 const SHEET_OUT = 8400;
 const LOOP = 12_000;
 
-type Frame = { doc: string; url: number; query: boolean; rows: number; picked: boolean; sheet: boolean; pressed: boolean; booked: boolean };
+type Pointer = "hidden" | "doc" | "button";
+type Frame = { doc: string; url: number; query: boolean; rows: number; picked: boolean; sheet: boolean; pressed: boolean; booked: boolean; pointer: Pointer; click: boolean };
 
 function derive(t: number): Frame {
   return {
@@ -37,9 +38,12 @@ function derive(t: number): Frame {
     sheet: t >= SHEET_AT && t < SHEET_OUT,
     pressed: t >= PRESS_AT,
     booked: t >= BOOKED_AT,
+    // The pointer: resting in the doc, glides to "Book it", clicks, then drifts back.
+    pointer: t < SHEET_AT + 200 || t >= SHEET_OUT ? "hidden" : t < PRESS_AT - 850 || t >= BOOKED_AT + 900 ? "doc" : "button",
+    click: t >= PRESS_AT && t < PRESS_AT + 140,
   };
 }
-const keyOf = (f: Frame) => `${f.doc.length}|${f.url}|${f.query}|${f.rows}|${f.picked}|${f.sheet}|${f.pressed}|${f.booked}`;
+const keyOf = (f: Frame) => `${f.doc.length}|${f.url}|${f.query}|${f.rows}|${f.picked}|${f.sheet}|${f.pressed}|${f.booked}|${f.pointer}|${f.click}`;
 
 export function Background() {
   const ref = useRef<HTMLDivElement>(null);
@@ -116,6 +120,27 @@ export function Background() {
               </p>
             </div>
           </Win>
+
+          {/* The pointer: transform-only, on its own layer */}
+          <div className="pointer-events-none absolute inset-0 z-20" style={{ containerType: "size" }} aria-hidden="true">
+            <div
+              style={{
+                transform:
+                  f.pointer === "button" ? "translate(64cqw, 91cqh)" : f.pointer === "doc" ? "translate(78cqw, 52cqh)" : "translate(78cqw, 52cqh)",
+                opacity: f.pointer === "hidden" ? 0 : 1,
+                transition: "transform 700ms cubic-bezier(0.4, 0, 0.2, 1), opacity 200ms",
+                willChange: "transform",
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-5 w-5"
+                style={{ transform: f.click ? "scale(0.85)" : "scale(1)", transition: "transform 90ms", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))" }}
+              >
+                <path d="M5 3l14 9.3-6.2.9 3.6 6.4-2.3 1.2-3.5-6.4L6 18.6z" fill="#000" stroke="#fff" strokeWidth="1.4" strokeLinejoin="round" />
+              </svg>
+            </div>
+          </div>
 
           {/* The confirmation sheet */}
           <AnimatePresence initial={false}>
