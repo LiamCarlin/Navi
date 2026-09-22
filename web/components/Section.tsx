@@ -23,7 +23,7 @@ export function Section({
 }) {
   return (
     <section id={id} className="scroll-mt-16 px-6 py-24 md:py-32">
-      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 lg:grid-cols-12 lg:gap-8">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-12 lg:gap-8">
         <div className={`lg:col-span-4 ${flip ? "lg:order-2 lg:col-start-9" : "lg:col-start-1"}`}>
           <div className="num">{n}</div>
           <h2 className="h-section mt-3">{title}</h2>

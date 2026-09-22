@@ -1,123 +1,79 @@
-"use client";
-
-import { motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "framer-motion";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Glyph } from "./Glyph";
-import { u } from "./Panel";
+import { u } from "@/lib/u";
 
 /**
- * A 14" MacBook Pro drawn in CSS: aluminium lid, thin black bezel, notch, and a hint of the base.
- * The lid sits in perspective (leaning back ~8°) and tilts ±3° with the pointer on desktop.
- * Everything on the screen is laid out in screen units (`--u`, see globals.css) so the UI scales
- * with the laptop and stays crisp on retina — no canvas, no WebGL.
+ * A 14" MacBook Pro, straight on, drawn in CSS from the real proportions:
+ * a 16:10 screen inside a thin uniform black bezel, inside an aluminium lid
+ * (silver in light mode, space black in dark), a narrow short notch, and a
+ * continuous base — slim front lip with the trackpad cutout, rounded ends,
+ * a soft shadow underneath. A ≤4° lean, no pointer tilt.
+ *
+ * Everything on the screen is laid out in screen units (`--u`, see globals.css)
+ * so the UI scales with the laptop and stays crisp at 2× DPR.
  */
+export const NOTCH_W = 126; // u — about 1/7 of the 880u screen
+export const NOTCH_H = 24; // u — short
+
 export function MacBook({ children, className = "" }: { children?: ReactNode; className?: string }) {
-  const reduce = useReducedMotion();
-  const ref = useRef<HTMLDivElement>(null);
-  const [tiltOn, setTiltOn] = useState(false);
-
-  const px = useMotionValue(0);
-  const py = useMotionValue(0);
-  const sx = useSpring(px, { stiffness: 120, damping: 20, mass: 0.6 });
-  const sy = useSpring(py, { stiffness: 120, damping: 20, mass: 0.6 });
-  const rotateY = useTransform(sx, [-1, 1], [-3, 3]);
-  const rotateX = useTransform(sy, [-1, 1], [11, 5]);
-
-  useEffect(() => {
-    if (reduce) return;
-    const fine = window.matchMedia("(pointer: fine)").matches;
-    if (!fine) return;
-    setTiltOn(true);
-    const onMove = (e: PointerEvent) => {
-      const el = ref.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      // Normalised −1…1 relative to the laptop, clamped so the tilt eases out past its edges.
-      const nx = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1));
-      const ny = Math.max(-1, Math.min(1, ((e.clientY - r.top) / r.height) * 2 - 1));
-      px.set(nx);
-      py.set(ny);
-    };
-    const onLeave = () => {
-      px.set(0);
-      py.set(0);
-    };
-    window.addEventListener("pointermove", onMove, { passive: true });
-    document.addEventListener("pointerleave", onLeave);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerleave", onLeave);
-    };
-  }, [reduce, px, py]);
-
   return (
-    <div ref={ref} className={`relative mx-auto w-full select-none ${className}`} style={{ perspective: "1800px" }}>
+    <div className={`relative mx-auto w-full select-none ${className}`} style={{ perspective: "2400px" }}>
       {/* Lid */}
-      <motion.div
-        className="relative"
+      <div
+        className="relative rounded-[2.4%/3.7%] p-[1.05%] pb-[1.15%]"
         style={{
-          transformStyle: "preserve-3d",
+          transform: "rotateX(3deg)",
           transformOrigin: "50% 100%",
-          rotateX: tiltOn ? rotateX : 8,
-          rotateY: tiltOn ? rotateY : 0,
+          background: "var(--mb-lid)",
+          boxShadow: "var(--mb-lid-shadow), inset 0 1px 0 var(--mb-lid-hi), inset 0 -1px 0 rgba(0,0,0,0.35)",
         }}
       >
-        <div
-          className="relative rounded-[3.2%/4.9%] bg-[linear-gradient(180deg,#2d2d31,#1c1c1f_60%,#161618)] p-[0.7%] shadow-[0_40px_90px_-30px_rgba(0,0,0,0.9),0_2px_0_rgba(255,255,255,0.05)_inset,0_-1px_0_rgba(0,0,0,0.6)_inset]"
-          style={{ aspectRatio: "1000 / 655" }}
-        >
-          {/* Black bezel */}
-          <div className="relative h-full w-full rounded-[2.6%/4%] bg-[#050506] p-[1.5%] pt-[1.8%] pb-[1.9%]">
-            {/* Screen */}
-            <div className="screen relative h-full w-full overflow-hidden rounded-[1.4%/2.2%] bg-[#0d0d12]">
-              <Wallpaper />
-              <MenuBar />
-              <Dock />
-              {/* Live content (island, bar…) */}
-              <div className="absolute inset-0">{children}</div>
-              {/* Notch: drawn last so anything dropping from it appears to come out from behind. */}
-              <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center" aria-hidden="true">
-                <div className="bg-[#050506]" style={{ width: u(112), height: u(30), borderRadius: `0 0 ${u(11)} ${u(11)}` }} />
-              </div>
-              {/* Glass reflection */}
-              <div
-                className="pointer-events-none absolute inset-0 z-40 bg-[linear-gradient(112deg,rgba(255,255,255,0.09)_0%,rgba(255,255,255,0.03)_28%,rgba(255,255,255,0)_46%)]"
-                aria-hidden="true"
-              />
+        {/* Bezel: uniform, thin */}
+        <div className="rounded-[1.6%/2.5%] bg-[#0b0b0c] p-[2.1%]">
+          {/* Screen, 16:10 */}
+          <div className="screen relative overflow-hidden rounded-[0.9%/1.45%] bg-[#0d0d12]" style={{ aspectRatio: "16 / 10" }}>
+            <div className="absolute inset-0" style={{ background: "var(--wall)" }} aria-hidden="true" />
+            <MenuBar />
+            <Dock />
+            <div className="absolute inset-0">{children}</div>
+            {/* Notch, drawn last so the island reads as the notch itself growing. */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center" aria-hidden="true">
+              <div className="bg-[#0b0b0c]" style={{ width: u(NOTCH_W), height: u(NOTCH_H), borderRadius: `0 0 ${u(10)} ${u(10)}` }} />
             </div>
+            {/* Glass: a faint reflection band */}
+            <div
+              className="pointer-events-none absolute inset-0 z-40"
+              style={{ background: "linear-gradient(105deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.02) 24%, rgba(255,255,255,0) 40%)" }}
+              aria-hidden="true"
+            />
           </div>
-          {/* Hinge highlight along the bottom edge of the lid */}
-          <div className="absolute inset-x-[6%] bottom-0 h-px bg-white/10" aria-hidden="true" />
-        </div>
-      </motion.div>
-
-      {/* Base: keyboard deck seen from above, then the front lip. */}
-      <div className="relative -mt-px" style={{ perspective: "1800px" }} aria-hidden="true">
-        <div
-          className="relative mx-auto w-[104%] -ml-[2%] rounded-b-[1.2%/30%] bg-[linear-gradient(180deg,#232326,#1a1a1c_50%,#151517)] shadow-[0_30px_60px_-20px_rgba(0,0,0,0.9)]"
-          style={{ height: "clamp(14px, 2.6vw, 30px)", transformOrigin: "50% 0%", transform: "rotateX(62deg)" }}
-        >
-          <div className="absolute left-1/2 top-[18%] h-[52%] w-[52%] -translate-x-1/2 rounded-[3px] bg-[#0f0f11] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]" />
-          <div className="absolute left-1/2 top-[76%] h-[18%] w-[22%] -translate-x-1/2 rounded-[2px] bg-[#1d1d20] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]" />
-        </div>
-        <div
-          className="mx-auto w-[104%] -ml-[2%] rounded-b-[999px] bg-[linear-gradient(180deg,#2a2a2e,#141416)]"
-          style={{ height: "clamp(5px, 0.8vw, 9px)", marginTop: "-1px" }}
-        >
-          <div className="mx-auto h-[45%] w-[8%] rounded-b-md bg-[#0c0c0e]" />
         </div>
       </div>
-    </div>
-  );
-}
 
-function Wallpaper() {
-  return (
-    <div
-      className="absolute inset-0"
-      aria-hidden="true"
-      style={{ background: "var(--wall)" }}
-    />
+      {/* Base: continuous with the lid — front lip with the trackpad cutout, rounded ends, shadow under it. */}
+      <div className="relative -mt-px" aria-hidden="true">
+        <div
+          className="relative mx-auto w-[112%] -ml-[6%] overflow-hidden"
+          style={{
+            height: "clamp(9px, 1.9vw, 19px)",
+            borderRadius: "0 0 clamp(6px, 1.2vw, 12px) clamp(6px, 1.2vw, 12px) / 0 0 100% 100%",
+            background: "var(--mb-base)",
+            boxShadow: "inset 0 1px 0 var(--mb-base-hi), inset 0 -2px 3px rgba(0,0,0,0.25)",
+          }}
+        >
+          {/* Trackpad cutout: the finger notch on the front edge */}
+          <div
+            className="absolute left-1/2 top-0 -translate-x-1/2"
+            style={{ width: "13%", height: "42%", background: "var(--mb-cut)", borderRadius: "0 0 999px 999px" }}
+          />
+        </div>
+        {/* Soft drop shadow on the desk */}
+        <div
+          className="pointer-events-none absolute left-1/2 top-[40%] h-[220%] w-[118%] -translate-x-1/2"
+          style={{ background: "radial-gradient(50% 50% at 50% 30%, var(--mb-shadow), transparent 70%)", zIndex: -1 }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -125,7 +81,7 @@ function MenuBar() {
   return (
     <div
       className="absolute inset-x-0 top-0 z-10 flex items-center backdrop-blur-md"
-      style={{ height: u(24), padding: `0 ${u(12)}`, fontSize: u(11), background: "var(--menubar)", color: "var(--menubar-fg)" }}
+      style={{ height: u(NOTCH_H), padding: `0 ${u(12)}`, fontSize: u(11), background: "var(--menubar)", color: "var(--menubar-fg)" }}
       aria-hidden="true"
     >
       <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: u(12), height: u(12), marginRight: u(14) }}>
@@ -143,7 +99,7 @@ function MenuBar() {
         <span className="rounded-[2px] border border-current opacity-80" style={{ width: u(16), height: u(8), padding: u(1) }}>
           <span className="block h-full w-[80%] rounded-[1px] bg-current" />
         </span>
-        <span>Mon 9:41</span>
+        <span className="tnum">Mon 9:41</span>
       </span>
     </div>
   );

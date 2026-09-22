@@ -31,7 +31,7 @@ export function FAQ() {
   const reduce = useReducedMotion();
   return (
     <section id="faq" className="scroll-mt-16 px-6 py-24 md:py-32">
-      <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-12">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-8 lg:grid-cols-12">
         <div className="lg:col-span-4">
           <h2 className="h-section">Questions</h2>
         </div>

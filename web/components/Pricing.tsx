@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { setSource } from "@/lib/source";
 
 type Plan = {
   name: string;
@@ -9,10 +10,12 @@ type Plan = {
   yearly: number;
   features: string[];
   featured?: boolean;
+  id: string;
 };
 
 const plans: Plan[] = [
   {
+    id: "free",
     name: "Free",
     blurb: "Everything that runs on your Mac.",
     monthly: 0,
@@ -20,6 +23,7 @@ const plans: Plan[] = [
     features: ["Apps, files, calculator, system toggles", "20 answers a day", "5 tasks a day", "No card needed"],
   },
   {
+    id: "pro",
     name: "Pro",
     blurb: "For people who talk to their Mac all day.",
     monthly: 20,
@@ -28,6 +32,7 @@ const plans: Plan[] = [
     featured: true,
   },
   {
+    id: "pro-recall",
     name: "Pro + Recall",
     blurb: "Pro, plus a memory of your screen.",
     monthly: 30,
@@ -41,7 +46,7 @@ export function Pricing() {
 
   return (
     <section id="pricing" className="scroll-mt-16 px-6 py-24 md:py-32">
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-7xl">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
           <div className="lg:col-span-5">
             <h2 className="h-section">One app. One subscription.</h2>
@@ -81,7 +86,7 @@ export function Pricing() {
                   </li>
                 ))}
               </ul>
-              <a href="#waitlist" className={`mt-6 !h-10 ${p.featured ? "btn-primary" : "btn-secondary"}`}>
+              <a href="#waitlist" onClick={() => setSource(`pricing-${p.id}`)} className={`mt-6 !h-10 ${p.featured ? "btn-primary" : "btn-secondary"}`}>
                 Join the waitlist
               </a>
             </article>

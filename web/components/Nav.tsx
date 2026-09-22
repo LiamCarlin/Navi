@@ -28,7 +28,7 @@ export function Nav() {
         }`}
         aria-hidden="true"
       />
-      <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+      <div className="relative mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
         <Link href="/" className="text-[17px] text-fg" aria-label="Navi home">
           <Wordmark />
         </Link>

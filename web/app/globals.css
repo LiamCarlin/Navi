@@ -40,6 +40,14 @@
   --menubar: rgba(0, 0, 0, 0.25);
   --menubar-fg: rgba(255, 255, 255, 0.85);
   --dock: rgba(255, 255, 255, 0.1);
+  /* MacBook chassis: space black in dark, silver in light */
+  --mb-lid: linear-gradient(180deg, #3a3a3e 0%, #232326 6%, #1b1b1e 94%, #131315 100%);
+  --mb-lid-hi: rgba(255, 255, 255, 0.14);
+  --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.9);
+  --mb-base: linear-gradient(180deg, #3d3d41 0%, #26262a 35%, #1a1a1d 100%);
+  --mb-base-hi: rgba(255, 255, 255, 0.22);
+  --mb-cut: #111113;
+  --mb-shadow: rgba(0, 0, 0, 0.55);
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 16px;
@@ -80,6 +88,13 @@
     --menubar: rgba(255, 255, 255, 0.45);
     --menubar-fg: rgba(0, 0, 0, 0.8);
     --dock: rgba(255, 255, 255, 0.45);
+    --mb-lid: linear-gradient(180deg, #f2f2f4 0%, #d9d9de 5%, #c9c9cf 95%, #b3b3ba 100%);
+    --mb-lid-hi: rgba(255, 255, 255, 0.9);
+    --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.35);
+    --mb-base: linear-gradient(180deg, #ececef 0%, #cfcfd5 40%, #b9b9c0 100%);
+    --mb-base-hi: rgba(255, 255, 255, 0.95);
+    --mb-cut: #a3a3ab;
+    --mb-shadow: rgba(0, 0, 0, 0.28);
     color-scheme: light;
   }
 }
@@ -116,6 +131,13 @@
   --menubar: rgba(255, 255, 255, 0.45);
   --menubar-fg: rgba(0, 0, 0, 0.8);
   --dock: rgba(255, 255, 255, 0.45);
+  --mb-lid: linear-gradient(180deg, #f2f2f4 0%, #d9d9de 5%, #c9c9cf 95%, #b3b3ba 100%);
+  --mb-lid-hi: rgba(255, 255, 255, 0.9);
+  --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.35);
+  --mb-base: linear-gradient(180deg, #ececef 0%, #cfcfd5 40%, #b9b9c0 100%);
+  --mb-base-hi: rgba(255, 255, 255, 0.95);
+  --mb-cut: #a3a3ab;
+  --mb-shadow: rgba(0, 0, 0, 0.28);
   color-scheme: light;
 }
 

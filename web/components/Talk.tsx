@@ -66,22 +66,8 @@ export function Talk() {
                 <span>Navi</span>
               </span>
             </div>
-            <div className="absolute left-1/2 top-0 z-30 h-[26px] w-[104px] -translate-x-1/2 rounded-b-[10px] bg-black" aria-hidden="true" />
-
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center">
-              <AnimatePresence initial={false}>
-                {f.island && (
-                  <motion.div
-                    key="island"
-                    initial={reduce ? false : { y: "-100%" }}
-                    animate={{ y: 0 }}
-                    exit={reduce ? undefined : { y: "-100%", transition: { duration: 0.26, ease: [0.4, 0, 1, 1] } }}
-                    transition={spring}
-                  >
-                    <Island text={f.text} listening={f.listening} steps={f.steps} width={330} notch={26} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              <Island open={f.island} text={f.text} listening={f.listening} steps={f.steps} width={330} notchWidth={96} notchHeight={24} />
             </div>
 
             {/* What each clause did: a notification, a window, a notification. */}

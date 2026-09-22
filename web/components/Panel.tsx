@@ -7,8 +7,8 @@ export type Icon = "app" | "map" | "calendar" | "browser" | "clock" | "calc" | "
 
 export type Row = { icon: Icon; title: string; kind: string; hint: string };
 
-/** `calc(var(--u) * n)`: everything in the panel is drawn in screen units. Set `--u: 1px` for real pixels. */
-export const u = (n: number) => `calc(var(--u) * ${n})`;
+import { u } from "@/lib/u";
+export { u };
 
 /**
  * The ⌘Space bar. Purely presentational: the caller decides what is typed and which rows show,

@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -26,10 +27,20 @@ export function cleanNote(raw: unknown): string | null {
   return note.length ? note : null;
 }
 
-export function cleanSource(raw: unknown): string {
-  if (typeof raw !== "string") return "site";
-  const s = raw.trim().slice(0, 64);
-  return /^[\w.-]+$/.test(s) ? s : "site";
+/** Where the signup came from: `hero`, `sticky`, `mid-02`, `pricing-pro`, … optionally with `.ref-<id>`. */
+export function cleanSource(raw: unknown, ref?: unknown): string {
+  let s = typeof raw === "string" ? raw.trim().slice(0, 40) : "";
+  if (!/^[\w.-]+$/.test(s)) s = "site";
+  if (typeof ref === "string") {
+    const r = ref.trim().slice(0, 16);
+    if (/^[a-z0-9]+$/i.test(r)) s = `${s}.ref-${r.toLowerCase()}`;
+  }
+  return s.slice(0, 64);
+}
+
+/** A short, stable id for an email so a signup can share a `?ref=` link without exposing the address. */
+export function refId(email: string): string {
+  return createHash("sha256").update(email).digest("hex").slice(0, 8);
 }
 
 /** Path of the dev fallback file: `web/.waitlist.local.jsonl` (gitignored). */
@@ -58,21 +69,45 @@ export async function addToWaitlist(entry: WaitlistEntry): Promise<InsertResult>
   return appendLocal(entry);
 }
 
-async function appendLocal(entry: WaitlistEntry): Promise<InsertResult> {
+/** How many people are on the list. Cached for 60 s per server instance. */
+let countCache: { n: number; at: number } | null = null;
+export async function countWaitlist({ fresh = false } = {}): Promise<number> {
+  if (!fresh && countCache && Date.now() - countCache.at < 60_000) return countCache.n;
+  const client = supabase();
+  let n: number;
+  if (client) {
+    const { count, error } = await client.from("waitlist").select("*", { count: "exact", head: true });
+    if (error) throw new Error(`supabase: ${error.message}`);
+    n = count ?? 0;
+  } else {
+    n = (await readLocal()).length;
+  }
+  countCache = { n, at: Date.now() };
+  return n;
+}
+
+async function readLocal(): Promise<Partial<WaitlistEntry>[]> {
   let existing = "";
   try {
     existing = await readFile(LOCAL_FILE, "utf8");
   } catch {
-    // first entry
+    return [];
   }
+  const rows: Partial<WaitlistEntry>[] = [];
   for (const line of existing.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const row = JSON.parse(line) as Partial<WaitlistEntry>;
-      if (row.email === entry.email) return "exists";
+      rows.push(JSON.parse(line) as Partial<WaitlistEntry>);
     } catch {
       // ignore malformed lines
     }
+  }
+  return rows;
+}
+
+async function appendLocal(entry: WaitlistEntry): Promise<InsertResult> {
+  for (const row of await readLocal()) {
+    if (row.email === entry.email) return "exists";
   }
   await appendFile(LOCAL_FILE, JSON.stringify(entry) + "\n", "utf8");
   return "created";

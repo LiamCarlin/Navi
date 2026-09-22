@@ -3,7 +3,9 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useRef } from "react";
 import { Island, type Step } from "./Island";
-import { Panel, u, type Row } from "./Panel";
+import { NOTCH_H, NOTCH_W } from "./MacBook";
+import { Panel, type Row } from "./Panel";
+import { u } from "@/lib/u";
 import { useLoop } from "./useLoop";
 
 /* ------------------------------------------------------------------ */
@@ -129,21 +131,19 @@ export function HeroLoop() {
 
   return (
     <div ref={ref} className="absolute inset-0">
-      {/* Voice island, dropping out of the notch */}
-      <AnimatePresence initial={false}>
-        {frame.island && (
-          <div key="island" className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center">
-            <motion.div
-              initial={reduce ? false : { y: "-100%" }}
-              animate={{ y: 0 }}
-              exit={reduce ? undefined : { y: "-100%", transition: { duration: 0.28, ease: [0.4, 0, 1, 1] } }}
-              transition={spring}
-            >
-              <Island text={frame.text} listening={frame.listening} steps={frame.steps} status={frame.status} width={400} notch={30} />
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Voice island: the notch grows downward. Always mounted so the box animates, never remounts. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center">
+        <Island
+          open={frame.island}
+          text={frame.text}
+          listening={frame.listening}
+          steps={frame.steps}
+          status={frame.status}
+          width={400}
+          notchWidth={NOTCH_W}
+          notchHeight={NOTCH_H}
+        />
+      </div>
 
       {/* ⌘Space bar, dropping from the top of the screen */}
       <AnimatePresence initial={false}>
