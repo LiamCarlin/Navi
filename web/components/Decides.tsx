@@ -1,102 +1,113 @@
 "use client";
 
-import { motion, useReducedMotion } from "framer-motion";
 import { useRef } from "react";
-import { Reveal } from "./Reveal";
+import { Section } from "./Section";
 import { useLoop } from "./useLoop";
+import { Check } from "./Windows";
 
-/* A 6 s loop on a 1-second ruler: Navi decides at ~100 ms and is done by ~0.9 s; the chatbot is still spinning. */
-const LOOP = 6000;
-const KEY_AT = 300;
-const DECIDE_AT = KEY_AT + 100;
-const ACT_UNTIL = KEY_AT + 900;
+/* A race on a 1-second ruler. Keystroke at 0; Navi decides at ~100 ms, done at 0.9 s.
+   The chatbot's cursor blinks, then tokens stream, still going long after. */
+const KEY = 400;
+const DECIDE = KEY + 100;
+const DONE = KEY + 900;
+const TOKENS_AT = KEY + 1500;
+const TOKEN_MS = 85;
+const REPLY =
+  "Sure — I can help with that. To find flights to Tokyo, first open your browser and go to a flight search site. Then enter your departure city and";
+const TOKENS = REPLY.split(" ");
+const STOP = TOKENS_AT + TOKENS.length * TOKEN_MS + 800;
+const LOOP = STOP + 3600;
 
-type Frame = { pressed: boolean; decided: boolean; done: boolean; botLabel: string; t: number };
+type Frame = { pressed: boolean; naviMs: number; botMs: number; decided: boolean; done: boolean; tokens: number; cursor: boolean };
 
 function derive(t: number): Frame {
-  const pressed = t >= KEY_AT;
-  const decided = t >= DECIDE_AT;
-  const done = t >= ACT_UNTIL;
-  let botLabel = "";
-  if (t >= KEY_AT) botLabel = "Thinking…";
-  if (t >= KEY_AT + 1800) botLabel = "Still thinking…";
-  if (t >= KEY_AT + 3600) botLabel = "Typing a reply…";
-  // Quantise so the frame key only changes ~10×/s while the ruler fills.
-  return { pressed, decided, done, botLabel, t: Math.floor(t / 100) };
+  const pressed = t >= KEY;
+  const naviMs = Math.max(0, Math.min(900, t - KEY));
+  const botMs = Math.max(0, Math.min(STOP - KEY, t - KEY));
+  const tokens = t < TOKENS_AT ? 0 : Math.min(TOKENS.length, Math.floor((t - TOKENS_AT) / TOKEN_MS) + 1);
+  return {
+    pressed,
+    naviMs: Math.floor(naviMs / 10) * 10,
+    botMs: Math.floor(botMs / 50) * 50,
+    decided: t >= DECIDE,
+    done: t >= DONE,
+    tokens,
+    cursor: pressed && t < STOP,
+  };
 }
-const keyOf = (f: Frame) => `${f.pressed}${f.decided}${f.done}${f.botLabel}${f.t}`;
+const keyOf = (f: Frame) => `${f.pressed}|${f.naviMs}|${f.botMs}|${f.decided}|${f.done}|${f.tokens}|${f.cursor}`;
 
 export function Decides() {
   const ref = useRef<HTMLDivElement>(null);
-  const reduce = useReducedMotion();
-  const f = useLoop(ref, { duration: LOOP, derive, key: keyOf, staticT: KEY_AT + 2500 });
-  const ms = Math.max(0, f.t * 100 - KEY_AT);
+  const { frame: f } = useLoop(ref, { duration: LOOP, derive, key: keyOf, staticT: STOP - 400 });
+  const naviX = f.pressed ? (f.done ? 90 : f.decided ? 10 + ((f.naviMs - 100) / 800) * 80 : (f.naviMs / 100) * 10) : 0;
 
   return (
-    <section className="px-4 py-24 sm:px-6 md:py-32">
-      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-10 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-16">
-        <Reveal>
-          <div className="eyebrow mb-3">Why it feels instant</div>
-          <h2 className="h-section">Fast because it decides, not chats.</h2>
-          <p className="lede mt-4">
-            Navi doesn’t wait on a chatbot. A small decision model returns a typed decision — open, answer, do,
-            which app, risky? — in about 100 ms. The heavier model only runs when text or vision is needed.
-          </p>
-        </Reveal>
-
-        <Reveal delay={0.08}>
-          <div ref={ref} className="card p-5 sm:p-6" aria-label="Timeline: Navi decides in about 100 ms; a chatbot is still thinking after seconds">
-            <div className="mb-5 flex items-center justify-between text-xs text-fg-dim">
-              <span className="flex items-center gap-2">
-                <span className={`keycap transition-transform duration-150 ${f.pressed ? "translate-y-px opacity-80" : ""}`}>⏎</span>
-                keystroke
-              </span>
-              <span className="font-mono tabular-nums">{ms < 4000 ? `${ms} ms` : ">4 s"}</span>
-            </div>
-
-            <Track label="Navi" tone="accent">
-              <Ruler />
-              <Segment from={0} to={10} active={f.pressed} label="decide" className="bg-accent" />
-              <Segment from={10} to={90} active={f.decided} label="act" className="bg-accent/40" />
-              <motion.span
-                className="absolute -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-accent text-black shadow-[0_0_0_3px_var(--bg-elev)]"
-                style={{ left: "calc(90% - 12px)" }}
-                initial={false}
-                animate={{ scale: f.done ? 1 : 0, opacity: f.done ? 1 : 0 }}
-                transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 500, damping: 26 }}
-              >
-                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 12l5 5 9-10" />
-                </svg>
-              </motion.span>
-              <span className="absolute left-[10%] top-6 -translate-x-1/2 whitespace-nowrap font-mono text-[10px] text-fg-dim">≈100 ms</span>
-              <span className="absolute left-[90%] top-6 -translate-x-1/2 whitespace-nowrap font-mono text-[10px] text-fg-dim">done · under 1 s</span>
-            </Track>
-
-            <Track label="A chatbot" tone="dim" className="mt-12">
-              <Ruler />
-              <div
-                className="absolute inset-y-0 left-0 rounded-full bg-[repeating-linear-gradient(90deg,rgba(255,255,255,0.14)_0_6px,transparent_6px_12px)] transition-[width] duration-300 ease-linear"
-                style={{ width: f.pressed ? "100%" : "0%" }}
-              />
-              <span className="absolute left-2 top-6 flex items-center gap-2 whitespace-nowrap text-[11px] text-fg-dim">
-                <span className={`h-3 w-3 rounded-full border-2 border-white/20 border-t-white/70 ${f.pressed ? "spin" : ""}`} />
-                {f.botLabel || "waiting for you to type"}
-              </span>
-              <span className="absolute right-0 top-6 font-mono text-[10px] text-fg-dim">…</span>
-            </Track>
+    <Section
+      n="02"
+      title="Fast because it decides, not chats."
+      flip
+      visual={
+        <div ref={ref} className="border-t border-line pt-6" aria-label="Navi decides in about 100 ms and is done under a second; a chatbot is still typing">
+          <div className="mb-8 flex items-center justify-between text-[13px] text-fg-dim">
+            <span className="flex items-center gap-2">
+              <span className={`keycap transition-transform duration-100 ${f.pressed ? "translate-y-px" : ""}`}>⏎</span>
+              keystroke
+            </span>
+            <span className="tnum">0 ms — 1 s</span>
           </div>
-        </Reveal>
-      </div>
-    </section>
+
+          <Lane label="Navi" ms={f.naviMs} fixed={f.done} tone="fg">
+            <Ruler />
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-accent"
+              style={{ width: "10%", transform: `scaleX(${f.pressed ? Math.min(1, naviX / 10) : 0})`, transformOrigin: "left" }}
+            />
+            <div
+              className="absolute inset-y-0 rounded-full bg-accent/35"
+              style={{ left: "10%", width: "80%", transform: `scaleX(${f.decided ? Math.max(0, (naviX - 10) / 80) : 0})`, transformOrigin: "left" }}
+            />
+            <Marker x={naviX} done={f.done} />
+            <Tick x={10} label="decision · ≈100 ms" />
+            <Tick x={90} label="done · 0.9 s" />
+          </Lane>
+
+          <Lane label="A chatbot" ms={f.botMs} fixed={false} tone="muted" className="mt-14">
+            <Ruler />
+            <div
+              className="absolute inset-y-0 left-0 w-full rounded-full bg-[repeating-linear-gradient(90deg,var(--line-strong)_0_6px,transparent_6px_12px)]"
+              style={{ transform: `scaleX(${f.pressed ? Math.min(1, f.botMs / 1000) : 0})`, transformOrigin: "left" }}
+            />
+            <Marker x={f.pressed ? Math.min(100, f.botMs / 10) : 0} done={false} muted />
+          </Lane>
+
+          <div className="mt-6 min-h-[64px] rounded-[10px] border border-line p-3 text-[13px] leading-relaxed text-fg-muted">
+            {f.tokens === 0 ? (
+              <span className="text-fg-dim">{f.cursor ? <span className="caret caret-ink" /> : "Waiting for a keystroke"}</span>
+            ) : (
+              <>
+                {TOKENS.slice(0, f.tokens).join(" ")}
+                {f.cursor && <span className="caret caret-ink" />}
+              </>
+            )}
+          </div>
+        </div>
+      }
+    >
+      Navi doesn’t wait on a chatbot. A small decision model returns a typed decision — open, answer, do, which app,
+      risky? — in about 100 ms. The heavier model only runs when text or vision is needed.
+    </Section>
   );
 }
 
-function Track({ label, tone, className = "", children }: { label: string; tone: "accent" | "dim"; className?: string; children: React.ReactNode }) {
+function Lane({ label, ms, fixed, tone, className = "", children }: { label: string; ms: number; fixed: boolean; tone: "fg" | "muted"; className?: string; children: React.ReactNode }) {
   return (
-    <div className={`grid grid-cols-[72px_1fr] items-center gap-3 sm:grid-cols-[88px_1fr] ${className}`}>
-      <span className={`text-sm font-medium ${tone === "accent" ? "text-fg" : "text-fg-muted"}`}>{label}</span>
-      <div className="relative h-4">{children}</div>
+    <div className={`grid grid-cols-[80px_1fr_64px] items-center gap-3 sm:grid-cols-[96px_1fr_72px] ${className}`}>
+      <span className={`text-sm font-medium ${tone === "fg" ? "text-fg" : "text-fg-muted"}`}>{label}</span>
+      <div className="relative h-4" style={{ containerType: "inline-size" }}>
+        {children}
+      </div>
+      <span className={`tnum text-right text-[13px] ${fixed ? "text-fg" : "text-fg-dim"}`}>{ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`}</span>
     </div>
   );
 }
@@ -105,15 +116,23 @@ function Ruler() {
   return <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-line-strong" aria-hidden="true" />;
 }
 
-function Segment({ from, to, active, label, className }: { from: number; to: number; active: boolean; label: string; className: string }) {
+function Tick({ x, label }: { x: number; label: string }) {
   return (
-    <motion.div
-      className={`absolute inset-y-0 rounded-full ${className}`}
-      style={{ left: `${from}%`, originX: 0 }}
-      initial={false}
-      animate={{ width: active ? `${to - from}%` : "0%" }}
-      transition={{ duration: active ? (to - from) / 100 : 0, ease: "linear" }}
-      title={label}
-    />
+    <span className="tnum absolute top-6 -translate-x-1/2 whitespace-nowrap text-[11px] text-fg-dim" style={{ left: `${x}%` }}>
+      {label}
+    </span>
+  );
+}
+
+function Marker({ x, done, muted = false }: { x: number; done: boolean; muted?: boolean }) {
+  return (
+    <span
+      className={`absolute top-1/2 flex h-5 w-5 items-center justify-center rounded-full ${
+        done ? "bg-accent text-accent-ink" : muted ? "bg-fg-dim" : "bg-fg"
+      }`}
+      style={{ left: 0, transform: `translate(calc(${x}cqw - 10px), -50%)`, transition: "background-color 150ms", boxShadow: "0 0 0 3px var(--bg)" }}
+    >
+      {done && <Check className="h-3 w-3" />}
+    </span>
   );
 }

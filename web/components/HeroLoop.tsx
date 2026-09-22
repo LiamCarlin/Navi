@@ -123,7 +123,7 @@ function keyOf(f: Frame) {
 export function HeroLoop() {
   const reduce = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
-  const frame = useLoop(ref, { duration: LOOP_MS, derive, key: keyOf, staticT: STATIC_T });
+  const { frame } = useLoop(ref, { duration: LOOP_MS, derive, key: keyOf, staticT: STATIC_T });
 
   const spring = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as const;
 
@@ -167,7 +167,7 @@ export function HeroLoop() {
         {frame.hint && (
           <div key={frame.hint} className="pointer-events-none absolute inset-x-0 z-20 flex justify-center" style={{ bottom: u(52) }}>
             <motion.div
-              className="flex items-center whitespace-nowrap border border-white/15 bg-black/60 text-white/90 backdrop-blur-md"
+              className="glass flex items-center whitespace-nowrap"
               style={{ height: u(26), padding: `0 ${u(10)}`, borderRadius: u(7), fontSize: u(12), gap: u(6) }}
               initial={{ opacity: 0, scale: 0.92, y: 4 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
