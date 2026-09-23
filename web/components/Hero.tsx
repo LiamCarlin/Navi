@@ -1,4 +1,4 @@
-import { HeroLoop } from "./HeroLoop";
+import { HeroVideo } from "./HeroVideo";
 import { MacBook } from "./MacBook";
 import { WaitlistCount } from "./WaitlistCount";
 import { WaitlistForm } from "./WaitlistForm";
@@ -33,7 +33,7 @@ export function Hero() {
         {/* On phones the laptop runs wider than the viewport so the screen stays legible; the section clips it. */}
         <div className="rise w-[134%] -translate-x-[12.7%] sm:w-full sm:translate-x-0 lg:col-span-7" style={{ "--rise-delay": "100ms" } as React.CSSProperties}>
           <MacBook>
-            <HeroLoop />
+            <HeroVideo />
           </MacBook>
         </div>
       </div>
