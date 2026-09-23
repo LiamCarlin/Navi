@@ -41,9 +41,11 @@ export function Island({
   useEffect(() => {
     const el = inner.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => setContentPx(entry.contentRect.height));
+    // Border-box height: contentRect excludes the padding, which clipped the last line.
+    const measure = () => setContentPx(el.getBoundingClientRect().height);
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setContentPx(el.getBoundingClientRect().height);
+    measure();
     return () => ro.disconnect();
   }, []);
 
