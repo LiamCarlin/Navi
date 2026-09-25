@@ -58,7 +58,8 @@ enum TaskPlanner {
     Navi itself shows the user what the last step found, so a task that only asks to find, look up, get or check something is ONE step ending when the information is visible — never add a step to tell, report, show, say or explain the answer, and never route through an assistant app or site (ChatGPT, Claude, Siri, …) unless the user named it. A goal for the user's own reading ("leaving at 6pm", "for tomorrow") stays in the step's goal verbatim.
     When the user names where to do it ("go to maps", "in chrome", "on Outlook"), the work happens there and only there: one step on that surface (a named website or web app is a "browser" step with its "url"; a named macOS app is an "app" step) — never a second step that repeats or double-checks the same work elsewhere.
     {{result}} always receives the findings of the most recent step marked "needs_result": mark exactly the step that gathers what a later step uses (e.g. the step that reads the event details, not a search for the site).
-    The state's "reference" lists the macOS apps Navi knows well ("known_apps": use these exact names for "app" steps when they fit — a calendar task goes to "Calendar" unless the user names Outlook, a text goes to "Messages") and "deep_links": pages of web apps that can be opened directly (e.g. "Google Drive: shared with me", "Google Docs: new document"). When a browser step is about one of them, set that step's "url" to the deep link (append the query for links ending in "=" or "/") instead of inventing a URL or starting from a search. Dictated tasks arrive with speech-recognition slips ("dock" for "Doc", "calculatorcul" for "Calculator"): plan the obvious intent.
+    The state's "reference" lists the macOS apps Navi knows well ("known_apps": use these exact names for "app" steps when they fit — by default a calendar task goes to "Calendar" and a text to "Messages", unless the user names another app or "user_habits" shows they use another one) and "deep_links": pages of web apps that can be opened directly (e.g. "Google Drive: shared with me", "Google Docs: new document"). When a browser step is about one of them, set that step's "url" to the deep link (append the query for links ending in "=" or "/") instead of inventing a URL or starting from a search. Dictated tasks arrive with speech-recognition slips ("dock" for "Doc", "calculatorcul" for "Calculator"): plan the obvious intent.
+    The state's "user_habits" (when present) comes from this user's own screen history: plan the task the way THEY do it, not the generic way. "apps_for_this_kind_of_task" lists the apps and sites that could do this kind of work, most used first: use the user's most used one (an "app" step when it is a mac app — e.g. Outlook for email when they read mail in the Outlook app, never a web mail site they have not used; a "browser" step on their own site when it is a website, with "url" on that host — e.g. their school's Canvas host instead of canvas.instructure.com). A web app with "user_sites" is reached on those hosts: change a deep link's host to the user's. "seen_for_this_task" lists where the task's own words (a person, a document, a course) appeared: when one of them is clearly the thing the task means, go there — its "url" as the step's "url", or its "app" as the step's app (a person the user texts in WhatsApp is messaged in WhatsApp). "most_used_apps"/"most_used_sites" break any remaining tie. An app or site the task names outright always wins over habits; never let habits add steps.
     Never ask for clarification, refuse, or explain: if the task is incomplete, typo-ridden or ambiguous, plan its most likely reading with what was given. Output is only the JSON object.
     """
 
@@ -66,13 +67,15 @@ enum TaskPlanner {
     /// object — no prose, no clarification questions, no code fences.
     static let assistantPrefill = "{\"steps\":["
 
-    static func stateJSON(task: String, frontmost: FrontmostProbe.Info) -> [String: Any] {
+    /// `habits`: `UserHabits.plannerSection` for this task (nil ⇒ no screen memory, or turned off).
+    static func stateJSON(task: String, frontmost: FrontmostProbe.Info, habits: [String: Any]? = nil) -> [String: Any] {
         var s: [String: Any] = ["task": task,
                                 "frontmost_app": frontmost.appName ?? frontmost.bundleID ?? "unknown"]
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
             s["open_browser_tab"] = ["title": frontmost.windowTitle ?? "", "url": u]
         }
         s["reference"] = AppSkills.plannerReference()
+        if let habits { s["user_habits"] = habits }
         return s
     }
 
@@ -174,11 +177,17 @@ enum TaskPlanner {
 
     /// Start URL for a browser step: explicit URL → current tab → search for
     /// the query (or, lacking one, the goal with launcher chatter stripped).
+    /// Library defaults (a deep link, a well-known site — also when the planner copied
+    /// one into `url`) move to the host this user really uses (`UserHabits.personalize`);
+    /// the open tab never does.
     static func startURL(for step: Step, frontmost: FrontmostProbe.Info) -> String {
-        if let u = step.url { return u }
+        if let u = step.url {
+            let typed = UserHabits.host(of: u).map { step.goal.lowercased().contains($0) } ?? false   // a URL the user spelled out stays
+            return u == frontmost.url || typed ? u : UserHabits.personalized(u)
+        }
         if step.useCurrentTab, let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") { return u }
-        if let deep = AppSkills.startURL(for: step.goal) { return deep }             // "on youtube: lofi beats" → results page
-        if let site = UltrafastBridge.knownSiteURL(in: step.goal) { return site }   // "google flights", "youtube", …
+        if let deep = AppSkills.startURL(for: step.goal) { return UserHabits.personalized(deep) }            // "on youtube: lofi beats" → results page
+        if let site = UltrafastBridge.knownSiteURL(in: step.goal) { return UserHabits.personalized(site) }  // "google flights", "youtube", …
         if let q = step.query { return UltrafastBridge.searchURL(for: q) }
         return TaskSurface.startURL(task: step.goal, frontmost: frontmost) ?? UltrafastBridge.searchURL(for: step.goal)
     }
@@ -192,7 +201,8 @@ enum TaskPlanner {
 
     /// Same, plus the model's raw reply (for the debug probe).
     static func planRaw(task: String, frontmost: FrontmostProbe.Info, claude: ClaudeClient) async throws -> (Plan?, Int, String) {
-        let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost), options: [.sortedKeys])
+        let habits = UserHabits.current?.plannerSection(task: task)
+        let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost, habits: habits), options: [.sortedKeys])
         let start = Date()
         // Assistant prefill: Haiku continues `{"steps":[` instead of answering in
         // prose ("I need to clarify…"), which used to throw the whole plan away.
@@ -203,6 +213,7 @@ enum TaskPlanner {
         let reply = completePrefilled(m.text)
         let plan = parse(reply).map { prune($0, task: task) }
         if plan == nil { Log.agent.warning("TaskPlanner: unparseable reply: \(reply.prefix(300), privacy: .public)") }
+        if habits != nil { Log.agent.debug("TaskPlanner: planned with user habits") }
         return (plan, Int(Date().timeIntervalSince(start) * 1000), reply)
     }
 

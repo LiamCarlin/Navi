@@ -230,6 +230,44 @@ final class MemoryStore: @unchecked Sendable {
         try queue.sync { Int((try query("SELECT COUNT(*) AS n FROM frames", []).first?["n"] as? Int64) ?? 0) }
     }
 
+    // MARK: Habits (read by `UserHabits`)
+
+    struct AppUsage: Sendable, Equatable {
+        var bundleID: String
+        var appName: String
+        var screens: Int
+        var lastSeen: Date
+    }
+
+    struct SiteVisit: Sendable, Equatable {
+        var url: String
+        var at: Date
+    }
+
+    /// Frames per app since `since`, most first. Sensitive stubs count too: they
+    /// keep only the app and the time, which is all this needs.
+    func appUsage(since: Date) throws -> [AppUsage] {
+        try queue.sync {
+            try query("""
+            SELECT bundle_id, MAX(app_name) AS app_name, COUNT(*) AS n, MAX(ts) AS last
+            FROM frames WHERE ts >= ? GROUP BY bundle_id ORDER BY n DESC
+            """, [since.timeIntervalSince1970]).map { r in
+                AppUsage(bundleID: r["bundle_id"] as? String ?? "", appName: r["app_name"] as? String ?? "",
+                         screens: Int(r["n"] as? Int64 ?? 0), lastSeen: Date(timeIntervalSince1970: r["last"] as? Double ?? 0))
+            }
+        }
+    }
+
+    /// Browser frames' URLs since `since`, newest first (capped).
+    func siteVisits(since: Date, limit: Int = 20_000) throws -> [SiteVisit] {
+        try queue.sync {
+            try query("SELECT url, ts FROM frames WHERE ts >= ? AND url IS NOT NULL AND url != '' ORDER BY ts DESC LIMIT ?",
+                      [since.timeIntervalSince1970, limit]).compactMap { r in
+                (r["url"] as? String).map { SiteVisit(url: $0, at: Date(timeIntervalSince1970: r["ts"] as? Double ?? 0)) }
+            }
+        }
+    }
+
     // MARK: Sessions
 
     @discardableResult
@@ -320,6 +358,22 @@ final class MemoryStore: @unchecked Sendable {
             hits += more.filter { !seen.contains("\($0.source)-\($0.id)") }
         }
         return Self.dedupe(hits).sorted { $0.score > $1.score }.prefix(limit).map { $0 }
+    }
+
+    /// Strict search: every term must match (no OR fallback), recency-weighted.
+    func searchAll(query raw: String, limit: Int = 20, now: Date = Date()) throws -> [Hit] {
+        guard let match = Self.ftsQuery(raw, requireAll: true) else { return [] }
+        return Self.dedupe(try runSearch(match: match, limit: limit, within: nil, now: now)).sorted { $0.score > $1.score }.prefix(limit).map { $0 }
+    }
+
+    /// Frames + sessions a single term (prefix) matches: how specific it is.
+    func termCount(_ term: String) throws -> Int {
+        guard let match = Self.ftsQuery(term, requireAll: true) else { return 0 }
+        return try queue.sync {
+            let f = try query("SELECT COUNT(*) AS n FROM frames_fts WHERE frames_fts MATCH ?", [match]).first?["n"] as? Int64 ?? 0
+            let s = try query("SELECT COUNT(*) AS n FROM sessions_fts WHERE sessions_fts MATCH ?", [match]).first?["n"] as? Int64 ?? 0
+            return Int(f + s)
+        }
     }
 
     private func runSearch(match: String, limit: Int, within: DateInterval?, now: Date) throws -> [Hit] {

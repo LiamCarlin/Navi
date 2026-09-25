@@ -36,7 +36,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app) |
+| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory) |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
@@ -82,6 +82,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     implies ("text mom" → Messages) when no planner runs, and `AppSkills.startURL`
     turns "play X on youtube" into the results page. When a new app misbehaves, add or
     fix its skill first; run the live A/B probe (see memory notes) before trusting it.
+  - **User habits** (`Agent/UserHabits`): planning follows how *this* user works, read
+    from screen memory (installed by `MemoryService`, toggle `agentUsesScreenHabits`).
+    The planner state gets `user_habits`: per kind of work (email, texting, coursework…)
+    the apps/sites that could do it with the user's screen counts (Outlook app 159 vs
+    Outlook Web never), top apps/sites, and `seen_for_this_task` (where the task's rarest
+    words — a person, a doc — appeared; titles + cleaned URLs only, never OCR text,
+    assistant chats and auth pages dropped). Jev's `surface` heads (TaskSurface, voice)
+    get a one-line `user_usually_uses`; voice app inference breaks ties by usage; deep
+    links move to the user's own host (`personalize`: canvas.instructure.com →
+    canvas.olin.edu, never across rival sites). Probe it on a copy of memory.sqlite.
   - **Fewer Claude turns** (`JevDriver.decide`): below the confidence threshold Jev's
     pick is still taken when it is cheap to undo (`actFloor` 0.22; never ⌘W/⌘↩/Delete);
     a low-confidence step with `task_complete ≥ 0.5` after work was done is *done*;

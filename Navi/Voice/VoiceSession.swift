@@ -555,6 +555,7 @@ final class VoiceSession: ObservableObject {
         ctx.recentDone = executor.recent.isEmpty ? Array(segmenter.history.suffix(3)) : Array(executor.recent.suffix(3))
         ctx.appCandidates = VoiceAppMatcher.candidates(in: clause.head, index: AppIndex.shared, running: AppIndex.runningBundleIDs())
         ctx.isPaused = phase == .paused
+        ctx.userUsuallyUses = UserHabits.current?.cachedProfile().flatMap { UserHabits.surfaceHint(task: clause.head, profile: $0) }
         return ctx
     }
 

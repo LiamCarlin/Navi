@@ -91,6 +91,8 @@ enum VoiceDecider {
         var recentDone: [String] = []
         var appCandidates: [VoiceAppMatcher.Candidate] = []
         var isPaused = false
+        /// `UserHabits.surfaceHint` for HEAD: the app/site this user really uses for it.
+        var userUsuallyUses: String?
     }
 
     struct Input: Sendable {
@@ -125,6 +127,7 @@ enum VoiceDecider {
             "screen": screen,
             "navi": navi,
         ]
+        if let h = ctx.userUsuallyUses { state["user_usually_uses"] = h }
         if !ctx.appCandidates.isEmpty {
             state["installed_apps_possibly_named_in_HEAD"] = ctx.appCandidates.map { ["id": $0.id, "app": $0.entry.name] }
         }
@@ -152,7 +155,7 @@ enum VoiceDecider {
             q["app_target"] = .choice(instructions: "Which installed app does HEAD ask to open or switch to?", criteria: crit)
         }
         q["surface"] = .choice(
-            instructions: "If HEAD is a task Navi must carry out on the computer, where does it happen?",
+            instructions: "If HEAD is a task Navi must carry out on the computer, where does it happen? user_usually_uses (when present) is where THIS user does this kind of thing — follow it unless HEAD names another place.",
             criteria: TaskSurface.criteria)
         if let u = ctx.browserURL, !u.isEmpty {
             q["start_from"] = .choice(

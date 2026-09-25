@@ -349,6 +349,14 @@ final class AgentRun: @unchecked Sendable {
                 return (front, plan)
             }
         }
+        // "Go to my outlook" is the Outlook app for someone who reads mail there and has
+        // never opened Outlook on the web — whatever the web-leaning classification said.
+        if surface == .browser, !config.useCurrentTab, let profile = UserHabits.current?.profile(),
+           let app = UserHabits.namedNativeApp(in: originalTask, profile: profile),
+           let bundle = app.bundleIDs.first(where: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }) {
+            Log.agent.info("UserHabits: \(app.name, privacy: .public) is the app this user uses — native step instead of the browser")
+            return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: bundle))
+        }
         guard surface == .browser, ComputerAgent.browserRunner != nil else {
             // No planner (voice): a task that implies an app ("text mom I'm late" →
             // Messages) must not run in whatever happens to be in front.
@@ -375,9 +383,11 @@ final class AgentRun: @unchecked Sendable {
     /// frontmost app already is the implied one).
     static func inferredApp(for task: String, frontmost: FrontmostProbe.Info) -> String? {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        let profile = UserHabits.current?.profile()
         guard let hit = AppSkills.inferApp(for: task, frontmostBundleID: frontmost.bundleID,
                                            isInstalled: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil },
-                                           isRunning: { running.contains($0) }) else { return nil }
+                                           isRunning: { running.contains($0) },
+                                           usage: { s in profile.map { UserHabits.usage(of: s, in: $0).app?.screens ?? 0 } ?? 0 }) else { return nil }
         if let f = frontmost.bundleID, hit.skill.bundleIDs.contains(f) { return nil }
         return hit.bundleID
     }
