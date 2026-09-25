@@ -983,8 +983,44 @@ final class AgentRun: @unchecked Sendable {
             var entry = JevDriver.HistoryEntry(action: human, kind: action.kind, text: text, pageChanged: nil)
             var actionError: String?
             let before = await AXSnapshotter.fingerprint(target: target)
+            // Typing a name into To:/Cc:/invitees only starts a lookup; the contact is
+            // set when its suggestion is picked. Remember what was on screen first.
+            var recipientField: AXElement?
+            if case .typeText(let id) = action, let f = snapshot.element(id), RecipientPicker.isRecipientField(f) { recipientField = f }
+            var recipientBaseline: Set<String> = []
+            if let f = recipientField { recipientBaseline = await RecipientPicker.baseline(pid: f.pid > 0 ? f.pid : snapshot.pid, field: f.frame) }
+            var recipientOutcome: RecipientPicker.Outcome?
             do {
                 try await executor.perform(action, text: text, snapshot: snapshot)
+                if let field = recipientField, let typed = text {
+                    handle.emit(.status("Waiting for the contact suggestion for ‘\(typed)’"))
+                    let pid = field.pid > 0 ? field.pid : snapshot.pid
+                    let recent = snapshot.visibleText + "\n" + snapshot.elements.map(\.label).joined(separator: "\n")
+                    func resolve(_ name: String) async -> RecipientPicker.Outcome {
+                        await RecipientPicker.resolve(typed: name, pid: pid, field: field.frame, baseline: recipientBaseline,
+                                                      recent: recent, executor: executor) { [self] in !isCancelled }
+                    }
+                    var outcome = await resolve(typed)
+                    // Nothing came up: the contact may be saved under another name ("mom" → "Mama").
+                    if outcome == .noSuggestions {
+                        let alternatives = RecipientPicker.alternatives(for: typed, recent: recent).prefix(3)
+                        for alt in alternatives {
+                            handle.emit(.status("No contact for ‘\(typed)’ — trying ‘\(alt)’"))
+                            try await executor.type(alt, into: field)
+                            outcome = await resolve(alt)
+                            if outcome.isResolved { break }
+                        }
+                        // Still nothing visible: the app may draw its list where AX can't see it.
+                        if outcome == .noSuggestions {
+                            if !alternatives.isEmpty { try await executor.type(typed, into: field) }
+                            outcome = await RecipientPicker.acceptHighlighted(typed: typed, pid: pid, field: field.frame,
+                                                                               baseline: recipientBaseline, executor: executor)
+                        }
+                    }
+                    recipientOutcome = outcome
+                    entry.action += outcome.note(typed: typed)
+                    handle.emit(.status("Recipient: " + outcome.note(typed: typed).dropFirst(3)))
+                }
                 // Background mode: Jev switched apps — follow it, or every later walk,
                 // event and screenshot would still address the app it left.
                 if case .openApp(let name) = action, target != nil {
@@ -992,8 +1028,9 @@ final class AgentRun: @unchecked Sendable {
                     target = self.target
                     executor.target = target
                 }
-                // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget.
-                if action != .wait { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
+                // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget
+                // (the recipient picker already waited for its list to settle).
+                if action != .wait, recipientOutcome == nil { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1011,6 +1048,15 @@ final class AgentRun: @unchecked Sendable {
             history.append(entry)
             if !action.isReadOnly { tracker.record(action: human, changed: entry.pageChanged, error: actionError) }
             humanLog.append(human)
+            if let outcome = recipientOutcome, let field = recipientField, let typed = text {
+                if case .picked(let n) = outcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
+                // No contact behind the name in a messaging/email app: writing the
+                // message now would text or mail nobody (or the wrong person). Stop and say so.
+                if outcome.stopsContactApp, RecipientPicker.contactApps.contains(snapshot.bundleID ?? "") {
+                    handle.emit(.failed(outcome.failure(typed: typed, field: field.displayName, app: snapshot.appName)))
+                    return
+                }
+            }
             if actionError == nil, !action.isReadOnly { redactedLog.append(action.human(in: snapshot, text: nil)) }
             if let targetFrame { lastActedFrame = targetFrame }
             snapshot = next
