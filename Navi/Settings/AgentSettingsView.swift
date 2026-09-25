@@ -34,7 +34,11 @@ struct AgentSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("Approve Chrome's connection prompt for me", isOn: $settings.agentAutoApproveChrome)
-                Text("Chrome asks \u{201C}Allow remote debugging?\u{201D} every time Navi reconnects — after your Mac sleeps or Chrome restarts. Navi clicks Allow for its own connection only, never for another app's.")
+                Text("Chrome asks \u{201C}Allow remote debugging?\u{201D} every time Navi reconnects — after your Mac sleeps or Chrome restarts. Navi clicks Allow for its own browser connection (and Navi's developer tools), never for another app's.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Hide Chrome's \u{201C}automated test software\u{201D} bar", isOn: $settings.agentHideChromeAutomationBar)
+                Text("Chrome shows this bar while Navi is connected. Navi closes it as soon as it appears.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } header: {

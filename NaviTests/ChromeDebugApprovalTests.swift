@@ -12,18 +12,16 @@ struct ChromeDebugApprovalTests {
         #expect(!ChromeDebugApproval.isAwaitingApproval(logTail: "connecting to ws://127.0.0.1:9222"))
     }
 
-    @Test func harnessFilesFollowBrowserHarnessPaths() {
-        let home = NSHomeDirectory()
-        let plain = ChromeDebugApproval.harnessFiles(env: [:])
-        #expect(plain.log.path == home + "/.config/browser-harness/tmp/bu-default.log")
-        #expect(plain.pid.path == home + "/.config/browser-harness/runtime/bu-default.pid")
+    @Test func harnessHomeFollowsBrowserHarnessPaths() {
+        #expect(ChromeDebugApproval.harnessHome(env: [:]).path == NSHomeDirectory() + "/.config/browser-harness")
+        #expect(ChromeDebugApproval.harnessHome(env: ["BH_HOME": "/x/bh"]).path == "/x/bh")
+        #expect(ChromeDebugApproval.harnessHome(env: ["XDG_CONFIG_HOME": "/cfg"]).path == "/cfg/browser-harness")
+    }
 
-        let named = ChromeDebugApproval.harnessFiles(env: ["BH_HOME": "/x/bh", "BU_NAME": "navi"])
-        #expect(named.log.path == "/x/bh/tmp/bu-navi.log")
-        #expect(named.pid.path == "/x/bh/runtime/bu-navi.pid")
-
-        let isolated = ChromeDebugApproval.harnessFiles(env: ["BH_TMP_DIR": "/t"])
-        #expect(isolated.log.path == "/t/bu.log")
-        #expect(isolated.pid.path == "/t/bu.pid")
+    @Test func everyDaemonLogPairsWithItsPidFile() {
+        let home = URL(fileURLWithPath: "/h")
+        let files = ChromeDebugApproval.daemonFiles(home: home, logNames: ["bu-navi.log", "bu-default.log", "notes.txt", "shot.png"])
+        #expect(files.map(\.log.path) == ["/h/tmp/bu-default.log", "/h/tmp/bu-navi.log"])
+        #expect(files.map(\.pid.path) == ["/h/runtime/bu-default.pid", "/h/runtime/bu-navi.pid"])
     }
 }

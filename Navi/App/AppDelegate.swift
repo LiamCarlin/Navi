@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey.register(settings: NaviSettings.shared)
 
         services.startBackgroundServices()
+        ChromeDebugApproval.startMonitoring()   // Chrome's Allow sheet + automation bar (Agent/ChromeDebugApproval.swift)
         UltrafastBridge.prewarm()
         Updater.shared.start()   // appcast check 30 s after launch, then daily (App/Updater.swift)
         NotificationCenter.default.addObserver(forName: .naviShowCurrentTask, object: nil, queue: .main) { [weak self] _ in
