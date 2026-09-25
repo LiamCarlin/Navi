@@ -98,7 +98,9 @@ final class ActionExecutor: @unchecked Sendable {
         if await focusIsSecure() { throw NaviError.other(Self.refuseSecure) }
 
         // Fast path: set AXValue directly when the app allows it, then verify.
-        if let ref = el.ref, el.isTextInput {
+        // Not for recipient fields: a value set through AX never starts the app's
+        // contact lookup, so no suggestion would ever come up to pick.
+        if let ref = el.ref, el.isTextInput, !RecipientPicker.isRecipientField(el) {
             let ok = await AXQueue.run { () -> Bool in
                 var settable = DarwinBoolean(false)
                 guard AXUIElementIsAttributeSettable(ref, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue else { return false }
@@ -159,6 +161,26 @@ final class ActionExecutor: @unchecked Sendable {
     private func focusIsSecure() async -> Bool {
         if let target { return await target.focusedElementIsSecureField() }
         return InputController.focusedElementIsSecureField()
+    }
+
+    // MARK: Suggestions (RecipientPicker)
+
+    /// Return to the field's app: commits the suggestion it highlights.
+    func pressReturn(pid: pid_t) async {
+        if !isBackground { await activate(pid: pid) }
+        await input.press(KeyCombo(keyCode: 36, flags: [], keyName: "return"))
+    }
+
+    /// Presses a suggestion row: AXPress first, a real click at its centre when
+    /// that fails or `realClick` (the second attempt, or Chromium content).
+    func clickSuggestion(_ s: RecipientPicker.Suggestion, realClick: Bool) async {
+        if !realClick, let ref = s.ref {
+            let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
+            if err == .success { return }
+        }
+        guard !s.frame.isEmpty else { return }
+        await activate(pid: s.pid)
+        await input.click(at: CGPoint(x: s.frame.midX, y: s.frame.midY))
     }
 
     // MARK: Select

@@ -430,3 +430,42 @@ try:
 finally:
     nr.cdp = real_cdp
 print("rows and items OK")
+
+# --- Adaptation 18: recipient fields pick the contact -------------------------
+assert nr.is_recipient_label("To recipients") and nr.is_recipient_label("To") and nr.is_recipient_label("Add guests")
+assert not nr.is_recipient_label("Subject") and not nr.is_recipient_label("Search mail") and not nr.is_recipient_label("Message Body")
+opts = [
+    {"label": "Mike Grandinetti, mike.g@babson.edu", "selected": True, "y": 100},
+    {"label": "Mikey, Bhar, Zach, Kilan, +14257800416", "selected": False, "y": 140},
+    {"label": "Mikey Ku, mikey.ku@olin.edu", "selected": False, "y": 180},
+]
+assert nr.choose_suggestion("Mikey", opts)["label"].startswith("Mikey Ku")
+assert nr.choose_suggestion("mikey ku", opts)["label"].startswith("Mikey Ku")
+# Outlook Web / Gmail suggest the directory name for a nickname.
+assert nr.choose_suggestion("mikey ku", [{"label": "Michael Ku Jr, mkujr@olin.edu", "selected": False, "y": 90}])["label"].startswith("Michael")
+assert nr.choose_suggestion("mikey smith", [{"label": "Mikey Ku, mikey.ku@olin.edu", "selected": True, "y": 90}]) is None
+assert nr.is_group("Mikey, Bhar, Zach, Kilan, +14257800416") and not nr.is_group("Mikey Ku, mikey.ku@olin.edu")
+assert nr.looks_like_address("mikey.ku@olin.edu") and not nr.looks_like_address("Mikey")
+
+class FakeCall:
+    """Options appear after the second poll; records the click."""
+    def __init__(self, options): self.polls = 0; self.options = options; self.clicks = []
+    def __call__(self, method, **params):
+        if method == "Runtime.evaluate":
+            self.polls += 1
+            return {"result": {"value": {"value": "mikey", "options": self.options if self.polls > 1 else []}}}
+        if method == "Input.dispatchMouseEvent":
+            self.clicks.append((params["type"], params["x"], params["y"]))
+        return {}
+
+saved = (nr.RECIPIENT_FIRST_LOOK_S, nr.RECIPIENT_POLL_S)
+nr.RECIPIENT_FIRST_LOOK_S, nr.RECIPIENT_POLL_S = 0, 0.001
+fc = FakeCall([dict(o, x=50, y=o["y"]) for o in opts])
+note = nr.pick_recipient(fc, 7, "Mikey")
+assert "Mikey Ku" in note and "recipient set" in note, note
+assert fc.clicks and fc.clicks[0][2] == 180, fc.clicks
+fc = FakeCall([])
+note = nr.pick_recipient(fc, 7, "Zxqvwt")
+assert "NOT set" in note and not fc.clicks, note
+nr.RECIPIENT_FIRST_LOOK_S, nr.RECIPIENT_POLL_S = saved
+print("recipient picking ok")

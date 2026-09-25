@@ -750,7 +750,207 @@ def browser_operation_navi(request):
             call("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=modifiers, commands=["selectAll"])
             call("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", modifiers=modifiers)
         call("Input.insertText", text=request["text"])
+        if is_recipient_label(action.get("label")) and not action.get("docs_body"):
+            RECIPIENT_NOTES.append(pick_recipient(call, action["node"], request["text"]))
     return {"executed": action["id"]}
+
+
+# --- Adaptation 18: a recipient is a contact, not text ----------------------
+#
+# Typing a name into To / Cc / "Add guests" only starts the site's lookup; the
+# contact is set when its suggestion is picked. Jev decides the next step from
+# the page right after the fill — before the list is there — so the name stayed
+# raw text (Gmail/Outlook turn it into an unresolvable chip). After a fill into
+# such a field, wait for the options to settle and click the one for the name.
+# Mirrors Navi/Agent/RecipientPicker.swift (same labels, same scoring).
+
+RECIPIENT_LABELS = {
+    "to", "cc", "bcc", "to recipients", "cc recipients", "bcc recipients", "recipients", "recipient",
+    "add recipients", "send to", "invitees", "add invitees", "add guests", "guests", "attendees",
+    "add people", "add members", "participants",
+}
+RECIPIENT_PHRASES = (
+    "recipient", "add people", "add guests", "add invitees", "invite people", "add members",
+    "name or email", "names or email", "name, email", "email or name", "type a name", "enter a name",
+    "enter name", "search for people", "people or groups", "name, phone", "phone number or email",
+    "email address or phone", "enter email", "add attendees",
+)
+RECIPIENT_SETTLE_S = 3.0
+RECIPIENT_POLL_S = 0.1
+RECIPIENT_FIRST_LOOK_S = 0.25
+# Notes for the history entry of the fill that just ran (read by `tick`).
+RECIPIENT_NOTES = []
+
+
+def is_recipient_label(label):
+    l = (label or "").lower().strip().rstrip(":…").strip()
+    return bool(l) and (l in RECIPIENT_LABELS or any(p in l for p in RECIPIENT_PHRASES))
+
+
+def looks_like_address(text):
+    import re
+    t = (text or "").strip()
+    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", t):
+        return True
+    return sum(c.isdigit() for c in t) >= 7 and re.fullmatch(r"[+()\-.\s\d]+", t) is not None
+
+
+def _fold(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "").replace("‎", "").replace("‏", "")
+    return "".join(c for c in s if not unicodedata.combining(c)).lower()
+
+
+def _words(s):
+    import re
+    return [w.strip(".'") for w in re.split(r"[^\w@.']+", _fold(s)) if w.strip(".'")]
+
+
+def _parts(label):
+    return [p.strip() for p in _fold(label).split(",") if p.strip()]
+
+
+def suggestion_name(label):
+    return (label or "").split(",", 1)[0].strip()
+
+
+def has_handle(label):
+    p = _parts(label)
+    return len(p) >= 2 and ("@" in p[1] or sum(c.isdigit() for c in p[1]) >= 7)
+
+
+def is_group(label):
+    return not has_handle(label) and ("&" in (label or "") or len(_parts(label)) >= 3)
+
+
+def recipient_score(typed, label, selected=False, recent=""):
+    """How well a suggestion answers the typed name; None when it does not match."""
+    t = _fold(typed).strip()
+    if not t or not label:
+        return None
+    if looks_like_address(typed):
+        digits = "".join(c for c in typed if c.isdigit())
+        ok = t in _fold(label) or (len(digits) >= 7 and digits[-10:] in "".join(c for c in label if c.isdigit()))
+        return 3 + (0.5 if selected else 0) if ok else None
+    name_words, typed_words = _words(suggestion_name(label)), _words(typed)
+    if not name_words or not typed_words:
+        return None
+    used, exact = set(), 0
+    for w in typed_words:
+        i = next((i for i, n in enumerate(name_words) if i not in used and n.startswith(w)), None)
+        if i is None:
+            return None
+        used.add(i)
+        exact += name_words[i] == w
+    score = 1 + exact / len(typed_words)
+    group = is_group(label)
+    whole = len(used) == len(name_words)
+    typed_exactly = whole and exact == len(name_words)
+    named_group = group and typed_exactly and len(typed_words) >= 2
+    if whole and (not group or named_group):
+        score += 3 if typed_exactly else 1
+    if has_handle(label):
+        score += 1
+    if group and not named_group:
+        score -= 2
+    if selected:
+        score += 0.5
+    full = _fold(suggestion_name(label))
+    if recent and len(full) >= 3 and full in recent:
+        score += 0.75
+    return score
+
+
+def compatible(typed, label):
+    """Could `label` be a nickname spelling of `typed` ("mikey ku" ~ "Michael Ku Jr")?"""
+    name_words, used = _words(suggestion_name(label)), set()
+    typed_words = _words(typed)
+    if not typed_words:
+        return False
+    for w in typed_words:
+        i = next((i for i, n in enumerate(name_words) if i not in used and n[:1] == w[:1]), None)
+        if i is None:
+            return False
+        used.add(i)
+    return True
+
+
+def choose_suggestion(typed, options, recent=""):
+    """Best option by name (list order breaks ties), else the site's own pick when it
+    is a person and does not contradict the name. `options`: [{label, selected, y}]."""
+    best, best_score = None, None
+    for o in options:
+        sc = recipient_score(typed, o["label"], o.get("selected", False), recent)
+        if sc is not None and (best_score is None or sc > best_score + 1e-9):
+            best, best_score = o, sc
+    if best is not None:
+        return best
+    rows = [o for o in options if compatible(typed, o["label"])]
+    chosen = next((o for o in rows if o.get("selected") and not is_group(o["label"])), None)
+    if chosen:
+        return chosen
+    top = min(rows, key=lambda o: o.get("y", 0), default=None)
+    return top if top is not None and has_handle(top["label"]) else None
+
+
+RECIPIENT_OPTIONS_JS = """(node => {
+  const e=window.__jevFast?.nodes.get(node);
+  if (!e?.isConnected) return null;
+  const b=e.getBoundingClientRect();
+  const shown=o=>{const r=o.getBoundingClientRect(); return r.width>2 && r.height>2 &&
+    o.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});};
+  let scope=null;
+  for (const id of (e.getAttribute('aria-controls')||e.getAttribute('aria-owns')||'').split(/\\s+/).filter(Boolean)) {
+    const c=document.getElementById(id); if (c) { scope=c; break; }
+  }
+  let opts=[...(scope||document).querySelectorAll('[role=option],[role=listbox] [role=menuitem],[role=listbox] li')].filter(shown);
+  if (!scope) opts=opts.filter(o=>{const r=o.getBoundingClientRect();
+    return r.top>=b.top-4 && r.top<=b.bottom+480 && r.right>=b.left-20 && r.left<=b.right+60;});
+  const active=e.getAttribute('aria-activedescendant');
+  return {value:(e.value ?? e.innerText ?? '').trim(), options:opts.slice(0,25).map(o=>{
+    const r=o.getBoundingClientRect();
+    const text=(o.innerText||'').split('\\n').map(t=>t.trim()).filter(Boolean).join(', ');
+    return {label:(text||o.getAttribute('aria-label')||'').slice(0,160),
+      selected:o.getAttribute('aria-selected')==='true' || (!!active && o.id===active),
+      x:r.left+r.width/2, y:r.top+r.height/2};
+  })};
+})"""
+
+
+def pick_recipient(call, node, typed, recent=""):
+    """Waits for the options a fill into a recipient field brought up and clicks the
+    one for `typed`. Returns the note for the step's history entry."""
+    def options():
+        r = call("Runtime.evaluate", expression=f"{RECIPIENT_OPTIONS_JS}({json.dumps(node)})", returnByValue=True)
+        return (r.get("result", {}).get("value") or {}).get("options") or []
+
+    time.sleep(RECIPIENT_FIRST_LOOK_S)
+    deadline = time.monotonic() + RECIPIENT_SETTLE_S
+    last, stable, opts = None, 0, []
+    while time.monotonic() < deadline:
+        opts = options()
+        key = [(o["label"], o["selected"]) for o in opts]
+        stable = stable + 1 if opts and key == last else 0
+        last = key
+        choice = choose_suggestion(typed, opts, recent)
+        if stable >= 2 and choice is not None and (not is_group(choice["label"]) or time.monotonic() > deadline - 1.0):
+            break
+        if stable >= 3 and choice is None:
+            break
+        time.sleep(RECIPIENT_POLL_S)
+    choice = choose_suggestion(typed, opts, recent)
+    if choice is None:
+        if looks_like_address(typed):
+            return "kept as typed (an address)"
+        seen = [suggestion_name(o["label"]) for o in opts][:3]
+        if seen:
+            return f"error: no suggestion matches ‘{typed}’ (saw: {'; '.join(seen)}) — recipient NOT set"
+        return f"error: no contact suggestion came up for ‘{typed}’ (recipient NOT set)"
+    for event in ("mousePressed", "mouseReleased"):
+        call("Input.dispatchMouseEvent", type=event, x=choice["x"], y=choice["y"], button="left", clickCount=1)
+    name = suggestion_name(choice["label"])
+    emit("status", message=f"Picked the contact ‘{name}’ for ‘{typed}’")
+    return f"picked the contact ‘{name}’ from the suggestions (recipient set)"
 
 
 # --- Adaptation 8: a rejected click is a visible failure ----------------------
@@ -1047,6 +1247,12 @@ def tick(agent, retried, rejected=None):
             agent.pending_text = None
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             return "no_text"
+        if RECIPIENT_NOTES and state.get("history"):
+            # Jev's recent_actions carry only action/kind/text/page_changed: the result rides in the action.
+            note = RECIPIENT_NOTES.pop()
+            state["history"][-1]["note"] = note
+            state["history"][-1]["action"] = f"{state['history'][-1].get('action', '')} → {note}"
+        RECIPIENT_NOTES.clear()
         return "acted"
     except StalePage:
         state["decision"] = None

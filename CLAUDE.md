@@ -82,6 +82,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     implies ("text mom" → Messages) when no planner runs, and `AppSkills.startURL`
     turns "play X on youtube" into the results page. When a new app misbehaves, add or
     fix its skill first; run the live A/B probe (see memory notes) before trusting it.
+  - **Recipients are contacts, not text** (`Agent/RecipientPicker`; runner adaptation 18):
+    after TYPE_TEXT into To/Cc/Bcc/invitees the driver waits for the app's suggestion list
+    (~0.5 s, fills in stages), picks the entry for the name (a person over a group that
+    starts with it; not blindly the highlighted row — "Mik" highlights Mike Grandinetti),
+    confirms the list closed, and appends "→ picked the contact ‘…’" to the step. The name is
+    *typed*: an AXValue set never starts the lookup. No contact in Messages/Mail/Outlook ⇒ the
+    run stops instead of writing the message; "mom" retries as "Mama"/"Mum" first.
   - **User habits** (`Agent/UserHabits`): planning follows how *this* user works, read
     from screen memory (installed by `MemoryService`, toggle `agentUsesScreenHabits`).
     The planner state gets `user_habits`: per kind of work (email, texting, coursework…)
