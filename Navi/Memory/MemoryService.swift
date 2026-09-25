@@ -128,6 +128,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             let scheduler = CaptureScheduler(store: store, jev: jev, updateStatus: statusUpdater)
             let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler)
             stack = s
+            // Integration hook (Agent): the planner learns how this user does things from the same store.
+            UserHabits.install(store: store)
             return s
         } catch {
             Log.memory.error("Memory store unavailable: \(error.localizedDescription)")

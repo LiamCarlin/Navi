@@ -37,6 +37,15 @@ struct AgentSettingsView: View {
                 Text("While it works")
             }
 
+            Section {
+                Toggle("Do things the way I do", isOn: $settings.agentUsesScreenHabits)
+                Text("Navi plans each task from your screen memory: the apps and sites you actually use (the Outlook app for email, your school's Canvas) and where a person or document last showed up on your screen. Only app names, page titles and links are used — never the text on your screen.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("Your habits")
+            }
+
             Section("Limits") {
                 Stepper(value: $settings.agentMaxSteps, in: 5...200, step: 5) {
                     LabeledContent("Maximum steps per task") {

@@ -56,6 +56,9 @@ final class NaviSettings: ObservableObject {
     /// doc — not a lookup) completes, bring its app or browser tab to the front
     /// so the result is not left hidden behind the user's windows.
     @Published var agentRevealWhenDone: Bool { didSet { d.set(agentRevealWhenDone, forKey: "agentRevealWhenDone") } }
+    /// Plan tasks the way the user does them: screen memory says which apps and
+    /// sites they use for what (`UserHabits`). Read via UserDefaults off the main actor.
+    @Published var agentUsesScreenHabits: Bool { didSet { d.set(agentUsesScreenHabits, forKey: "agentUsesScreenHabits") } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -114,6 +117,7 @@ final class NaviSettings: ObservableObject {
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
+            "agentUsesScreenHabits": true,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -152,6 +156,7 @@ final class NaviSettings: ObservableObject {
         agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
         agentRunInBackground = d.bool(forKey: "agentRunInBackground")
         agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
+        agentUsesScreenHabits = d.bool(forKey: "agentUsesScreenHabits")
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")

@@ -179,19 +179,22 @@ enum AppSkills {
 
     /// The app a task with no app named should run in, and which of its bundle
     /// ids to open: the best-scoring skill that is installed; among skills tied
-    /// at the top score (Music / Spotify, Mail / Outlook, Calendar / Outlook) a
-    /// running one wins, then Apple's own app, then the library order.
+    /// at the top score (Music / Spotify, Mail / Outlook, Calendar / Outlook) the
+    /// one the user uses most (`usage`: screens in screen memory, `UserHabits`),
+    /// then a running one, then Apple's own app, then the library order.
     /// nil ⇒ nothing implied (stay in the frontmost app).
     static func inferApp(for task: String, frontmostBundleID: String?,
-                         isInstalled: (String) -> Bool, isRunning: (String) -> Bool) -> (skill: AppSkill, bundleID: String)? {
+                         isInstalled: (String) -> Bool, isRunning: (String) -> Bool,
+                         usage: (AppSkill) -> Int = { _ in 0 }) -> (skill: AppSkill, bundleID: String)? {
         let ranked = rankApps(for: task, frontmostBundleID: frontmostBundleID)
         guard let top = ranked.first?.score else { return nil }
-        let tied = ranked.filter { $0.score == top }.compactMap { r -> (AppSkill, String, Bool)? in
+        let tied = ranked.filter { $0.score == top }.compactMap { r -> (AppSkill, String, Bool, Int)? in
             let installed = r.skill.bundleIDs.filter(isInstalled)
             guard let b = installed.first(where: isRunning) ?? installed.first else { return nil }
-            return (r.skill, b, isRunning(b))
+            return (r.skill, b, isRunning(b), usage(r.skill))
         }
-        guard let pick = tied.first(where: { $0.2 }) ?? tied.first(where: { $0.1.hasPrefix("com.apple.") }) ?? tied.first else { return nil }
+        let habitual = tied.filter { $0.3 > 0 }.max { $0.3 < $1.3 }
+        guard let pick = habitual ?? tied.first(where: { $0.2 }) ?? tied.first(where: { $0.1.hasPrefix("com.apple.") }) ?? tied.first else { return nil }
         return (pick.0, pick.1)
     }
 

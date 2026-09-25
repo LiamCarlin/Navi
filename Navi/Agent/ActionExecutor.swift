@@ -222,7 +222,7 @@ enum TaskSurface {
     enum Start: String, Sendable { case currentTab = "current_tab", webSearch = "web_search" }
 
     static let questions: [String: JevClient.Question] = [
-        "surface": .choice(instructions: "Where does this task have to be carried out?", criteria: criteria),
+        "surface": .choice(instructions: "Where does this task have to be carried out? When the state has user_usually_uses, that is where THIS user does this kind of thing — follow it unless the task names another place.", criteria: criteria),
     ]
 
     /// Same call, second head: for browser tasks with no URL/site in the text,
@@ -240,15 +240,19 @@ enum TaskSurface {
         return q
     }
 
-    static func formatState(task: String, frontmost: FrontmostProbe.Info) -> String {
-        JevDriver.serialize([
+    /// `habits`: `UserHabits.surfaceHint` — which app/site this user really uses
+    /// for what the task is about ("Outlook: native mac app, 159 screens").
+    static func formatState(task: String, frontmost: FrontmostProbe.Info, habits: String? = nil) -> String {
+        var s: [String: Any] = [
             "task": task,
             "frontmost_app": frontmost.appName ?? frontmost.bundleID ?? "unknown",
             "bundle": frontmost.bundleID ?? "",
             "window_title": frontmost.windowTitle ?? "",
             "url": frontmost.url ?? "",
             "frontmost_is_browser": frontmost.bundleID.map(AXSnapshotter.isBrowser) ?? false,
-        ])
+        ]
+        if let habits { s["user_usually_uses"] = habits }
+        return JevDriver.serialize(s)
     }
 
     struct Classification: Sendable {
@@ -318,7 +322,8 @@ enum TaskSurface {
             tab = (frontmost.windowTitle ?? "", u)
         }
         do {
-            let r = try await jev.ask(state: formatState(task: task, frontmost: frontmost), questions: questions(currentTab: tab))
+            let habits = UserHabits.current.flatMap { UserHabits.surfaceHint(task: task, profile: $0.profile()) }
+            let r = try await jev.ask(state: formatState(task: task, frontmost: frontmost, habits: habits), questions: questions(currentTab: tab))
             guard let a = r["surface"], let c = a.choice, let s = Surface(rawValue: c) else {
                 return Classification(surface: .unsure, confidence: 0, start: nil)
             }
@@ -338,9 +343,10 @@ enum TaskSurface {
     ///      results page full of relevant links rather than an unrelated tab.
     static func startURL(task: String, frontmost: FrontmostProbe.Info, start: Start? = nil) -> String? {
         if let u = TextCandidates.urls(in: task).first { return u.contains("://") ? u : "https://" + u }
-        // A web app the task names, with its query ("play lofi beats on youtube" → the results page).
-        if let deep = AppSkills.startURL(for: task) { return deep }
-        if let site = UltrafastBridge.knownSiteURL(in: task) { return site }
+        // A web app the task names, with its query ("play lofi beats on youtube" → the results page),
+        // on the host this user really uses for it (their school's Canvas, not canvas.instructure.com).
+        if let deep = AppSkills.startURL(for: task) { return UserHabits.personalized(deep) }
+        if let site = UltrafastBridge.knownSiteURL(in: task) { return UserHabits.personalized(site) }
         let lower = task.lowercased()
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
             // "Click the write-a-message area", "scroll down", "pick the second one": an
