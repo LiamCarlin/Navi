@@ -59,9 +59,11 @@ final class NaviSettings: ObservableObject {
     /// Plan tasks the way the user does them: screen memory says which apps and
     /// sites they use for what (`UserHabits`). Read via UserDefaults off the main actor.
     @Published var agentUsesScreenHabits: Bool { didSet { d.set(agentUsesScreenHabits, forKey: "agentUsesScreenHabits") } }
-    /// Press Chrome's per-connection "Allow remote debugging?" sheet for Navi's own
-    /// browser bridge (`ChromeDebugApproval`) instead of asking the user every reconnect.
+    /// Press Chrome's per-connection "Allow remote debugging?" sheet for Browser Harness
+    /// daemons (Navi's and dev tools') — `ChromeDebugApproval` — instead of asking every reconnect.
     @Published var agentAutoApproveChrome: Bool { didSet { d.set(agentAutoApproveChrome, forKey: "agentAutoApproveChrome") } }
+    /// Close Chrome's "controlled by automated test software" bar whenever it appears.
+    @Published var agentHideChromeAutomationBar: Bool { didSet { d.set(agentHideChromeAutomationBar, forKey: "agentHideChromeAutomationBar") } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -122,6 +124,7 @@ final class NaviSettings: ObservableObject {
             "agentRevealWhenDone": true,
             "agentUsesScreenHabits": true,
             "agentAutoApproveChrome": true,
+            "agentHideChromeAutomationBar": true,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -162,6 +165,7 @@ final class NaviSettings: ObservableObject {
         agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
         agentUsesScreenHabits = d.bool(forKey: "agentUsesScreenHabits")
         agentAutoApproveChrome = d.bool(forKey: "agentAutoApproveChrome")
+        agentHideChromeAutomationBar = d.bool(forKey: "agentHideChromeAutomationBar")
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
