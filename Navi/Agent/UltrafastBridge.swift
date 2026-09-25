@@ -168,6 +168,7 @@ enum UltrafastBridge {
     }
 
     static func approveChromeConnection() async -> String {
+        if ChromeDebugApproval.pressAllow() { return "ready" }
         guard let rt = runtime else { return "runtime missing" }
         return await Task.detached {
             shell("/bin/zsh", [rt.scripts.appendingPathComponent("approve.sh").path], cwd: rt.workingDirectory,
@@ -181,9 +182,11 @@ enum UltrafastBridge {
     /// the first browser task skips the ~1 s connect. Safe to call repeatedly.
     static func prewarm() {
         guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else { return }
+        let approver = ChromeDebugApproval.watch(for: 30)
         Task.detached(priority: .utility) {
             let (out, code) = shell(rt.python.path, rt.interpreterFlags + ["-c", "from browser_harness.admin import ensure_daemon; ensure_daemon(); print('warm')"],
                                     cwd: rt.workingDirectory, timeout: 30)
+            approver?.cancel()
             Log.agent.info("ultrafast prewarm: \(code == 0 ? "ready" : out.suffix(160))")
         }
     }
@@ -375,6 +378,10 @@ enum UltrafastBridge {
             return (.failed, nil)
         }
         Log.agent.info("ultrafast runner started pid=\(proc.processIdentifier)")
+        // The runner's daemon may reconnect to Chrome (after sleep or a Chrome restart):
+        // press Chrome's "Allow remote debugging?" for it instead of stalling the run.
+        let approver = ChromeDebugApproval.watch(for: 600)
+        defer { approver?.cancel() }
 
         let stderrTask = Task.detached { () -> String in
             String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
