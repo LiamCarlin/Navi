@@ -59,6 +59,9 @@ final class NaviSettings: ObservableObject {
     /// Plan tasks the way the user does them: screen memory says which apps and
     /// sites they use for what (`UserHabits`). Read via UserDefaults off the main actor.
     @Published var agentUsesScreenHabits: Bool { didSet { d.set(agentUsesScreenHabits, forKey: "agentUsesScreenHabits") } }
+    /// Press Chrome's per-connection "Allow remote debugging?" sheet for Navi's own
+    /// browser bridge (`ChromeDebugApproval`) instead of asking the user every reconnect.
+    @Published var agentAutoApproveChrome: Bool { didSet { d.set(agentAutoApproveChrome, forKey: "agentAutoApproveChrome") } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -118,6 +121,7 @@ final class NaviSettings: ObservableObject {
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
             "agentUsesScreenHabits": true,
+            "agentAutoApproveChrome": true,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -157,6 +161,7 @@ final class NaviSettings: ObservableObject {
         agentRunInBackground = d.bool(forKey: "agentRunInBackground")
         agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
         agentUsesScreenHabits = d.bool(forKey: "agentUsesScreenHabits")
+        agentAutoApproveChrome = d.bool(forKey: "agentAutoApproveChrome")
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")

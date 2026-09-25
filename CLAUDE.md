@@ -101,7 +101,9 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
     same Jev loop drives it from the AX tree (`AXSnapshot.tidyBrowserChrome` hides the
-    browser's own controls). `BrowserControls` handles "close the tab / go back /
+    browser's own controls). Chrome asks "Allow remote debugging?" on every new CDP connection
+    (after sleep / a Chrome restart); `ChromeDebugApproval` presses Allow via AX while
+    *Navi's* daemon is parked on it (`agentAutoApproveChrome`, default on). `BrowserControls` handles "close the tab / go back /
     reload / next tab / scroll / zoom" with one key press, no agent. Page actions with a
     browser in front stay on the current tab (`TaskSurface.isPageAction`).
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user

@@ -33,6 +33,10 @@ struct AgentSettingsView: View {
                 Text("When a background task makes something — a note, an event, a document, a tab — Navi brings that window to the front once it's done. Lookups stay in the background; their answer is in the panel.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle("Approve Chrome's connection prompt for me", isOn: $settings.agentAutoApproveChrome)
+                Text("Chrome asks \u{201C}Allow remote debugging?\u{201D} every time Navi reconnects — after your Mac sleeps or Chrome restarts. Navi clicks Allow for its own connection only, never for another app's.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("While it works")
             }
