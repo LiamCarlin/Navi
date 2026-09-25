@@ -56,6 +56,9 @@ final class NaviSettings: ObservableObject {
     /// doc — not a lookup) completes, bring its app or browser tab to the front
     /// so the result is not left hidden behind the user's windows.
     @Published var agentRevealWhenDone: Bool { didSet { d.set(agentRevealWhenDone, forKey: "agentRevealWhenDone") } }
+    /// Press Chrome's per-connection "Allow remote debugging?" sheet for Navi's own
+    /// browser bridge (`ChromeDebugApproval`) instead of asking the user every reconnect.
+    @Published var agentAutoApproveChrome: Bool { didSet { d.set(agentAutoApproveChrome, forKey: "agentAutoApproveChrome") } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -114,6 +117,7 @@ final class NaviSettings: ObservableObject {
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
+            "agentAutoApproveChrome": true,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -152,6 +156,7 @@ final class NaviSettings: ObservableObject {
         agentMaxClaudeFallbacks = d.integer(forKey: "agentMaxClaudeFallbacks")
         agentRunInBackground = d.bool(forKey: "agentRunInBackground")
         agentRevealWhenDone = d.bool(forKey: "agentRevealWhenDone")
+        agentAutoApproveChrome = d.bool(forKey: "agentAutoApproveChrome")
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
