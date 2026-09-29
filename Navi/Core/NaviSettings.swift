@@ -129,7 +129,7 @@ final class NaviSettings: ObservableObject {
             "agentUsesScreenHabits": true,
             "agentAutoApproveChrome": true,
             "agentHideChromeAutomationBar": true,
-            TypingSoundPlayer.enabledKey: true,
+            TypingSoundPlayer.enabledKey: false,
             TypingSoundPlayer.volumeKey: TypingSoundPlayer.defaultVolume,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
