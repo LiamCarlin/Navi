@@ -302,6 +302,8 @@ final class InputController: @unchecked Sendable {
     // MARK: Keyboard
 
     /// Types text as unicode key events, 8 ms apart. Newlines/tabs become Return/Tab.
+    /// Every key-down here and in `press`/`hold` is offered to `TypingSoundPlayer`,
+    /// which voices the ones a person could have typed.
     func type(_ text: String) async {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         for (i, line) in lines.enumerated() {
@@ -315,6 +317,7 @@ final class InputController: @unchecked Sendable {
                 up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
                 down?.flags = []; up?.flags = []
                 post(down); post(up)
+                TypingSoundPlayer.shared.keyDown(.kind(for: ch))
                 await sleep(ms: 8)
             }
         }
@@ -326,7 +329,9 @@ final class InputController: @unchecked Sendable {
             let up = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: false)
             down?.flags = combo.flags
             up?.flags = combo.flags
-            post(down); await sleep(ms: 20); post(up)
+            post(down)
+            TypingSoundPlayer.shared.keyDown(.kind(forKeyCode: combo.keyCode))
+            await sleep(ms: 20); post(up)
             if i + 1 < count { await sleep(ms: 40) }
         }
         await sleep(ms: 30)
@@ -368,6 +373,7 @@ final class InputController: @unchecked Sendable {
         let down = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: true)
         down?.flags = combo.flags
         post(down)
+        TypingSoundPlayer.shared.keyDown(.kind(forKeyCode: combo.keyCode))
         try? await Task.sleep(for: .milliseconds(Int(max(0, min(seconds, 30)) * 1000)))
         let up = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: false)
         up?.flags = combo.flags

@@ -421,7 +421,9 @@ enum UltrafastBridge {
                     let action = (json["action"] as? String ?? "").split(separator: "→").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
                     var desc: String
                     switch kind {
-                    case "FILL": desc = "Type “\((json["text"] as? String) ?? "")” into \(action)"
+                    case "FILL":
+                        desc = "Type “\((json["text"] as? String) ?? "")” into \(action)"
+                        TypingSoundPlayer.shared.burst((json["text"] as? String) ?? "")
                     case "CLICK": desc = "Click \(action)"
                     case "SELECT": desc = "Select \(action)"
                     case "SCROLL": desc = "Scroll"

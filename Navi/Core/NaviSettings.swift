@@ -64,6 +64,10 @@ final class NaviSettings: ObservableObject {
     @Published var agentAutoApproveChrome: Bool { didSet { d.set(agentAutoApproveChrome, forKey: "agentAutoApproveChrome") } }
     /// Close Chrome's "controlled by automated test software" bar whenever it appears.
     @Published var agentHideChromeAutomationBar: Bool { didSet { d.set(agentHideChromeAutomationBar, forKey: "agentHideChromeAutomationBar") } }
+    /// Soft mechanical key clicks while Navi types (`TypingSoundPlayer`, after Screendrop).
+    /// Read via UserDefaults off the main actor.
+    @Published var agentTypingSounds: Bool { didSet { d.set(agentTypingSounds, forKey: TypingSoundPlayer.enabledKey) } }
+    @Published var agentTypingSoundsVolume: Double { didSet { d.set(agentTypingSoundsVolume, forKey: TypingSoundPlayer.volumeKey) } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -125,6 +129,8 @@ final class NaviSettings: ObservableObject {
             "agentUsesScreenHabits": true,
             "agentAutoApproveChrome": true,
             "agentHideChromeAutomationBar": true,
+            TypingSoundPlayer.enabledKey: true,
+            TypingSoundPlayer.volumeKey: TypingSoundPlayer.defaultVolume,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -166,6 +172,8 @@ final class NaviSettings: ObservableObject {
         agentUsesScreenHabits = d.bool(forKey: "agentUsesScreenHabits")
         agentAutoApproveChrome = d.bool(forKey: "agentAutoApproveChrome")
         agentHideChromeAutomationBar = d.bool(forKey: "agentHideChromeAutomationBar")
+        agentTypingSounds = d.bool(forKey: TypingSoundPlayer.enabledKey)
+        agentTypingSoundsVolume = d.double(forKey: TypingSoundPlayer.volumeKey)
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
