@@ -126,7 +126,7 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     once the run is over, `AgentTarget.reveal()` / the runner's `NAVI_TAB_POLICY=reveal`:
     the window a completed effect task worked in is brought forward (lookups are not).
     The browser tab is never closed while anything happened on it.
-  - **Typing sounds** (`Agent/TypingSounds`, toggle `agentTypingSounds` + volume, default on):
+  - **Typing sounds** (`Agent/TypingSounds`, toggle `agentTypingSounds` + volume, default off):
     Navi's own keystrokes are voiced as soft mechanical clicks — Screendrop's recorded keystroke
     (CC0, `TypingSoundSamples`), varied per key class. `InputController` offers every key-down;
     `TypingSoundPacer` voices one per 70–130 ms (the agent types a key every 8 ms), Return always.
