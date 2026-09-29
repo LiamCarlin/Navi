@@ -36,7 +36,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory) |
+| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
@@ -126,6 +126,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     once the run is over, `AgentTarget.reveal()` / the runner's `NAVI_TAB_POLICY=reveal`:
     the window a completed effect task worked in is brought forward (lookups are not).
     The browser tab is never closed while anything happened on it.
+  - **Typing sounds** (`Agent/TypingSounds`, toggle `agentTypingSounds` + volume, default on):
+    Navi's own keystrokes are voiced as soft mechanical clicks — Screendrop's recorded keystroke
+    (CC0, `TypingSoundSamples`), varied per key class. `InputController` offers every key-down;
+    `TypingSoundPacer` voices one per 70–130 ms (the agent types a key every 8 ms), Return always.
+    AXValue fills and browser FILL steps have no keystrokes, so they get a ≤0.9 s burst. Audio runs
+    on a private queue; the engine stops after 3 s idle. The user's own typing is never voiced.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,

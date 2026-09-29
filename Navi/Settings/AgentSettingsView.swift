@@ -41,6 +41,21 @@ struct AgentSettingsView: View {
                 Text("Chrome shows this bar while Navi is connected. Navi closes it as soon as it appears.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle("Typing sounds", isOn: $settings.agentTypingSounds)
+                HStack {
+                    Slider(value: $settings.agentTypingSoundsVolume, in: 0.05...1) {
+                        Text("Volume")
+                    } minimumValueLabel: {
+                        Image(systemName: "speaker.fill")
+                    } maximumValueLabel: {
+                        Image(systemName: "speaker.wave.3.fill")
+                    }
+                    Button("Preview") { TypingSoundPlayer.shared.preview() }
+                }
+                .disabled(!settings.agentTypingSounds)
+                Text("Soft mechanical key clicks while Navi types for you, so you can hear it working even behind your windows. Only Navi's typing makes a sound — yours never does.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("While it works")
             }

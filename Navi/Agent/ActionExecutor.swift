@@ -107,7 +107,7 @@ final class ActionExecutor: @unchecked Sendable {
                 guard AXUIElementSetAttributeValue(ref, kAXValueAttribute as CFString, text as CFTypeRef) == .success else { return false }
                 return (AXSnapshotter.attr(ref, kAXValueAttribute) as? String) == text
             }
-            if ok { return }
+            if ok { TypingSoundPlayer.shared.burst(text); return }   // no keystrokes to hear, so voice a few
         }
         // Fallback: replace existing content by typing. ⌘A is a menu shortcut,
         // which a background app drops, so select the whole value through AX there.
