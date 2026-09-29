@@ -55,8 +55,8 @@ targets:
         NSScreenCaptureUsageDescription: "Navi captures your screen so it can see what you're working on and act on your instructions."
         NSMicrophoneUsageDescription: "Navi can listen for voice queries when you enable voice input."
         NSSpeechRecognitionUsageDescription: "Navi transcribes voice queries on-device."
-        NSCalendarsFullAccessUsageDescription: "Navi can read your calendar to answer schedule questions."
-        NSContactsUsageDescription: "Navi can look up contacts when you ask."
+        NSCalendarsFullAccessUsageDescription: "Navi reads your calendar to find times when everyone is free and books the meetings you ask for."
+        NSContactsUsageDescription: "Navi looks up the people you schedule with to find their email and photo."
         NSLocationWhenInUseUsageDescription: "Navi uses your location for Maps and weather queries."
         NSUserNotificationsUsageDescription: "Navi notifies you when a background task completes."
         CFBundleURLTypes:
@@ -72,6 +72,9 @@ targets:
         # Hardened runtime resource access: the microphone for voice control. The bundled
         # Python runtime needs no exceptions (tested: no JIT, no unsigned libraries).
         com.apple.security.device.audio-input: true
+        # The scheduler card reads busy times from Calendar and resolves guests in Contacts.
+        com.apple.security.personal-information.calendars: true
+        com.apple.security.personal-information.addressbook: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.liamcarlin.navi

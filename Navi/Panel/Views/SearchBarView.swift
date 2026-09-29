@@ -5,6 +5,8 @@ struct SearchBarView: View {
     @EnvironmentObject private var vm: PanelViewModel
     @FocusState private var isFocused: Bool
     @State private var hintIndex = 0
+    @State private var fieldWidth: CGFloat = 0
+    @State private var highlightWidth: CGFloat = 0
 
     /// Shown while the query is empty; cycles every few seconds.
     private static let hints = [
@@ -37,6 +39,15 @@ struct SearchBarView: View {
                             removal: .move(edge: .top).combined(with: .opacity)))
                         .allowsHitTesting(false)
                 }
+                // Names the scheduler recognised, tinted behind the text (only while
+                // the text fits: a scrolled field would no longer line up).
+                let highlights = vm.queryHighlights
+                if !highlights.isEmpty {
+                    QueryHighlightUnderlay(text: vm.query, tokens: highlights)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { highlightWidth = $0 }
+                        .opacity(highlightWidth > 0 && highlightWidth < fieldWidth - 4 ? 1 : 0)
+                        .transition(.opacity)
+                }
                 TextField("", text: $vm.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 26, weight: .light))
@@ -46,6 +57,7 @@ struct SearchBarView: View {
                     .lineLimit(1)
             }
             .clipped()
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fieldWidth = $0 }
             .animation(.easeInOut(duration: 0.45), value: hintIndex)
 
             trailingSlot

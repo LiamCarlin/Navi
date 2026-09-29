@@ -79,6 +79,11 @@ struct NaviPanelView: View {
         case .clarify:
             ClarifyView()
                 .transition(.opacity)
+        case .schedule:
+            if let scheduler = vm.scheduler {
+                SchedulerCardView(model: scheduler) { example in vm.query = example }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
     }
 
@@ -117,6 +122,7 @@ struct NaviPanelView: View {
                        approval: vm.pendingApproval != nil,
                        hasScreenshot: vm.agentScreenshot != nil,
                        clarifyOptions: vm.clarification?.options.count ?? -1,
+                       scheduling: vm.scheduler != nil,
                        error: vm.errorMessage)
     }
 
@@ -157,6 +163,7 @@ struct PanelLayoutKey: Equatable {
     var approval: Bool
     var hasScreenshot: Bool
     var clarifyOptions: Int
+    var scheduling: Bool
     var error: String?
 }
 

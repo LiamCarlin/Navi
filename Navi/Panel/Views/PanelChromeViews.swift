@@ -48,6 +48,8 @@ struct PanelFooterView: View {
         case .clarify:
             if vm.clarification == nil { return "Navi · one question" }
             return "Pick one, or keep typing"
+        case .schedule:
+            return "Navi · schedule"
         }
     }
 
@@ -83,6 +85,12 @@ struct PanelFooterView: View {
                 KeyHint(keys: "↑↓", label: "choose")
                 KeyHint(keys: "⏎", label: "answer")
                 KeyHint(keys: "esc", label: "back")
+            case .schedule:
+                KeyHint(keys: "↑↓", label: "time")
+                KeyHint(keys: "⌘[ ⌘]", label: "day")
+                KeyHint(keys: "⌘- ⌘=", label: "length")
+                KeyHint(keys: "⏎", label: "book")
+                KeyHint(keys: "esc", label: "results")
             }
         }
     }

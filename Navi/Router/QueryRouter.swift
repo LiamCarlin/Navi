@@ -6,7 +6,7 @@ import AppKit
 /// - `instantResults` is synchronous and local (apps, math, URLs, system
 ///   commands, settings, plus the trailing "Ask Navi" and web-search rows).
 /// - `route` makes ONE Jev call (speculative fan-out: intent + is_risky +
-///   needs_clarification + wants_memory), time-boxed at 1.2 s, with
+///   needs_clarification + wants_memory + wants_to_schedule), time-boxed at 1.2 s, with
 ///   confidence gating against strong local matches; falls back to keyword
 ///   heuristics when Jev is not configured or fails.
 /// - `results(for:decision:)` builds the rows for the decided intent.
@@ -31,7 +31,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
     static let clarifiableIntents: Set<Intent> = [.computerTask]
 
     /// Speculative answers from the last Jev call that `RouteDecision` has no field for.
-    struct JevExtras: Sendable { var wantsMemory: Double; var isRisky: Double }
+    struct JevExtras: Sendable { var wantsMemory: Double; var isRisky: Double; var wantsSchedule: Double = 0 }
     private let lock = NSLock()
     private var extras: [String: JevExtras] = [:]
     /// Refined queries from a follow-up → the intent they were clarified for (see `didClarify`).
@@ -143,6 +143,10 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         return extras[q]
     }
 
+    func scheduleLikelihood(for query: String) -> Double? {
+        extras(for: query.trimmingCharacters(in: .whitespacesAndNewlines))?.wantsSchedule
+    }
+
     func didClarify(query: String, intent: Intent) {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         lock.lock(); defer { lock.unlock() }
@@ -161,6 +165,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         "is_risky": .noul(instructions: "Carrying this out would send a message, spend money, delete data, or otherwise be hard to undo"),
         "needs_clarification": .noul(instructions: "The request cannot be carried out at all without more information from the user: there is no reasonable default reading (e.g. 'send it to him' with no recipient or content, 'book that' with nothing to book). Short, casual, or underspecified requests that still have an obvious best interpretation are NOT ambiguous"),
         "wants_memory": .noul(instructions: "Answering well requires knowing what the user was doing or looking at earlier on this computer"),
+        "wants_to_schedule": .noul(instructions: "The user wants to put something on their calendar: a meeting, call, meal or block of time, with people or at a time"),
     ]
 
     /// Local, deterministic signals passed to Jev as context and used for gating.
@@ -227,7 +232,8 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         let d = RouteDecision(intent: intent, confidence: confidence, probabilities: probs,
                               isRisky: risky >= 0.5, needsClarification: needsClarification,
                               latencyMs: latencyMs, source: .jev)
-        return (d, JevExtras(wantsMemory: wantsMemory, isRisky: risky))
+        return (d, JevExtras(wantsMemory: wantsMemory, isRisky: risky,
+                             wantsSchedule: resp["wants_to_schedule"]?.noul ?? 0))
     }
 
     static func withTimeout<T: Sendable>(ms: Int, _ op: @escaping @Sendable () async throws -> T) async throws -> T {

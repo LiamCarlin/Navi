@@ -21,10 +21,15 @@ protocol QueryRouting: AnyObject, Sendable {
     /// it keeps `intent` (the user already chose an interpretation) and never
     /// asks again.
     func didClarify(query: String, intent: Intent)
+
+    /// Jev's `wants_to_schedule` for a query it has routed (nil before that):
+    /// opens the scheduler card for phrasings the local parser can't call.
+    func scheduleLikelihood(for query: String) -> Double?
 }
 
 extension QueryRouting {
     func didClarify(query: String, intent: Intent) {}
+    func scheduleLikelihood(for query: String) -> Double? { nil }
 }
 
 /// Streams a text answer for a question (Claude).

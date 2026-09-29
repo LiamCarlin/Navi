@@ -37,6 +37,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
 | `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
@@ -132,6 +133,21 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `TypingSoundPacer` voices one per 70–130 ms (the agent types a key every 8 ms), Return always.
     AXValue fills and browser FILL steps have no keystrokes, so they get a ≤0.9 s burst. Audio runs
     on a private queue; the engine stops after 3 s idle. The user's own typing is never voiced.
+  - **Scheduler card** (`Schedule`, `Panel/Views/SchedulerCardView`): a query that asks to put
+    something on the calendar ("meeting with jilles and harshil tomorrow afternoon for 45 min")
+    drops an interactive card under the bar (`PanelViewModel.Mode.schedule`) — no Enter needed.
+    `ScheduleParser` is local and runs on every keystroke (names after "with", days, parts of the
+    day, times, lengths; questions/edits like "what meetings…"/"cancel…" are rejected); phrasings
+    it can't call are opened by Jev's `wants_to_schedule` noul (≥ 0.7) on the routing call.
+    Rows: you + each guest (Contacts: photo, work email by the calendar account's domain) over a
+    9–18 timeline of busy blocks (EventKit: your writable calendars; a guest's shared calendar
+    titled with their email, else only meetings you share = "Calendar not shared"). "Everyone's
+    free at" = 3 spread free starts (preferred part of the day first); a typed time wins and a
+    clash turns the slot red ("You already have something then"). ⏎ books to the default
+    calendar; guests are added with Calendar's AppleScript (`make new attendee`, EventKit can't),
+    which sends the invites. ↑↓ times, ⌘[ ⌘] day, ⌘- ⌘= length, esc back to results. Video
+    toggle adds the user's own meeting link (`schedulerVideoLink`, pasted once in the card).
+    `navi://run` never books by itself. Needs Calendar (full access) + Contacts; the card asks.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,

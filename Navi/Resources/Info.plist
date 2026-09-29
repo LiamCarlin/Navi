@@ -42,9 +42,9 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Navi uses Apple Events to control apps (Chrome, Safari, Finder) when you ask it to perform tasks.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Navi can read your calendar to answer schedule questions.</string>
+	<string>Navi reads your calendar to find times when everyone is free and books the meetings you ask for.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>Navi can look up contacts when you ask.</string>
+	<string>Navi looks up the people you schedule with to find their email and photo.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
