@@ -51,13 +51,41 @@ struct FrameTriage: Sendable {
 
     static let questions: [String: JevClient.Question] = [
         "activity": .choice(instructions: "What kind of activity is shown on this screen?", criteria: activities),
-        "is_sensitive": .noul(instructions: "The screen shows a password field, banking/credit card details, 2FA codes, or private medical/financial records."),
+        "is_sensitive": .noulJSON(instructions: JevClient.JSONValue(any: sensitiveInstructions)),
         "is_new_context": .noul(instructions: "The user has switched to a different task/topic than the previous frame."),
         "importance": .score(instructions: "How important is this moment for later recall?", criteria: importanceLevels),
     ]
 
+    /// Jev's `is_sensitive` probability at or above which a frame is stored as a
+    /// stub. Below a coin flip on purpose: a missed sign-up form costs far more
+    /// than a routine frame left out of memory.
+    static let sensitiveThreshold = 0.4
+
+    /// Structured instructions for `is_sensitive` (docs.typesafe.ai/primitives/advanced).
+    static let sensitiveInstructions: [String: Any] = [
+        "question": "Would storing this screen keep private data the user would not want recorded?",
+        "sensitive_when": [
+            "a password, passcode or PIN field, or 2FA / verification / one-time codes",
+            "personal identifiers entered into or shown in a form: date of birth, home or street address, city + ZIP, phone number, SSN or other government ID, driver's licence or passport number",
+            "account sign-up / registration, checkout or payment forms that collect name, address, phone or card details",
+            "card, bank, routing or account numbers; balances and statements",
+            "patient portals and medical records: lab or test results, diagnoses, prescriptions, insurance member / policy / group IDs",
+            "identity verification (ID.me, login.gov, IRS, SSA, DMV, KYC selfie or ID upload)",
+        ],
+        "not_sensitive_when": [
+            "an article, documentation, code or search results that only mention these topics",
+            "a sign-in page showing just the email / username field",
+            "a business's public address or phone number on a map, store or contact page",
+        ],
+        "signals": "FORM_SIGNALS is computed locally from the screen: page kind, personal-field labels present and kinds of identifier values found (values never shown). identifier_values on a sign-up, checkout, medical or identity page means sensitive.",
+    ]
+
     /// Structured state block for Jev (labelled sections, not prose).
     static func state(for i: Input, ocrLimit: Int = 3000) -> String {
+        state(for: i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url), ocrLimit: ocrLimit)
+    }
+
+    static func state(for i: Input, signals: PersonalData.FrameSignals, ocrLimit: Int = 3000) -> String {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         let prev = i.previousApp.map { "\($0)\(i.previousTitle.map { " — \($0)" } ?? "")" } ?? "(none)"
@@ -67,6 +95,7 @@ struct FrameTriage: Sendable {
         [URL] \(i.url ?? "")
         [TIME] \(f.string(from: i.timestamp))
         [PREVIOUS_CONTEXT] \(prev)
+        [FORM_SIGNALS] \(signals.stateLine)
         [SCREEN_TEXT]
         \(String(i.ocrText.prefix(ocrLimit)))
         """
@@ -90,7 +119,21 @@ struct FrameTriage: Sendable {
 
     static func containsHardSensitive(_ text: String) -> Bool {
         let t = text.lowercased()
-        return hardSensitiveMarkers.contains { t.contains($0) }
+        return hardSensitiveMarkers.contains { containsMarker(t, $0) }
+    }
+
+    /// Short markers ("ssn", "cvv", "iban") must be whole words: `className`
+    /// contains "ssn" and used to drop every screen of code that said it.
+    static func containsMarker(_ lowered: String, _ marker: String) -> Bool {
+        guard marker.count <= 4 else { return lowered.contains(marker) }
+        var search = lowered.startIndex..<lowered.endIndex
+        while let r = lowered.range(of: marker, range: search) {
+            let before = r.lowerBound == lowered.startIndex ? nil : lowered[lowered.index(before: r.lowerBound)]
+            let after = r.upperBound == lowered.endIndex ? nil : lowered[r.upperBound]
+            if !(before?.isLetter ?? false) && !(after?.isLetter ?? false) { return true }
+            search = r.upperBound..<lowered.endIndex
+        }
+        return false
     }
 
     static func containsSoftSensitive(_ text: String) -> Bool {
@@ -117,14 +160,25 @@ struct FrameTriage: Sendable {
         return "other"
     }
 
+    /// Deterministic guard, Jev or not: hard markers ("cvv", "one-time code"…)
+    /// or personal identifiers in a form (`PersonalData.FrameSignals.isSensitive`).
+    static func locallySensitive(_ i: Input, signals: PersonalData.FrameSignals) -> Bool {
+        signals.isSensitive || containsHardSensitive(i.ocrText) || containsHardSensitive(i.windowTitle ?? "")
+    }
+
     static func heuristic(_ i: Input) -> TriageResult {
+        heuristic(i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url))
+    }
+
+    static func heuristic(_ i: Input, signals: PersonalData.FrameSignals) -> TriageResult {
         let appChanged = i.previousApp != nil && i.previousApp != i.bundleID
         let isBrowser = FrameCapture.browserBundleIDs.contains(i.bundleID)
         let titleChanged = i.previousTitle != nil && i.previousTitle != i.windowTitle
         let newContext = i.previousApp == nil ? false : (appChanged || (titleChanged && !isBrowser))
         let trivial = i.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count < 40
         return TriageResult(activity: guessActivity(bundleID: i.bundleID, title: i.windowTitle, url: i.url),
-                            isSensitive: containsSoftSensitive(i.ocrText) || containsSoftSensitive(i.windowTitle ?? ""),
+                            isSensitive: locallySensitive(i, signals: signals)
+                                || containsSoftSensitive(i.ocrText) || containsSoftSensitive(i.windowTitle ?? ""),
                             isNewContext: newContext,
                             importance: trivial ? 0 : 1,
                             source: .heuristic)
@@ -132,14 +186,20 @@ struct FrameTriage: Sendable {
 
     // MARK: Jev
 
-    /// One Jev call per frame; falls back to heuristics on any error.
+    /// One Jev call per frame; falls back to heuristics on any error. A frame
+    /// the local guard already calls sensitive never leaves the Mac.
     static func triage(_ i: Input, jev: JevClient) async -> TriageResult {
-        let fallback = heuristic(i)
+        let signals = PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url)
+        let fallback = heuristic(i, signals: signals)
+        if locallySensitive(i, signals: signals) {
+            Log.memory.info("Personal data on screen (\(signals.stateLine, privacy: .public)); frame kept local")
+            return fallback
+        }
         guard jev.isConfigured else { return fallback }
         do {
-            let r = try await jev.ask(state: state(for: i), questions: questions, cacheable: false)
+            let r = try await jev.ask(state: state(for: i, signals: signals), questions: questions, cacheable: false)
             let activity = r["activity"]?.choice ?? fallback.activity
-            let sensitive = (r["is_sensitive"]?.noul ?? 0) > 0.5
+            let sensitive = (r["is_sensitive"]?.noul ?? 0) >= sensitiveThreshold
             let newCtx = (r["is_new_context"]?.noul ?? 0) > 0.5
             let importance = r["importance"]?.score ?? 1
             return TriageResult(activity: activities[activity] == nil ? "other" : activity,

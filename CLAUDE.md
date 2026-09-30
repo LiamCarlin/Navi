@@ -174,6 +174,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,
     `importance` score — only important/new frames go to the vision LLM digest.
+    **Personal data** (`Memory/PersonalData`): a local, deterministic guard runs first —
+    DOB, card (Luhn), SSN and labelled ID numbers, or a phone/street/ZIP on a sign-up,
+    checkout, identity page or personal-details form, or any patient portal ⇒ stub frame,
+    and Jev is never asked (the OCR never leaves the Mac). Otherwise Jev's state carries
+    `[FORM_SIGNALS]` (page kind, field labels, identifier *kinds*, never values) and
+    `is_sensitive` has structured criteria; ≥ 0.4 ⇒ stub. The digester redacts OCR before
+    the model sees it and scrubs its JSON after (`PersonalData.scrub`); a session that
+    needed scrubbing gets no screenshot. `scripts/memscrub` redacts what older builds
+    stored (dry run by default; quit Navi before `--apply`).
   - **Voice control** (`Voice`): click the sparkle in the ⌘Space bar (or menu bar /
     `navi://voice`) and the island drops out of the notch. Apple's on-device
     `SpeechTranscriber` streams volatile words (~1 s windows; the session flushes it

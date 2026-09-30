@@ -125,11 +125,16 @@ final class Digester: @unchecked Sendable {
                 }
             }
 
-            var record = Self.sessionRecord(for: session, digest: result)
+            // Whatever the model (or the local digest's raw OCR) let through is scrubbed;
+            // a session that needed it gets no screenshot either — the form is in it.
+            let (clean, removed) = PersonalData.scrub(result)
+            if removed > 0 { Log.memory.info("Digest scrubbed \(removed) personal identifiers") }
+
+            var record = Self.sessionRecord(for: session, digest: clean)
             let id = try store.insertSession(record)
             record.id = id
             do {
-                let notePath = try vault.write(session: record, digest: result, frames: session, keepScreenshots: keep)
+                let notePath = try vault.write(session: record, digest: clean, frames: session, keepScreenshots: keep && removed == 0)
                 try store.updateSessionNotePath(sessionID: id, notePath: notePath)
             } catch {
                 Log.memory.error("Vault write failed: \(error.localizedDescription)")
@@ -190,6 +195,13 @@ final class Digester: @unchecked Sendable {
     Rules: never invent details not present in the input; never include passwords, codes or secrets; \
     prefer proper nouns for entities; keep topic names reusable across days (e.g. "swift concurrency", \
     not "the thing I read").
+    Privacy (strict — applies to title, summary, key_facts, entities, topics and links): never copy \
+    personal identifiers from the screen: dates of birth or ages, home/street addresses, home town, \
+    city + ZIP, phone numbers, email addresses typed into forms, SSNs or other government/ID numbers, \
+    card/bank/account/routing numbers, insurance member/policy/group IDs, and medical details \
+    (conditions, test results, prescriptions). Describe the activity instead: "created an account on \
+    a lab's patient portal" — not the details typed into it. Such values are never entities, topics or \
+    key facts. Text already replaced with [redacted] stays out entirely.
     """
 
     /// Compact, structured prompt for one session. Returns the text plus the
@@ -208,9 +220,10 @@ final class Digester: @unchecked Sendable {
         lines.append("[APP] " + apps.prefix(3).joined(separator: "; "))
         lines.append("[TIME] \(day.string(from: first.timestamp)) \(time.string(from: first.timestamp))–\(time.string(from: last.timestamp)) (\(minutes) min, \(frames.count) frames)")
         lines.append("[ACTIVITY] " + uniqueOrdered(frames.map(\.activity)).joined(separator: ", "))
-        let titles = uniqueOrdered(frames.compactMap { $0.windowTitle }.filter { !$0.isEmpty })
+        // Identifiers never reach the digest model (`PersonalData.redact`).
+        let titles = uniqueOrdered(frames.compactMap { $0.windowTitle }.filter { !$0.isEmpty }.map { PersonalData.redact($0).text })
         if !titles.isEmpty { lines.append("[TITLES]\n" + titles.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
-        let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty })
+        let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty }.map { PersonalData.redact($0).text })
         if !urls.isEmpty { lines.append("[URLS]\n" + urls.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
 
         var used = lines.joined(separator: "\n").count
@@ -230,7 +243,7 @@ final class Digester: @unchecked Sendable {
             let remaining = max(0, maxChars - used - 40 * (ordered.count - n))
             let budget = remaining / (ordered.count - n)
             guard budget > 200 else { break }
-            let text = String(f.ocrText.prefix(budget))
+            let text = String(PersonalData.redact(f.ocrText).text.prefix(budget))
             let block = "[SCREEN_TEXT \(n + 1) @ \(time.string(from: f.timestamp))]\n\(text)"
             lines.append(block)
             used += block.count + 1
