@@ -98,6 +98,9 @@ final class NaviSettings: ObservableObject {
     @Published var memoryVaultPath: String { didSet { d.set(memoryVaultPath, forKey: "memoryVaultPath") } }
     @Published var memoryExcludedBundleIDs: [String] { didSet { d.set(memoryExcludedBundleIDs, forKey: "memoryExcludedBundleIDs") } }
     @Published var memoryKeepScreenshots: Bool { didSet { d.set(memoryKeepScreenshots, forKey: "memoryKeepScreenshots") } }
+    /// Personal-information categories screen memory may keep (`PersonalData.Category` raw values);
+    /// everything else is blocked from frames, digests and the vault.
+    @Published var memoryAllowedPersonalData: [String] { didSet { d.set(memoryAllowedPersonalData, forKey: "memoryAllowedPersonalData") } }
     @Published var memoryPausedUntil: Date? { didSet { d.set(memoryPausedUntil, forKey: "memoryPausedUntil") } }
 
     // MARK: Usage / cost tracking (rough, local only)
@@ -125,7 +128,7 @@ final class NaviSettings: ObservableObject {
             "agentMaxSteps": 40,
             "agentShowLiveOverlay": true,
             "agentDriver": AgentDriver.jevFirst.rawValue,
-            "agentJevConfidenceThreshold": 0.5,
+            "agentJevConfidenceThreshold": 0.4,
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
@@ -150,6 +153,7 @@ final class NaviSettings: ObservableObject {
             "memoryVaultPath": NSString(string: "~/Navi Vault").expandingTildeInPath,
             "memoryExcludedBundleIDs": ["com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"],
             "memoryKeepScreenshots": true,
+            "memoryAllowedPersonalData": PersonalData.Category.allCases.filter { PersonalData.Category.allowedByDefault.contains($0) }.map(\.rawValue),
             "usageJevCalls": 0, "usageClaudeInputTokens": 0, "usageClaudeOutputTokens": 0, "usageDigestFrames": 0,
         ])
         isFirstLaunch = d.bool(forKey: "isFirstLaunch")
@@ -194,11 +198,19 @@ final class NaviSettings: ObservableObject {
         memoryVaultPath = d.string(forKey: "memoryVaultPath") ?? ""
         memoryExcludedBundleIDs = d.stringArray(forKey: "memoryExcludedBundleIDs") ?? []
         memoryKeepScreenshots = d.bool(forKey: "memoryKeepScreenshots")
+        memoryAllowedPersonalData = d.stringArray(forKey: "memoryAllowedPersonalData") ?? []
         memoryPausedUntil = d.object(forKey: "memoryPausedUntil") as? Date
         usageJevCalls = d.integer(forKey: "usageJevCalls")
         usageClaudeInputTokens = d.integer(forKey: "usageClaudeInputTokens")
         usageClaudeOutputTokens = d.integer(forKey: "usageClaudeOutputTokens")
         usageDigestFrames = d.integer(forKey: "usageDigestFrames")
+
+        // 2026-09-29: the native driver follows typesafe-computer-use, whose stop threshold is
+        // 0.4 (a stop now costs one writer read, not a vision loop). Move the old default once.
+        if !d.bool(forKey: "migratedJevThresholdToTypesafeCU") {
+            if agentJevConfidenceThreshold == 0.5 { agentJevConfidenceThreshold = 0.4 }
+            d.set(true, forKey: "migratedJevThresholdToTypesafeCU")
+        }
 
         // 2026-09-19: default model moved from Opus 5 to Sonnet 5 (cost). Migrate once.
         if !d.bool(forKey: "migratedDefaultModelToSonnet") {
@@ -218,8 +230,8 @@ final class NaviSettings: ObservableObject {
     // MARK: Auto mode
 
     /// **Auto mode**: Navi acts on its own. Jev decides every step from what is
-    /// on screen (native apps and any browser alike), Claude is consulted only
-    /// when Jev is stuck, and nothing pauses for approval except actions that
+    /// on screen (native apps and any browser alike), Claude reads the screen only
+    /// when Jev stops, and nothing pauses for approval except actions that
     /// cannot be undone — sending, paying, deleting. Off ⇒ every action asks
     /// first. It is a preset over the agent settings, so the two stay in step.
     var autoMode: Bool {
@@ -245,6 +257,16 @@ final class NaviSettings: ObservableObject {
     var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }
     var hasClaudeKey: Bool { Keychain.has(.anthropic) }
     var hasGeminiKey: Bool { Keychain.has(.gemini) }
+
+    var personalDataPolicy: PersonalData.Policy { PersonalData.Policy(allowedRawValues: memoryAllowedPersonalData) }
+
+    func allowsPersonalData(_ c: PersonalData.Category) -> Bool { memoryAllowedPersonalData.contains(c.rawValue) }
+
+    func setPersonalData(_ c: PersonalData.Category, allowed: Bool) {
+        var set = Set(memoryAllowedPersonalData)
+        if allowed { set.insert(c.rawValue) } else { set.remove(c.rawValue) }
+        memoryAllowedPersonalData = PersonalData.Category.allCases.map(\.rawValue).filter(set.contains)
+    }
 
     var memoryIsPaused: Bool {
         if let until = memoryPausedUntil { return until > Date() }

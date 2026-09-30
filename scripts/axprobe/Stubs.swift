@@ -26,6 +26,12 @@ final class ClaudeClient { var isConfigured = false; func complete(model: String
 enum AgentRun { static func isLookup(_ g: String) -> Bool { ["find","what","look up","search","how","check"].contains { g.lowercased().hasPrefix($0) } } }
 enum UltrafastBridge { static func searchQuery(for task: String) -> String { task } }
 enum ApprovalMode: String { case alwaysAsk, askForRisky, autonomous }
+/// No screen capture in the probe: perception is the accessibility tree alone (the OCR fallback needs the app).
+enum ScreenCapture {
+    struct Frame { var image: CGImage; var bounds: CGRect }
+    static var hasPermission: Bool { false }
+    static func captureWindow(id: CGWindowID) async throws -> Frame { throw NaviError.permissionDenied("Screen Recording") }
+}
 // Navi's cloud (signed-in accounts) is never used by the probe: Jev is called with the env key.
 enum CloudFeature: String { case route, agent, voice, memory, answer }
 struct CloudRun: Sendable {

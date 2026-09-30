@@ -165,7 +165,7 @@ OCR_EXCERPT:
 | Name | Type | Instructions (abridged) | Criteria / use |
 |---|---|---|---|
 | `activity` | choice | "What is the user doing in this frame?" | `coding`, `browsing`, `writing`, `chat`, `meeting`, `media`, `other` — stored as the frame's tag and used for daily-note sections. |
-| `is_sensitive` | noul | "The frame shows passwords, one-time codes, banking or payment details, medical or legal records, or a private conversation the user would not want recorded." | `≥ 0.5` ⇒ frame dropped entirely; not even OCR text is stored. |
+| `is_sensitive` | noul | Structured: `{question, sensitive_when: [password/2FA fields, personal identifiers in a form (DOB, address, city + ZIP, phone, SSN/ID), sign-up / checkout / payment forms, card/bank/account numbers, patient portals and medical records, identity verification], not_sensitive_when: [articles/docs/code that only mention these, sign-in with just an email, a business's public address], signals}` — the state's `[FORM_SIGNALS]` line (page kind, personal-field labels, identifier kinds; never values) is computed locally by `PersonalData`. | `≥ 0.4` ⇒ frame dropped entirely; not even OCR text is stored. Frames the local guard already calls sensitive are never sent to Jev. Built per `PersonalData.Policy`: categories the user allows (Settings → Recall) are left out of `sensitive_when` and named in `not_sensitive_when`; passwords/codes always stay in. |
 | `is_new_context` | noul | "Compared with PREVIOUS_CONTEXT this frame is a different task, document or topic." | Starts a new "moment" in the store; new-context frames are preferred for the digest. |
 | `importance` | score | "How worth remembering is this frame for a personal work journal?" | `["noise", "routine", "useful", "notable", "milestone"]` — `< 1.5` ⇒ text only; `≥ 1.5` ⇒ keep frame for the vision digest; `≥ 3` ⇒ digest even if the interval hasn't elapsed. |
 
@@ -297,35 +297,32 @@ The Vercel shape was lifted from `@ai-sdk/gateway` 4.0.87
 (`GatewayEvaluationModel.doEvaluate`) because Vercel's docs only show the AI
 SDK. Both parsers are unit-tested in `NaviTests/JevClientTests.swift`.
 
-## Computer use — the Jev-first driver (`Navi/Agent/JevDriver.swift`)
+## Computer use — the native driver (`Navi/Agent/TypesafeCU/`)
 
-Default driver (`NaviSettings.agentDriver = .jevFirst`). The policy is
-browser-use/jev-ultrafast's, ported from the DOM to the macOS Accessibility
-tree: *finding the candidates is the work; Jev picks.* Per step:
+Default driver (`NaviSettings.agentDriver = .jevFirst`). Its design is
+[typesafe-computer-use](https://github.com/awlevin/typesafe-computer-use), vendored under
+`vendor/typesafe-computer-use` as the source of truth and ported to Swift module by module;
+**docs/TYPESAFE_CU.md** has the mapping, the step walk-through, and what Navi adds. In one line:
+*the classifier picks, code decides facts, the writer only writes free text.* Per step:
 
-1. **Observe** — `AXSnapshotter.capture` walks the frontmost app's focused
-   window (`kAXFocusedWindowAttribute`, else `kAXWindowsAttribute[0]`),
-   hard time-boxed at **150 ms** (depth ≤ 25, ≤ 4 000 nodes, per-app
-   messaging timeout 0.2 s) on a serial `AXQueue`. Chrome/Electron apps get
-   `AXEnhancedUserInterface` + `AXManualAccessibility` once per run. The menu
-   bar is walked only when the task mentions a menu (`AXSnapshot.taskMentionsMenu`).
-   Candidates are the actionable roles (buttons, links, fields, pop-ups, menu
-   items, cells, tabs, …; images/text/groups only with `AXPress`), deduped on
-   (role, label, frame), focused first then reading order, capped at **120**
-   (closest to the window / last acted-on element win). Browser URL comes
-   from the `AXWebArea`'s `AXURL` — no Apple Events in the loop.
-2. **Decide** — one `JevClient.ask` (~220–500 ms measured). Nothing else
-   costs more than a few ms.
-3. **Execute** — `ActionExecutor`: `AXPress` first, CGEvent click at the
-   frame centre as fallback; `AXValue` set-and-verify for fields, else
-   select-all + type; pop-ups opened and the matching `AXMenuItem` pressed.
-4. **Settle** — poll a 3-call AX fingerprint (focused window title + focused
-   element) every 40 ms; return on the first change, cap 250 ms (500 ms after
-   Return, 800 ms after OPEN_APP / OPEN_URL). Re-observe → `page_changed`.
+1. **Observe** — `AXSnapshotter.capture` walks the target app's window (150 ms box, ≤ 4 000
+   nodes); `CUPerception.perceive` turns its controls **and its static text** into one numbered
+   item list, plus the labelled pressable controls it pruned as off screen. OCR (Vision, one
+   window) is merged in where the tree is thin, and once more on any screen Jev stopped on.
+2. **Facts** — `CUFacts`/`CUDecide.state`: dates with "in N days", the row of a repeated label,
+   a coarse region, the focused field, checked/selected/holds, and the actions already tried on
+   this same screen (`CURunState`).
+3. **Decide** — one `JevClient.ask` (`CUDecide.request`): `kind` over a mutually exclusive
+   action set, and the targets each kind would use (`item`, `field`, `option`, `shortcut`,
+   `app`, `site`, `offscreen`), plus `is_irreversible` / `is_prohibited` for the approval gate.
+4. **Execute** — `ActionExecutor` (AXPress / AXValue first, events to the target process in
+   background mode); typed text is checked by a Jev noul and our own write undone below 0.5.
+5. **Stop and hand off** — done / none / confidence < 0.4 / a stall / the step limit hands the
+   run to the writer (`CUWriter.composeAnswer`, screenshot + screen text + earlier screens),
+   which answers, or gives Jev back one move (`focus`) to make. The writer never drives.
 
-No screenshots are taken in this loop. A 400 px thumbnail goes to the panel
-every third step when the live overlay is on and Screen Recording is granted;
-it is never sent to Jev.
+Every run writes `~/Library/Logs/Navi/runs/<timestamp>/` (payload, probabilities, reviews) so
+a stop can be read — and re-decided — without the screen.
 
 ### Any browser (`Agent/NativeBrowser.swift`)
 
@@ -407,27 +404,13 @@ Rows, cells, tabs, menu items and radio buttons also carry `selected` (their
 `AXSelected`), so "which sidebar list is current" is visible — a Reminders
 recipe can say "click the named list first, then ⌘N" and Jev can tell.
 
-### State (JSON, serialised to the `state` string)
+### State and questions
 
-```jsonc
-{
-  "app": "Safari", "bundle": "com.apple.Safari", "window": "Acme — Home",
-  "url": "https://acme.test/", "step": "2 of 40",
-  "text": "…first 1500 chars of visible AXStaticText…",
-  "elements": [
-    { "index": 1, "role": "AXTextField", "label": "Search", "value": "", "focused": true,
-      "path": "Toolbar", "operations": ["CLICK", "TYPE_TEXT"] },
-    { "index": 3, "role": "AXPopUpButton", "label": "Size", "value": "Medium",
-      "options": ["Small", "Medium", "Large"], "operations": ["CLICK", "SELECT"] }
-  ],
-  "recent_actions": [ { "action": "Click ‘Search’", "kind": "click", "text": null, "page_changed": true } ],
-  "playbook": { "app": "Messages", "how_it_works": ["…"], "shortcuts": {"cmd+n": "New message (To: field focused)"},
-                "recipes": [{"goal": "send a message / text to a person", "steps": ["KEY cmd+n", "TYPE_TEXT the name into ‘To:’", "…"]}],
-                "done_when": ["…"], "avoid": ["Do not click an existing conversation to message a DIFFERENT person — use ⌘N."] },
-  "experience": ["text Sam the address → Press ⌘N · Type ‘…’ into ‘To:’ · Press Return · Type ‘…’ into ‘iMessage’ · Press Return"],
-  "progress": { "actions_taken": 0 }
-}
-```
+See docs/TYPESAFE_CU.md → "The request". The state is upstream's `base_state`
+(`goal`, `now`, `frontmost_app`, `browser_active_tab_url`, `focused_field`,
+`previous_actions`, `already_tried_on_this_screen`, `screen_items_in_reading_order`,
+`offscreen_controls`, `current_focus`, `user_said`) plus Navi's `window`, `playbook`,
+`experience` and `conversation`.
 
 ### Playbooks and experience — what Jev is told about the app
 
@@ -504,80 +487,6 @@ for an effect (`!AgentRun.isLookup`), before any action, is not final unless
 ≥ 95 % sure: the screen is re-observed once and Jev asked again with
 `progress.note`; the second answer stands (`Decision.prematureDone`).
 
-### Questions (one call)
-
-| Name | Type | Offered when | Criteria |
-|---|---|---|---|
-| `operation` | choice | always | `CLICK`, `TYPE_TEXT`, `SELECT`, `KEY`, `OPEN_APP`, `OPEN_URL` only when they have ≥ 1 target; `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`, `NEED_VISION` always. Instructions `{goal, rules: NEXT_ACTION}` (jev-ultrafast text, verbatim). |
-| `click_target` | choice | any element | `"<index>"` → `{element: "[i] label", current_value, role, checked?, selected?, expanded?, context}` — instructions `{goal, operation, rules: [NEXT_ACTION, TARGET]}` |
-| `type_text_target` | choice | editable, non-secure fields | same shape |
-| `select_target` | choice | pop-ups with enumerable options | `"<index>:<option>"` |
-| `key_target` | choice | always | Return, Escape, Tab, Delete, Space, arrows, ⌘L/T/W/F/A/C/V/Z/S, ⌘⏎, ⌘⇧T, ⌃Tab — plus the app skill's own shortcuts (`AppSkills.keyCombos`), generic ones re-described for the app |
-| `open_app_target` / `open_url_target` | choice | task names an app / URL (`TextCandidates`) | `{app}` / `{url}` |
-| `task_complete` | noul | always | "The user's goal is already fully accomplished, as evidenced by the current screen" (+ "judged against `playbook.done_when`" when a skill applies) |
-| `is_irreversible`, `is_prohibited` | noul | always | `JevGate.questions` wording — gating stays in one place |
-
-Only the head belonging to the chosen operation is read; the others are
-speculative and discarded. `JevClient.Question` currently takes string
-instructions/criteria, so the structured objects above are sent as compact
-JSON strings (see integrator notes in the handoff).
-
-### Decision rules (`JevDriver.decide`)
-
-```text
-task_complete > 0.8 or operation == DONE        → .completed(summary from history)
-   … unless nothing has been done yet on an effect goal and confidence < 0.95
-                                                → .prematureDone: re-observe, ask once more
-operation head fails validate_choice            → fallback to Claude
-   (choice offered and == argmax, all finite in [0,1]; ids the API omitted count as 0,
-    unoffered keys are ignored, Σ may drift by rounding — looser than jev-ultrafast's
-    validate_choice on purpose: a 24 % ⌘N once failed on a missing key and cost 10 s of vision)
-operation == NEED_VISION                        → fallback to Claude
-operation == BLOCKED, 3 consecutive non-WAIT actions with page_changed == false,
-   or FailureTracker ≥ 3 (no change / same element again / action error)
-                                                → Claude COACHES once (see below), then .failed
-operation confidence < agentJevConfidenceThreshold (0.5):
-   task_complete ≥ 0.5 and something was done  → .completed (nothing sure left to do = done)
-   confidence ≥ actFloor (0.22) and the action is cheap to undo
-      (CLICK / TYPE_TEXT / SELECT / SCROLL / WAIT / OPEN_*, KEY ∈ tentativeKeys —
-       never ⌘W, ⌘↩, Delete, ⌘S)                → .actTentatively: taken as a hunch; the
-                                                  FailureTracker → coach catches a wrong one
-   otherwise                                    → fallback to Claude
-target head for the operation fails validation  → fallback to Claude
-TYPE_TEXT: text = the task's single quoted string (zero-latency) else Claude Haiku
-   with jev-ultrafast's TEXT_VALUE prompt; {"text": null} / invalid JSON →
-   FieldText.localGuess (what the goal spells out: "tell her I'm late", "look up X" into a
-   search field) → only then fallback to Claude
-state.progress carries last_action / last_typed / last_action_submitted so task_complete
-   can see that the Return after the typed message was the end of the goal
-approval: JevGate.decide(is_irreversible, is_prohibited ∨ keyword heuristic, mode, readOnly = WAIT/SCROLL)
-   — same rules as the Claude-only driver; a declined action proposed again ends the run
-```
-
-**Claude fallback** is one bounded turn of the existing `computer_toolset_20260801`
-loop (≤ 3 tool rounds, then a one-line "Did:/Done:/Stopped:" summary that is
-appended to Jev's history). Budget: `agentMaxClaudeFallbacks` (6; voice runs
-cap it at 2 — the user is watching and can say the next thing). Needs an
-Anthropic key **and** Screen Recording; without them the run continues
-Jev-only and fails with a clear message the first time a fallback is needed.
-If Jev itself errors mid-run, Claude takes over the remaining steps.
-
-**Coaching** (`JevCoach`, once per step): Jev does not hand the wheel to
-Claude when it flails — Claude diagnoses. It gets the goal, a screenshot, the
-element table Jev sees (with indexes) and the recent actions with their
-effects, and returns `{diagnosis, guidance, next_operation?, next_target?}`.
-The guidance is added to Jev's `state.guidance` and to every question's
-`instructions.guidance` for the rest of the step; a suggested next action is
-validated against the offered targets (`JevDriver.coachAction`) before it is
-taken. A second failure streak after coaching ends the step with the
-diagnosis. The browser runner applies the same policy (guidance injected
-into every Jev request through a `post_json` wrapper).
-
-**Speculative text**: while Jev decides, `FieldText.obviousField` (the
-focused empty text field, else the only empty one) already has Haiku writing
-its value in parallel; the value is used only if Jev picks that very field.
-The browser runner does the same, keyed by the exact `field_context`.
-
 **Planning** (`TaskPlanner`, one Haiku call, prefetched while the user
 types via `ComputerAgentRunning.prepare`): the task is split into the fewest
 single-surface steps — a browser tab or one app — each with a self-contained
@@ -615,6 +524,9 @@ keep the tab so the user can take over. Native steps do the same:
 Without an Anthropic key one Jev choice (`TaskSurface`: browser / native_app
 / unsure) picks the surface instead.
 
-Events: `.planned("Jev-driven · 34 candidates on screen · walk 41 ms")`,
-`.status("Jev · CLICK [7] 91% · 118 ms")` per step, `.status("Handing step to
-Claude: …")`, `.completed(summary:)` built from the step log.
+Events: `.status("Jev-driven · 118 items on screen (64 controls) · 41 ms")`,
+`.status("Jev · click_item [7] 91% · 118 ms")` per step, `.status("Jev stopped (low
+confidence) — reading the screen")`, `.planned("Next for Jev: …")` when the writer hands
+back a focus, `.completed(summary:)` with the writer's answer (or the step log when Jev's own
+sure `done` ends an effect task), and the calls line
+`calls: jev 14 (82%, 3.9s)  writer 3 (17%, 21.4s)  handoffs 1`.

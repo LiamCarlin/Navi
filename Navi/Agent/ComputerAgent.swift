@@ -3,10 +3,12 @@ import Foundation
 
 /// Computer-use agent. Two drivers (`NaviSettings.agentDriver`):
 ///
-/// - **Jev-first** (default): enumerate what's actionable via the Accessibility
-///   API (`AXSnapshotter`), ask Jev which operation + which target
-///   (`JevDriver`, one call, ~100 ms), execute (`ActionExecutor`), repeat.
-///   Claude only runs a bounded vision turn when Jev can't decide.
+/// - **Jev-first** (default): typesafe-computer-use's loop (vendored under
+///   `vendor/typesafe-computer-use`, ported in `Agent/TypesafeCU`): read the target
+///   app's accessibility tree (+ OCR where it is thin) into one numbered item list,
+///   ask Jev which kind of action and which target (`CUDecide`, one call), execute
+///   (`ActionExecutor`), repeat. When Jev stops, the writer (`CUWriter`) reads the
+///   screen and answers, or hands Jev back one move to make; it never drives.
 /// - **Claude-only**: the original `computer_toolset_20260801` loop with Jev
 ///   safety gating (`JevGate`).
 ///
@@ -128,7 +130,8 @@ final class AgentRun: @unchecked Sendable {
         var approvalMode: ApprovalMode
         var showOverlay: Bool
         var driver: AgentDriver = .jevFirst
-        var jevConfidenceThreshold: Double = 0.5
+        var jevConfidenceThreshold: Double = 0.4
+        /// Times the writer may hand a stopped run back to Jev with a focus (upstream `--handoffs`).
         var maxClaudeFallbacks: Int = 6
         /// Drive the target app without activating it or moving the cursor.
         var background: Bool = false
@@ -178,6 +181,8 @@ final class AgentRun: @unchecked Sendable {
     private var stuckStreak = 0
     /// Visible text of the last accessibility snapshot (for result extraction).
     private var lastSnapshotText: String?
+    /// The writer's answer that ended the last native step: for a lookup it *is* the result.
+    private var writerAnswer: String?
     /// Background mode: the app this step drives. nil in foreground mode.
     private var target: AgentTarget?
     /// Background mode: the window the last screenshot came from (event routing for Claude's clicks).
@@ -513,7 +518,10 @@ final class AgentRun: @unchecked Sendable {
                 if step.needsResult || (isLast && Self.isLookup(task)) {
                     // What was found is the deliverable — for the next step, and for the
                     // user: "Done: click ‘Weather’ · click ‘Boston’" is not an answer.
-                    result = await extractResult(goal: task, pageText: pageText, fallback: summary)
+                    // A native step that ended with the writer's answer already read the screen for it.
+                    if !ranRunner, let answer = writerAnswer { result = answer } else {
+                        result = await extractResult(goal: task, pageText: pageText, fallback: summary)
+                    }
                     if !isLast { handle.emit(.status("Found: \(AgentAction.short(result ?? "nothing", 120))")) }
                     summaries.append(isLast && result != nil && result != summary ? "\(result!)\n(\(summary))" : summary)
                 } else {
@@ -638,8 +646,32 @@ final class AgentRun: @unchecked Sendable {
         await MainActor.run { overlay?.update(step: step, maxSteps: config.maxSteps, status: status) }
     }
 
-    // MARK: - Jev-first driver
+    // MARK: - Jev-first driver (typesafe-computer-use)
 
+    /// Accept Jev's own "done" without the writer's review when it is at least this sure, the
+    /// goal asked for an effect and work was done. Upstream always reviews; Navi skips the 2–5 s
+    /// round trip where the review adds nothing (the user sees the result in front of them).
+    static let acceptDoneConfidence = 0.9
+
+    /// Does the goal ask for something to be read back, even while it does something ("compute …",
+    /// "open X and tell me how many …")? Then Jev's own `done` is still reviewed: only the writer reads values.
+    static func asksForResult(_ goal: String) -> Bool {
+        isLookup(goal) || goal.lowercased().range(of: #"\b(compute|calculate|convert|solve|add up|total|sum of|count|how (many|much|long|far)|what('s| is| are| was)|tell me|read me|show me)\b"#,
+                                                  options: .regularExpression) != nil
+    }
+
+    /// The native step loop, after typesafe-computer-use's `runner.run`
+    /// (vendor/typesafe-computer-use, docs/TYPESAFE_CU.md):
+    ///
+    ///  1. read the screen deterministically — the target app's accessibility tree (controls
+    ///     and static text), OCR where the tree is thin — into one numbered item list;
+    ///  2. code adds the facts: dates and how far off they are, the row of a repeated label,
+    ///     the focused field, the actions already tried on this same screen;
+    ///  3. one Jev request answers which kind of action, and which target each kind would use;
+    ///  4. the action runs, the loop settles, and the next capture is the only witness of it;
+    ///  5. when Jev stops (done, nothing helps, low confidence, a stall, the step limit) the
+    ///     writer reads the screen and answers — or hands the run back with a focus, one move
+    ///     in terms of the screen. The writer never picks an action.
     private func mainJevFirst(_ handle: AgentRunHandle) async throws {
         if !InputController.isTrusted {
             await MainActor.run {
@@ -649,441 +681,479 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.failed("Grant Accessibility access to Navi in System Settings → Privacy & Security → Accessibility"))
             return
         }
-        // Vision (Claude fallback + thumbnails) is optional for this driver.
-        var visionAvailable = true
-        if !claude.isConfigured {
-            visionAvailable = false
-            handle.emit(.status("No Anthropic API key — vision fallback disabled; Jev runs alone"))
-        } else if !ScreenCapture.hasPermission {
-            visionAvailable = false
-            handle.emit(.status("Screen Recording not granted — vision fallback disabled"))
+        let writerAvailable = claude.isConfigured
+        let screenshots = ScreenCapture.hasPermission
+        if !writerAvailable {
+            handle.emit(.status("No Anthropic key — Jev runs alone: only text the goal spells out is typed, and every stop is final"))
+        } else if !screenshots {
+            handle.emit(.status("Screen Recording not granted — no OCR fallback, and the writer reads the screen's text only"))
         }
-        let textHelperAvailable = claude.isConfigured
 
         await showOverlay(step: 1)
-        let driver = JevDriver(jev: jev)
         let snapshotter = AXSnapshotter()
         let executor = ActionExecutor()
-        executor.target = target
         var target = self.target
+        executor.target = target
+        let ocrReader = CUOCRReader()
+        let folder = CURunFolder(goal: task)
+        var run = CURunState()
+        var calls = CUCalls()
+        writerAnswer = nil
 
         // Opening a background app's menus would activate it, so the menu bar
         // is only offered in foreground mode; Jev falls back to shortcuts.
         let wantMenuBar = AXSnapshot.taskMentionsMenu(task) && target == nil
-        let t0 = Date()
-        var snapshot = await snapshotter.capture(near: nil, includeMenuBar: wantMenuBar, target: target) {
-            didSet { lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n") }
-        }
-        // An app that was just opened (or a window that is still building) exposes
-        // nothing for a few hundred ms; Jev would only be able to say BLOCKED.
-        let settled = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in
-            try? checkCancelled(); return !isCancelled
-        }
-        lastSnapshotText = [snapshot.windowTitle ?? "", snapshot.visibleText].joined(separator: "\n")
-        handle.emit(.status("Jev-driven · \(snapshot.elements.count) candidates on screen · walk \(Int(Date().timeIntervalSince(t0) * 1000)) ms"
-                            + (settled > 0 ? " · settled after \(settled) re-walk\(settled == 1 ? "" : "s")" : "")))
-        emitThumbnailIfEnabled(handle)
-
-        var history: [JevDriver.HistoryEntry] = []
-        var humanLog: [String] = []
-        var fallbacks = 0
-        var lastDeclined: AgentAction?
-        // Coaching: after a few ineffective actions Claude diagnoses once and
-        // Jev continues with its guidance; failing again afterwards ends the step.
-        var tracker = JevCoach.FailureTracker()
-        var coach: JevCoach.Advice?
-        var coachAction: AgentAction?
-        var coachings = 0
-        /// Where the current guidance was written (app + window): elsewhere it is stale and Claude may look again.
-        var coachedScreen: String?
-        var lastActedFrame: CGRect?
-        /// Snapshot keys already given a second look after a weak BLOCKED.
-        var blockedRetries: Set<String> = []
         let candidates = TextCandidates.extract(task: task)
         var appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
-        // Apps the task implies ("text …" → Messages) are OPEN_APP targets too, so Jev
-        // can switch when the step started in the wrong app.
-        for s in AppSkills.inferApps(for: task, frontmostBundleID: snapshot.bundleID).prefix(2)
-        where !appCandidates.contains(where: { $0.lowercased() == s.name.lowercased() }) && !(snapshot.bundleID.map(s.bundleIDs.contains) ?? false) {
-            appCandidates.append(s.name)
-        }
         var urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
-        // What the task names in the user's own life ("the HCI notes" → that Google Doc):
-        // in Jev's state every step, and its page as an OPEN_URL target.
+        // What the task names in the user's own life ("the HCI notes" → that Google Doc): in
+        // Jev's state every step (`user_context`), and its page as a `use_browser` site.
         let userContext = UserKnowledge.context(for: task)
         for u in UserKnowledge.liveURLCandidates(for: task) where !urlCandidates.contains(u) { urlCandidates.append(u) }
-        /// Does the goal ask for an effect (create/send/type…) rather than information?
         let effectGoal = !Self.isLookup(task)
-        /// Does it ask for typing? Then a TYPE_TEXT Jev is only fairly sure of stays with Jev.
-        let typingGoal = JevDriver.goalAsksToType(task)
-        /// Premature DONE already rejected on this screen key.
-        var doneRejectedOn: String?
-        /// What worked here before, for the experience store (labels only — never typed text).
+        /// The user wants something read back ("compute 57 × 23", "how many…"): the writer's answer is the deliverable.
+        let wantsResult = Self.asksForResult(task)
+        let obvious = TextCandidates.obviousText(in: task)
+        let browserBundle = NativeBrowser.defaultBrowserBundleID()
+        let browserName = browserBundle.map(NativeBrowser.displayName) ?? "Safari"
+        var humanLog: [String] = []
+        /// What worked here, for the experience store (labels only — never typed text).
         var redactedLog: [String] = []
+        var typedTexts: [String] = []
         var announcedSkill: String?
+        var lastActedFrame: CGRect?
+        var lastDeclined: AgentAction?
+        var lastAnswer: CUWriter.Answer?
+        /// Screens already re-read with OCR after Jev stopped on them.
+        var ocrRetried = Set<String>()
+        var step = 0
 
-        /// Records a completed step in the experience store so the next similar goal
-        /// in this app starts with "what worked last time" in Jev's state.
+        func observe(forceOCR: Bool = false) async -> CUScreen {
+            var snap = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
+            // An app that was just opened (or a window still building) exposes nothing for a
+            // few hundred ms; Jev could only say "none".
+            _ = await Self.settleSnapshot(&snap, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
+            var ocr: [CUOCRLine]?
+            if screenshots, forceOCR || CUOCRPolicy.wantsOCR(snap), let wid = await CUOCRReader.windowID(for: snap, target: target) {
+                ocr = await ocrReader.read(windowID: wid)
+            }
+            lastSnapshotText = [snap.windowTitle ?? "", snap.visibleText].joined(separator: "\n")
+            return CUPerception.perceive(snap, ocr: ocr, goal: task)
+        }
+
+        let t0 = Date()
+        var screen = await observe()
+        let controls = screen.items.filter(\.fromAX).count
+        handle.emit(.status("Jev-driven · \(screen.items.count) items on screen (\(controls) controls\(screen.usedOCR ? ", OCR" : "")) · \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
+
         func remember() {
             guard !redactedLog.isEmpty else { return }
-            AgentExperience.shared.record(bundleID: snapshot.bundleID, appName: snapshot.appName, goal: task, actions: redactedLog)
+            AgentExperience.shared.record(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, goal: task, actions: redactedLog)
         }
 
-        /// Runs one bounded Claude turn. Returns false when the run has ended.
-        func fallback(_ reason: String, step: Int) async throws -> Bool {
-            guard visionAvailable else {
-                handle.emit(.failed("Jev couldn't decide this step (\(reason)) and the vision fallback is unavailable — grant Screen Recording and add an Anthropic key to enable it."))
-                return false
-            }
-            fallbacks += 1
-            guard fallbacks <= config.maxClaudeFallbacks else {
-                handle.emit(.failed("Jev couldn't decide (\(reason)) and the Claude fallback budget (\(config.maxClaudeFallbacks)) is used up. Raise it in Settings → Agent or narrow the task."))
-                return false
-            }
-            handle.emit(.status("Handing step to Claude: \(reason)"))
-            let outcome = try await claudeFallback(reason: reason, step: step, history: history, handle: handle)
-            switch outcome {
-            case .done(let summary):
-                handle.emit(.completed(summary: summary)); return false
-            case .failed(let msg):
-                handle.emit(.failed(msg)); return false
-            case .paused(let summary), .stepLimit(let summary):
-                var entry = JevDriver.HistoryEntry(action: "Claude: \(summary)", kind: "claude", text: nil, pageChanged: nil)
-                let next = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
-                entry.pageChanged = next.diff(previous: snapshot) != "no visible change"
-                history.append(entry)
-                humanLog.append("Claude: \(summary)")
-                snapshot = next
-                return true
+        func writeRun(_ outcome: String) {
+            folder.write("run.json", json: ["goal": task, "outcome": outcome, "answer": lastAnswer?.text ?? NSNull(),
+                                            "goal_achieved": lastAnswer.map { $0.achieved as Any } ?? NSNull(),
+                                            "steps": step, "history": run.history, "calls": calls.summary,
+                                            "handoffs": run.handoffs.map { ["step": $0.step, "outcome": $0.outcome.rawValue, "focus": $0.focus, "actions": $0.actions] }])
+            handle.emit(.status(calls.line(handoffs: run.handoffs.count)))
+        }
+
+        /// The writer's answer as the run's end.
+        func conclude(_ a: CUWriter.Answer, outcome: CURunState.Outcome) {
+            writerAnswer = a.text.isEmpty ? nil : a.text
+            writeRun(outcome.rawValue)
+            if a.achieved {
+                remember()
+                handle.emit(.completed(summary: a.text.isEmpty ? Self.summary(humanLog) : a.text))
+            } else {
+                handle.emit(.failed(a.text.isEmpty ? "Stopped: \(outcome.told)." : a.text))
             }
         }
 
-        /// Asks Claude once why Jev keeps failing. Returns false when the step must end.
-        func askCoach(step: Int, request: JevDriver.Request?) async throws -> Bool {
-            let why = tracker.summary.isEmpty ? "repeated ineffective actions" : tracker.summary
-            // Once per screen: failing again where Claude already looked ends the step;
-            // on a different app/window (often where its guidance sent Jev) it may look again.
-            if let coach, coachings >= JevCoach.maxCoachings || coachedScreen == Self.screenKey(snapshot) {
-                handle.emit(.failed("Still failing after Claude's guidance (\(why)). Claude's diagnosis: \(coach.diagnosis)"))
-                return false
-            }
-            guard claude.isConfigured else {
-                handle.emit(.failed("Jev keeps failing (\(why)) and no Anthropic key is set for Claude to diagnose it."))
-                return false
-            }
-            handle.emit(.status("Jev is struggling (\(why)) — asking Claude to diagnose"))
-            await updateOverlay(step: step, status: "Asking Claude why this keeps failing")
-            var png: Data?
-            if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
-            var screenInput = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot, history: [],
-                                                  conversation: context.conversation, userContext: userContext)
-            screenInput.playbook = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url).map { AppSkills.playbook(for: $0, goal: task) }
-            let screen = JevDriver.stateJSON(for: screenInput)
-            let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
-                                                      history: history.suffix(8).map(\.json), failureSummary: why, screenshotPNG: png)
-            try checkCancelled()
-            guard let advice else {
-                handle.emit(.failed("Jev keeps failing (\(why)) and Claude's diagnosis was unusable."))
-                return false
-            }
-            coach = advice
-            coachings += 1
-            coachedScreen = Self.screenKey(snapshot)
-            tracker.reset()
-            handle.emit(.status("Claude · \(ms) ms · \(advice.diagnosis)"))
-            handle.emit(.planned("Guidance for Jev:\n\(advice.guidance)"))
-            history.append(JevDriver.HistoryEntry(action: "Claude guidance: \(AgentAction.short(advice.guidance, 200))", kind: "coach", text: nil, pageChanged: true))
-            let req = request ?? JevDriver.request(for: JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
-                                                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                                                            conversation: context.conversation))
-            if let a = JevDriver.coachAction(operation: advice.nextOperation, target: advice.nextTarget, request: req) {
-                coachAction = a
-            } else if advice.nextOperation == "BLOCKED" {
-                handle.emit(.failed("Claude says this cannot be done here: \(advice.diagnosis)"))
-                return false
-            } else if advice.nextOperation == "DONE" {
+        /// Jev stopped: the writer reads the screen and answers for the user; its focus may send
+        /// Jev back to work (runner.py `hand_off`). True to resume; otherwise the run has ended.
+        func handOff(_ stopped: CURunState.Outcome, doneConfidence: Double = 0) async throws -> Bool {
+            let outcome = run.countStall(stopped)
+            if outcome == .done, effectGoal, !wantsResult, !humanLog.isEmpty, doneConfidence >= Self.acceptDoneConfidence || !writerAvailable {
+                writeRun(outcome.rawValue)
                 remember()
                 handle.emit(.completed(summary: Self.summary(humanLog)))
                 return false
             }
-            return true
+            guard writerAvailable else {
+                writeRun(outcome.rawValue)
+                if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
+                else { handle.emit(.failed("Stopped: \(outcome.told). Add an Anthropic key so Navi can read the screen and keep going.")) }
+                return false
+            }
+            // A focus that led to no action leaves the answer it came with standing.
+            if let h = run.handoffs.last, h.actions == run.history.count, let lastAnswer {
+                conclude(lastAnswer, outcome: outcome)
+                return false
+            }
+            let mayResume = step < config.maxSteps && run.handoffs.count < config.maxClaudeFallbacks && outcome != .stuck
+            handle.emit(.status("Jev stopped (\(outcome.rawValue)) — reading the screen"))
+            await updateOverlay(step: max(1, actionIndex), status: "Reading the screen")
+            var png: Data?
+            if screenshots, let wid = await CUOCRReader.windowID(for: screen.snapshot, target: target),
+               let frame = try? await ScreenCapture.captureWindow(id: wid) {
+                png = ScreenCapture.pngData(ScreenCapture.downscale(frame.image, maxLongEdge: CUWriter.answerImageEdge).0)
+            }
+            let packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
+                                               earlier: run.earlierScreens(final: screen.signature), guidance: run.guidance,
+                                               earlierStops: run.earlierStops, canAsk: mayResume, spoken: context.spoken,
+                                               conversation: context.conversation)
+            let t = Date()
+            let answer: CUWriter.Answer
+            do {
+                answer = try await CUWriter.composeAnswer(claude: claude, model: config.model, packet: packet, screenshotPNG: png)
+            } catch {
+                try checkCancelled()
+                let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                writeRun(outcome.rawValue)
+                if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
+                else { handle.emit(.failed("Stopped: \(outcome.told), and the screen could not be read (\(msg)).")) }
+                return false
+            }
+            let ms = Int(Date().timeIntervalSince(t) * 1000)
+            calls.writer(ms: ms)
+            lastAnswer = answer
+            folder.write(CURunFolder.name(step, "review.json"), json: ["outcome": outcome.rawValue, "ms": ms, "achieved": answer.achieved,
+                                                                       "answer": answer.text, "focus": answer.focus, "question": answer.question,
+                                                                       "may_resume": mayResume, "packet": packet])
+            if let png { folder.write(CURunFolder.name(step, "review.png"), data: png) }
+            try checkCancelled()
+            // Navi has no reply box mid-run: a question ends the run and is put to the user,
+            // whose answer comes back as the next request (the conversation carries this one).
+            if mayResume, !answer.achieved, !answer.question.isEmpty {
+                writerAnswer = answer.text
+                writeRun("question")
+                handle.emit(.completed(summary: [answer.text, answer.question].filter { !$0.isEmpty }.joined(separator: "\n")))
+                return false
+            }
+            if mayResume, !answer.achieved, !answer.focus.isEmpty {
+                run.refocus(.init(step: step, outcome: outcome, focus: answer.focus, actions: run.history.count))
+                handle.emit(.status("Read the screen in \(ms) ms: \(answer.text)"))
+                handle.emit(.planned("Next for Jev: \(answer.focus)"))
+                return true
+            }
+            conclude(answer, outcome: outcome)
+            return false
         }
 
-        for step in 1...config.maxSteps {
+        // Apps the task implies ("text …" → Messages) are open_app targets too, so Jev can
+        // switch when the step started in the wrong app.
+        for s in AppSkills.inferApps(for: task, frontmostBundleID: screen.snapshot.bundleID).prefix(2)
+        where !appCandidates.contains(where: { $0.lowercased() == s.name.lowercased() }) && !(screen.snapshot.bundleID.map(s.bundleIDs.contains) ?? false) {
+            appCandidates.append(s.name)
+        }
+        emitThumbnailIfEnabled(handle)
+
+        while step < config.maxSteps {
+            step += 1
             try checkCancelled()
-            await updateOverlay(step: step, status: nil)
+            await updateOverlay(step: max(1, actionIndex), status: nil)
 
-            // Ineffective streak (nothing changed, same thing again, errors) → Claude coaches once.
-            if tracker.shouldCoach || JevDriver.isStuck(history) {
-                if try await !askCoach(step: step, request: nil) { return }
-                if coachAction == nil { continue }
+            // Three actions in a row that left the screen as it was: a stall.
+            if !run.screenMoved(screen.signature) {
+                handle.emit(.status("The last \(CURunState.maxIdle) actions changed nothing on screen"))
+                if try await handOff(.stalled) { continue } else { return }
             }
-
-            let guidance: String? = coach.map { c in
-                coachedScreen == Self.screenKey(snapshot) ? c.guidance
-                    : "(Written on a previous screen — element indexes there do not apply here; follow the intent only.) " + c.guidance
-            }
-            // The app's playbook (how it works, its shortcuts, the recipe for goals like
-            // this one) and what completed similar goals here before. Re-resolved every
-            // step: OPEN_APP / a web app in the browser changes the screen's skill.
-            let skill = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url)
+            let tried = run.triedHere()
+            let skill = AppSkills.skill(bundleID: screen.snapshot.bundleID, url: screen.url)
             if let skill, announcedSkill != skill.name {
                 announcedSkill = skill.name
                 handle.emit(.status("Using the \(skill.name) playbook"))
             }
-            let actionsTaken = history.filter { $0.kind != "declined" && $0.kind != "coach" }.count
-            var input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
-                                            history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                            guidance: guidance, conversation: context.conversation, userContext: userContext)
-            input.playbook = skill.map { AppSkills.playbook(for: $0, goal: task) }
-            input.experience = AgentExperience.shared.recall(bundleID: snapshot.bundleID, goal: task)
-            input.keyCombos = AppSkills.keyCombos(for: skill)
-            input.actionsTaken = actionsTaken
-            input.doneRejected = doneRejectedOn == Self.screenKey(snapshot)
+            let input = CUDecide.Input(goal: task, screen: screen, history: run.history, tried: tried, guidance: run.guidance,
+                                       shortcuts: AppSkills.keyCombos(for: skill), apps: appCandidates, sites: urlCandidates,
+                                       writerAvailable: writerAvailable,
+                                       goalSpellsText: obvious.map { !typedTexts.contains($0) } ?? false,
+                                       playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
+                                       experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
+                                       conversation: context.conversation, userContext: userContext)
 
-            // Text the task spells out (one obvious quote) that hasn't been typed yet.
-            let obviousText = TextCandidates.obviousText(in: task).flatMap { o in
-                history.contains { $0.kind == "type_text" && $0.text == o } ? nil : o
-            }
-            // Speculative text helper: when the screen has one obvious field to type
-            // into, ask Haiku for its value *while* Jev decides. Used only if Jev then
-            // picks that very field; otherwise cancelled.
-            var speculative: (elementID: String, task: Task<String?, Never>)?
-            if textHelperAvailable, obviousText == nil, let field = FieldText.obviousField(in: snapshot) {
-                let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
-                                            pageText: snapshot.visibleText, recentActions: history.map(\.json),
-                                            hints: skill?.fieldHints ?? [])
-                let claude = self.claude
+            // The writer starts on the one obvious field while Jev decides; used only if Jev picks it.
+            var speculative: (elementID: String, task: Task<CUWriter.Fill?, Never>)?
+            if writerAvailable, obvious == nil, let field = FieldText.obviousField(in: screen.snapshot) {
+                let (claude, goal, history, guidance, conversation) = (self.claude, task, run.history, run.guidance, context.conversation)
+                let hints = skill?.fieldHints ?? []
+                let current = screen
                 speculative = (field.id, Task.detached(priority: .userInitiated) {
-                    (try? await FieldText.generate(claude: claude, context: ctx))?.text ?? nil
+                    try? await CUWriter.composeText(claude: claude, goal: goal, field: field, screen: current, history: history,
+                                                    guidance: guidance, conversation: conversation, hints: hints)
                 })
             }
             defer { speculative?.task.cancel() }
 
-            var verdict = JevDriver.Verdict()
-            let action: AgentAction
-            if let a = coachAction {
-                // Claude named the single best next action: take it, then Jev continues with the guidance.
-                coachAction = nil
-                handle.emit(.status("Following Claude's suggested action"))
-                action = a
-            } else {
-                let request: JevDriver.Request
-                do {
-                    (verdict, request) = try await driver.ask(input)
-                } catch {
-                    try checkCancelled()
-                    let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                    guard visionAvailable else { throw NaviError.other("Jev is unavailable (\(msg)) and the vision fallback is disabled") }
-                    handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
-                    let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: history, handle: handle)
-                    finishClaudeOnly(outcome, handle: handle)
-                    return
-                }
-                try checkCancelled()
-                let decision = JevDriver.decide(verdict, request: request, threshold: config.jevConfidenceThreshold,
-                                                effectGoal: effectGoal, actionsTaken: actionsTaken, doneRejected: input.doneRejected,
-                                                typingGoal: typingGoal)
-                handle.emit(.status(JevDriver.statusLine(verdict)))
-                switch decision {
-                case .finish(let reason):
-                    handle.emit(.status(reason))
-                    remember()
-                    handle.emit(.completed(summary: Self.summary(humanLog)))
-                    return
-                case .prematureDone(let reason):
-                    // Nothing has been done yet and the goal asks for an effect: the
-                    // screen may still be settling, or Jev mistook a fresh window for the
-                    // result. Look again once; the next DONE is final.
-                    handle.emit(.status("\(reason) — looking again before accepting"))
-                    doneRejectedOn = Self.screenKey(snapshot)
-                    try? await Task.sleep(for: .milliseconds(400))
-                    try checkCancelled()
-                    snapshot = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
-                    _ = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
-                    continue
-                case .blocked(let reason):
-                    // A BLOCKED Jev isn't sure about (or where WAIT is a close second) usually
-                    // means the screen isn't ready yet: wait, re-walk, ask again. Only the
-                    // same verdict on the same screen counts.
-                    let key = Self.screenKey(snapshot) + "|" + String(snapshot.elements.count)
-                    if JevDriver.blockedIsTentative(verdict), !blockedRetries.contains(key), blockedRetries.count < JevDriver.maxBlockedRetries {
-                        blockedRetries.insert(key)
-                        handle.emit(.status("Jev leaned BLOCKED but wasn't sure — waiting for the screen and asking again"))
-                        try? await Task.sleep(for: .milliseconds(JevDriver.tentativeBlockedWaitMs))
-                        try checkCancelled()
-                        snapshot = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
-                        _ = await Self.settleSnapshot(&snapshot, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
-                        continue
-                    }
-                    tracker.recordBlocked(reason)
-                    if try await !askCoach(step: step, request: request) { return }
-                    continue
-                case .fallbackToClaude(let reason):
-                    if try await !fallback(reason, step: step) { return }
-                    continue
-                case .act(let a):
-                    action = a
-                case .actTentatively(let a, let reason):
-                    handle.emit(.status("\(reason) — trying it anyway (cheap to undo; Claude only if this leads nowhere)"))
-                    action = a
-                }
-            }
-
-            // TYPE_TEXT: Jev chose the field; the text comes from the task (one obvious quote) or Haiku.
-            var text: String?
-            if case .typeText(let id) = action, let field = snapshot.element(id) {
-                if let obvious = obviousText {
-                    text = obvious
-                } else if let spec = speculative, spec.elementID == id {
-                    let t0 = Date()
-                    text = await spec.task.value
-                    speculative = nil
-                    let ms = Int(Date().timeIntervalSince(t0) * 1000)
-                    handle.emit(.status(text == nil ? "Text helper returned no value" : "Haiku wrote the field value in parallel · waited \(ms) ms"))
-                } else if textHelperAvailable {
-                    let ctx = FieldText.context(goal: task, field: field, pageTitle: snapshot.windowTitle,
-                                                pageText: snapshot.visibleText, recentActions: history.map(\.json),
-                                                hints: skill?.fieldHints ?? [])
-                    do {
-                        let (t, ms) = try await FieldText.generate(claude: claude, context: ctx)
-                        text = t
-                        handle.emit(.status(t == nil ? "Text helper returned no value · \(ms) ms" : "Haiku wrote the field value · \(ms) ms"))
-                    } catch {
-                        try checkCancelled()
-                        text = nil
-                    }
-                }
-                // The helper declined ({"text": null}) or isn't available: what the goal
-                // itself says to type ("search for X", "tell her good night") is better
-                // than a 6 s vision turn that often ends in "it was already there".
-                if text == nil, let local = FieldText.localGuess(goal: task, field: field, history: history) {
-                    text = local
-                    handle.emit(.status("Typing what the goal says (no text model needed)"))
-                }
-                guard text != nil else {
-                    if try await !fallback("the text for \(field.displayName) must be composed by the vision model", step: step) { return }
-                    continue
-                }
-            }
-
-            // Approval gating — same JevGate rules as the Claude-only driver.
-            let human = action.human(in: snapshot, text: text)
-            let gv = JevDriver.gateVerdict(verdict, actionText: human + " " + (text ?? ""))
-            if case .askApproval(let risk) = JevGate.decide(gv, mode: config.approvalMode, readOnlyTurn: action.isReadOnly) {
-                if let d = lastDeclined, d == action {
-                    handle.emit(.failed("You declined ‘\(human)’ and Jev proposed it again — stopping."))
-                    return
-                }
-                let id = UUID()
-                handle.emit(.needsApproval(id: id, description: human, risk: risk))
-                await MainActor.run { overlay?.setWaitingForApproval() }
-                let approved = await awaitApproval(id: id)
-                try checkCancelled()
-                await updateOverlay(step: step, status: nil)
-                if !approved {
-                    handle.emit(.status("Declined"))
-                    history.append(JevDriver.HistoryEntry(action: "User declined: \(human)", kind: "declined", text: nil, pageChanged: false))
-                    lastDeclined = action
-                    continue
-                }
-            }
-            lastDeclined = nil
-
-            // Execute, settle, re-observe.
-            actionIndex += 1
-            handle.emit(.step(index: actionIndex, description: human))
-            var entry = JevDriver.HistoryEntry(action: human, kind: action.kind, text: text, pageChanged: nil)
-            var actionError: String?
-            let before = await AXSnapshotter.fingerprint(target: target)
-            // Typing a name into To:/Cc:/invitees only starts a lookup; the contact is
-            // set when its suggestion is picked. Remember what was on screen first.
-            var recipientField: AXElement?
-            if case .typeText(let id) = action, let f = snapshot.element(id), RecipientPicker.isRecipientField(f) { recipientField = f }
-            var recipientBaseline: Set<String> = []
-            if let f = recipientField { recipientBaseline = await RecipientPicker.baseline(pid: f.pid > 0 ? f.pid : snapshot.pid, field: f.frame) }
-            var recipientOutcome: RecipientPicker.Outcome?
+            let verdict: CUDecide.Verdict
+            let request: CUDecide.Request
             do {
-                try await executor.perform(action, text: text, snapshot: snapshot)
-                if let field = recipientField, let typed = text {
-                    handle.emit(.status("Waiting for the contact suggestion for ‘\(typed)’"))
-                    let pid = field.pid > 0 ? field.pid : snapshot.pid
-                    // The full names of people the task names ("mikey" → Mikey Ku, from screen memory)
-                    // count as recently seen: that suggestion wins over another Mikey or a group.
-                    let known = userContext.filter { $0["type"] as? String == "person" }.compactMap { $0["name"] as? String }
-                    let recent = ([snapshot.visibleText] + snapshot.elements.map(\.label) + known).joined(separator: "\n")
-                    func resolve(_ name: String) async -> RecipientPicker.Outcome {
-                        await RecipientPicker.resolve(typed: name, pid: pid, field: field.frame, baseline: recipientBaseline,
-                                                      recent: recent, executor: executor) { [self] in !isCancelled }
-                    }
-                    var outcome = await resolve(typed)
-                    // Nothing came up: the contact may be saved under another name ("mom" → "Mama").
-                    if outcome == .noSuggestions {
-                        let alternatives = RecipientPicker.alternatives(for: typed, recent: recent).prefix(3)
-                        for alt in alternatives {
-                            handle.emit(.status("No contact for ‘\(typed)’ — trying ‘\(alt)’"))
-                            try await executor.type(alt, into: field)
-                            outcome = await resolve(alt)
-                            if outcome.isResolved { break }
-                        }
-                        // Still nothing visible: the app may draw its list where AX can't see it.
-                        if outcome == .noSuggestions {
-                            if !alternatives.isEmpty { try await executor.type(typed, into: field) }
-                            outcome = await RecipientPicker.acceptHighlighted(typed: typed, pid: pid, field: field.frame,
-                                                                               baseline: recipientBaseline, executor: executor)
-                        }
-                    }
-                    recipientOutcome = outcome
-                    entry.action += outcome.note(typed: typed)
-                    handle.emit(.status("Recipient: " + outcome.note(typed: typed).dropFirst(3)))
-                }
-                // Background mode: Jev switched apps — follow it, or every later walk,
-                // event and screenshot would still address the app it left.
-                if case .openApp(let name) = action, target != nil {
-                    await pinTarget(opened: name)
-                    target = self.target
-                    executor.target = target
-                }
-                // Settle: poll the cheap AX fingerprint instead of sleeping the whole budget
-                // (the recipient picker already waited for its list to settle).
-                if action != .wait, recipientOutcome == nil { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
-            } catch is CancellationError {
-                throw CancellationError()
+                (verdict, request) = try await CUDecide.ask(jev, input)
             } catch {
+                try checkCancelled()
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .public)")
-                entry.action += " → error: \(msg)"
-                actionError = msg
-                handle.emit(.status("Action failed: \(msg)"))
+                guard writerAvailable, screenshots else { throw NaviError.other("Jev is unavailable (\(msg)) and there is no vision fallback") }
+                handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
+                let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: run.history, handle: handle)
+                finishClaudeOnly(outcome, handle: handle)
+                return
             }
             try checkCancelled()
-            let targetFrame = action.elementID.flatMap { snapshot.element($0)?.frame }
-            let next = await snapshotter.capture(near: targetFrame ?? lastActedFrame, includeMenuBar: wantMenuBar, target: target)
-            let diff = next.diff(previous: snapshot)
-            entry.pageChanged = diff != "no visible change"
-            history.append(entry)
-            if !action.isReadOnly { tracker.record(action: human, changed: entry.pageChanged, error: actionError) }
-            humanLog.append(human)
-            if let outcome = recipientOutcome, let field = recipientField, let typed = text {
-                if case .picked(let n) = outcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
-                // No contact behind the name in a messaging/email app: writing the
-                // message now would text or mail nobody (or the wrong person). Stop and say so.
-                if outcome.stopsContactApp, RecipientPicker.contactApps.contains(snapshot.bundleID ?? "") {
-                    handle.emit(.failed(outcome.failure(typed: typed, field: field.displayName, app: snapshot.appName)))
-                    return
+            calls.jev(ms: verdict.latencyMs)
+            let decision = CUDecide.decision(verdict, request: request)
+            handle.emit(.status(CUDecide.statusLine(decision, latencyMs: verdict.latencyMs)))
+            folder.write(CURunFolder.name(step, "payload.json"), json: ["state": request.state, "questions": CURunFolder.questionsJSON(request.questions)])
+            folder.write(CURunFolder.name(step, "answers.json"), json: [
+                "heads": verdict.heads.mapValues { ["choice": $0.choice, "confidence": $0.confidence, "probabilities": $0.probabilities] },
+                "chosen": decision?.chosen ?? NSNull(), "confidence": decision?.confidence ?? 0,
+                "is_irreversible": verdict.isIrreversible, "is_prohibited": verdict.isProhibited,
+                "already_tried_on_this_screen": tried, "idle_actions": run.idle, "repeated_actions": run.repeats,
+                "ocr": screen.usedOCR, "latency_ms": verdict.latencyMs, "app": screen.app, "url": screen.url ?? NSNull(),
+            ])
+
+            // Stop rules (runner.py `resolve`): done / none, or not sure enough of anything.
+            var stop: CURunState.Outcome?
+            var move: CUDecide.Move?
+            if let decision {
+                if decision.stops { stop = decision.kind == .done ? .done : .nothingHelps }
+                else if decision.confidence < config.jevConfidenceThreshold { stop = .lowConfidence }
+                else if let m = CUDecide.move(decision, request: request, screen: screen, browserName: browserName) { move = m }
+                else { stop = .lowConfidence }
+            } else {
+                stop = .lowConfidence
+            }
+            if let stop {
+                // Perception escalates before a model does: a screen Jev could not work out from
+                // the tree alone is read once more with OCR and decided again.
+                if stop != .done, screenshots, !screen.usedOCR, ocrRetried.insert(screen.signature.page + "|\(screen.items.count)").inserted {
+                    handle.emit(.status("Jev stopped (\(stop.rawValue)) on what the accessibility tree shows — reading the window with OCR"))
+                    screen = await observe(forceOCR: true)
+                    continue
+                }
+                if try await handOff(stop, doneConfidence: decision?.confidence ?? 0) { continue } else { return }
+            }
+            guard let decision, let move else { continue }
+
+            // Resolve the action. use_browser "other" is a site outside the goal's: only the
+            // writer can name it, and code rejects anything that is not a clean https URL.
+            var what: String?
+            var action: AgentAction?
+            switch move {
+            case .act(let a): action = a
+            case .stop: continue
+            case .proposeURL:
+                let t = Date()
+                let url = try? await CUWriter.composeURL(claude: claude, goal: task, history: run.history, guidance: run.guidance)
+                calls.writer(ms: Int(Date().timeIntervalSince(t) * 1000))
+                if let url { action = .openURL(url) } else { what = "use_browser refused: the writer proposed no usable https URL for this goal" }
+            }
+
+            // type_text: Jev chose the field; the text comes from the goal (one quoted phrase) or the writer.
+            var text: String?
+            var submit = false
+            if case .typeText(let id)? = action, let field = screen.snapshot.element(id) {
+                if let o = obvious, !typedTexts.contains(o) {
+                    text = o
+                } else if writerAvailable {
+                    let t = Date()
+                    var fill: CUWriter.Fill?
+                    if let spec = speculative, spec.elementID == id {
+                        fill = await spec.task.value
+                        speculative = nil
+                    } else {
+                        do {
+                            fill = try await CUWriter.composeText(claude: claude, goal: task, field: field, screen: screen, history: run.history,
+                                                                 guidance: run.guidance, conversation: context.conversation, hints: skill?.fieldHints ?? [])
+                        } catch { try checkCancelled() }
+                    }
+                    calls.writer(ms: Int(Date().timeIntervalSince(t) * 1000))
+                    if let fill, !fill.text.isEmpty { text = fill.text; submit = fill.submit }
+                } else {
+                    text = FieldText.localGuess(goal: task, field: field, typed: typedTexts)
+                }
+                if text == nil {
+                    what = "type_text refused: nothing to type into \(CUFacts.quoted(field.displayName.trimmingCharacters(in: CharacterSet(charactersIn: "‘’"))))"
+                    action = nil
                 }
             }
-            if actionError == nil, !action.isReadOnly { redactedLog.append(action.human(in: snapshot, text: nil)) }
-            if let targetFrame { lastActedFrame = targetFrame }
-            snapshot = next
+
+            if let action {
+                // Approval gating — JevGate's rules, from the nouls that rode along in the same call.
+                let human = action.human(in: screen.snapshot, text: text) + (submit ? " and press Return" : "")
+                let gv = CUDecide.gateVerdict(verdict, actionText: human + " " + (text ?? ""))
+                if case .askApproval(let risk) = JevGate.decide(gv, mode: config.approvalMode, readOnlyTurn: action.isReadOnly) {
+                    if let d = lastDeclined, d == action {
+                        writeRun("declined")
+                        handle.emit(.failed("You declined ‘\(human)’ and Jev proposed it again — stopping."))
+                        return
+                    }
+                    let id = UUID()
+                    handle.emit(.needsApproval(id: id, description: human, risk: risk))
+                    await MainActor.run { overlay?.setWaitingForApproval() }
+                    let approved = await awaitApproval(id: id)
+                    try checkCancelled()
+                    await updateOverlay(step: max(1, actionIndex), status: nil)
+                    if !approved {
+                        handle.emit(.status("Declined"))
+                        lastDeclined = action
+                        if run.recordAction("the user declined: \(human)", waiting: false) {
+                            if try await handOff(.stalled) { continue } else { return }
+                        }
+                        continue
+                    }
+                }
+                lastDeclined = nil
+
+                actionIndex += 1
+                handle.emit(.step(index: actionIndex, description: human))
+                var line = Self.historyLine(action, decision: decision, screen: screen, text: text)
+                let before = await AXSnapshotter.fingerprint(target: target)
+                // Typing a name into To:/Cc:/invitees only starts a lookup; the contact is set
+                // when its suggestion is picked (`RecipientPicker`).
+                var recipientField: AXElement?
+                if case .typeText(let id) = action, let f = screen.snapshot.element(id), RecipientPicker.isRecipientField(f) { recipientField = f }
+                var recipientBaseline: Set<String> = []
+                if let f = recipientField { recipientBaseline = await RecipientPicker.baseline(pid: f.pid > 0 ? f.pid : screen.snapshot.pid, field: f.frame) }
+                var recipientOutcome: RecipientPicker.Outcome?
+                var failed = false
+                do {
+                    try await executor.perform(action, text: text, snapshot: screen.snapshot)
+                    if let field = recipientField, let typed = text {
+                        handle.emit(.status("Waiting for the contact suggestion for ‘\(typed)’"))
+                        let pid = field.pid > 0 ? field.pid : screen.snapshot.pid
+                        // The full names of people the task names ("mikey" → Mikey Ku, from screen memory)
+                        // count as recently seen: that suggestion wins over another Mikey or a group.
+                        let known = userContext.filter { $0["type"] as? String == "person" }.compactMap { $0["name"] as? String }
+                        let recent = ([screen.snapshot.visibleText] + screen.snapshot.elements.map(\.label) + known).joined(separator: "\n")
+                        func resolve(_ name: String) async -> RecipientPicker.Outcome {
+                            await RecipientPicker.resolve(typed: name, pid: pid, field: field.frame, baseline: recipientBaseline,
+                                                          recent: recent, executor: executor) { [self] in !isCancelled }
+                        }
+                        var outcome = await resolve(typed)
+                        // Nothing came up: the contact may be saved under another name ("mom" → "Mama").
+                        if outcome == .noSuggestions {
+                            let alternatives = RecipientPicker.alternatives(for: typed, recent: recent).prefix(3)
+                            for alt in alternatives {
+                                handle.emit(.status("No contact for ‘\(typed)’ — trying ‘\(alt)’"))
+                                try await executor.type(alt, into: field)
+                                outcome = await resolve(alt)
+                                if outcome.isResolved { break }
+                            }
+                            if outcome == .noSuggestions {
+                                if !alternatives.isEmpty { try await executor.type(typed, into: field) }
+                                outcome = await RecipientPicker.acceptHighlighted(typed: typed, pid: pid, field: field.frame,
+                                                                                   baseline: recipientBaseline, executor: executor)
+                            }
+                        }
+                        recipientOutcome = outcome
+                        line += outcome.note(typed: typed)
+                        handle.emit(.status("Recipient: " + outcome.note(typed: typed).dropFirst(3)))
+                    } else if case .typeText(let id) = action, let field = screen.snapshot.element(id), let typed = text {
+                        if submit {
+                            // Return usually takes the field away (a search runs, a dialog closes): the next screen is the check.
+                            try await executor.perform(.key("Return"), text: nil, snapshot: screen.snapshot)
+                            line += " and pressed Return"
+                        } else {
+                            // actions.py `_type_text`: Jev checks the field now holds a sensible value;
+                            // under 0.5 only our own write is undone, through the same element.
+                            try? await Task.sleep(for: .milliseconds(300))
+                            let (value, focused) = await ActionExecutor.readBack(field)
+                            let state = CUDecide.verifyTypedState(goal: task, field: field, typed: typed, valueNow: value, stillFocused: focused)
+                            if let r = try? await jev.ask(state: JevClient.JSONValue(any: state), questions: CUDecide.verifyTypedQuestion(), cacheable: false) {
+                                calls.jev(ms: r.latencyMs)
+                                let p = r["ok"]?.noul ?? 1
+                                if p < 0.5 {
+                                    let outcome: String
+                                    if value != typed { outcome = "the field did not take it" }
+                                    else { outcome = await executor.restore(field, typed: typed) ? "restored previous value" : "could not safely restore previous value" }
+                                    line += String(format: " but verification failed (%.2f); ", p) + outcome
+                                } else {
+                                    line += String(format: " (verified %.2f)", p)
+                                }
+                            }
+                        }
+                        typedTexts.append(typed)
+                    }
+                    // Background mode: follow Jev into the app (or browser) it opened, or every later
+                    // walk, event and capture would still address the app it left.
+                    if target != nil {
+                        switch action {
+                        case .openApp(let name): await pinTarget(opened: name)
+                        case .openURL: await pinTarget(opened: browserBundle)
+                        default: break
+                        }
+                        target = self.target
+                        executor.target = target
+                    }
+                    if action != .wait, recipientOutcome == nil { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                    Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .public)")
+                    line += " → refused: \(msg)"
+                    failed = true
+                    handle.emit(.status("Action failed: \(msg)"))
+                }
+                try checkCancelled()
+                humanLog.append(human)
+                if case .picked(let n)? = recipientOutcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
+                if !failed, !action.isReadOnly { redactedLog.append(action.human(in: screen.snapshot, text: nil)) }
+                if let f = action.elementID.flatMap({ screen.snapshot.element($0)?.frame }) { lastActedFrame = f }
+                // No contact behind the name in a messaging/email app: writing the message now
+                // would text or mail nobody (or the wrong person). Stop and say so.
+                if let outcome = recipientOutcome, let field = recipientField, let typed = text,
+                   outcome.stopsContactApp, RecipientPicker.contactApps.contains(screen.snapshot.bundleID ?? "") {
+                    writeRun("no contact")
+                    handle.emit(.failed(outcome.failure(typed: typed, field: field.displayName, app: screen.snapshot.appName)))
+                    return
+                }
+                what = line
+            }
+
+            // The next capture is the only witness of what the action did.
+            let waiting = action == .wait
+            screen = await observe()
             if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
+            if run.recordAction(what ?? "nothing happened", waiting: waiting) {
+                handle.emit(.status("\(CURunState.maxRepeats) actions in a row were already taken on this same screen"))
+                if try await handOff(.stalled) { continue } else { return }
+            }
         }
-        handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
+        _ = try await handOff(.stepLimit)
     }
 
-    /// App + window identity, for "is Jev still on the screen Claude looked at?".
-    static func screenKey(_ s: AXSnapshot) -> String {
-        "\(s.bundleID ?? "")|\(s.windowTitle ?? "")|\(s.url ?? "")"
+    /// What an action was, in words code wrote, for Jev's `previous_actions` and the
+    /// "already tried on this screen" check. A repeated label carries its whole row: three rows
+    /// each end in a "Buy", and trying one must not mark them all as tried.
+    static func historyLine(_ action: AgentAction, decision: CUDecide.Decision, screen: CUScreen, text: String?) -> String {
+        func beside(_ i: Int?) -> String {
+            guard let i, let mates = CUFacts.rowMates(screen.items, limit: nil)[i] else { return "" }
+            return " beside " + mates.map(CUFacts.quoted).joined(separator: ", ")
+        }
+        let item = decision.kind == .clickItem ? decision.target.flatMap { Int($0.choice) } : nil
+        let itemText = item.flatMap { i in screen.items.first { $0.index == i }?.text }
+        func label(_ id: String) -> String { CUFacts.quoted(itemText ?? screen.snapshot.element(id)?.label ?? id) }
+        switch action {
+        case .click(let id): return "clicked \(label(id))\(beside(item))"
+        case .clickPoint(_, _, let l): return "clicked \(CUFacts.quoted(l))\(beside(item))"
+        case .press(let id): return "pressed \(label(id)) (off-screen control)"
+        case .typeText(let id): return "typed \(CUFacts.quoted(text ?? "")) into \(CUFacts.quoted(screen.snapshot.element(id)?.label ?? "the field"))"
+        case .select(let id, let o): return "chose \(CUFacts.quoted(o)) in \(CUFacts.quoted(screen.snapshot.element(id)?.label ?? id))"
+        case .scroll(let up): return up ? "scrolled up" : "scrolled down"
+        case .wait: return "waited"
+        case .key(let k):
+            switch k.lowercased() {
+            case "return", "enter": return "pressed Return"
+            case "escape": return "pressed Escape"
+            case "cmd+[": return "went back"
+            default: return "pressed \((try? KeyCombo.parse(k).displayLabel) ?? k)"
+            }
+        case .openApp(let a): return "opened the app \(CUFacts.quoted(a))"
+        case .openURL(let u): return "opened \(u)"
+        }
     }
 
     /// Re-walks while the snapshot exposes (almost) nothing, up to ~2 s, so Jev
@@ -1135,31 +1205,11 @@ final class AgentRun: @unchecked Sendable {
         }
     }
 
-    // MARK: - Claude fallback (bounded) and takeover
+    // MARK: - Claude takeover
 
-    private func claudeFallback(reason: String, step: Int, history: [JevDriver.HistoryEntry],
-                                handle: AgentRunHandle) async throws -> ClaudeOutcome {
-        let front = await probe()
-        let system: [[String: Any]] = [[
-            "type": "text",
-            "text": Self.systemPrompt(task: task, context: context, frontmost: front, background: target)
-                + Self.fallbackAddendum(reason: reason, history: history, maxRounds: Self.fallbackMaxRounds),
-            "cache_control": ["type": "ephemeral"],
-        ]]
-        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
-        messages = [["role": "user", "content": [[
-            "type": "text",
-            "text": "Task: \(task)\n\nJev (the fast accessibility-tree driver) handed you this step because: \(reason)\n\n"
-                + "Take a screenshot first, perform at most the next 1–3 actions, then stop and summarise in one line."
-                + (Self.needsTypingOrders(reason: reason, history: history) ? "\n\n" + Self.typingStepOrders : ""),
-        ]]]]
-        map = nil
-        return try await claudeLoop(system: system, tools: tools, maxTurns: Self.fallbackMaxRounds, bounded: true,
-                                    overlayStep: step, handle: handle)
-    }
-
-    /// Jev went away mid-run: Claude finishes the task with the remaining step budget.
-    private func claudeTakeover(remainingSteps: Int, history: [JevDriver.HistoryEntry],
+    /// Jev went away mid-run (the service is unreachable — not a decision Jev made): Claude
+    /// finishes the task with the remaining step budget.
+    private func claudeTakeover(remainingSteps: Int, history: [String],
                                 handle: AgentRunHandle) async throws -> ClaudeOutcome {
         if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
             return .failed(problem)
@@ -1167,7 +1217,7 @@ final class AgentRun: @unchecked Sendable {
         let front = await probe()
         var text = Self.systemPrompt(task: task, context: context, frontmost: front, background: target)
         if !history.isEmpty {
-            text += "\n\n# Progress so far (by the fast driver)\n" + history.suffix(10).map { "- \($0.action)" }.joined(separator: "\n")
+            text += "\n\n# Progress so far (by the fast driver)\n" + history.suffix(10).map { "- \($0)" }.joined(separator: "\n")
         }
         let system: [[String: Any]] = [["type": "text", "text": text, "cache_control": ["type": "ephemeral"]]]
         let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
@@ -1178,49 +1228,6 @@ final class AgentRun: @unchecked Sendable {
         map = nil
         return try await claudeLoop(system: system, tools: tools, maxTurns: max(1, remainingSteps), bounded: false,
                                     overlayStep: nil, handle: handle)
-    }
-
-    /// Jev handed over a step whose point is typing (unsure TYPE_TEXT, or a
-    /// field value the text helper couldn't compose).
-    static func isTypingStep(_ reason: String) -> Bool {
-        reason.contains("TYPE_TEXT") || reason.contains("must be composed")
-    }
-
-    /// The orders apply while nothing has been typed in this run; once Jev has
-    /// typed (and the weak TYPE_TEXT is about the *next* thing), repeating them
-    /// would risk the text being typed and sent twice.
-    static func needsTypingOrders(reason: String, history: [JevDriver.HistoryEntry]) -> Bool {
-        isTypingStep(reason) && !history.contains { $0.kind == "type_text" && !$0.action.contains("→ error") }
-    }
-
-    /// What a typing step needs from Claude. Without this the bounded turn
-    /// often ended after the screenshot with "the text is already there" —
-    /// about a message sent earlier — and nothing was ever typed.
-    static let typingStepOrders = """
-        This step is about typing. NOTHING HAS BEEN TYPED FOR IT YET, whatever earlier messages or documents look like — text sent or written before this instruction (a bubble already in the conversation, an earlier paragraph) does not count. Do it now:
-        1. click inside the field the task names (message bar, search box, document body…),
-        2. call `type` with the text — spelled out in the task, or composed from "Earlier in this conversation" when the task says "that"/"it"/"the same",
-        3. press Return only if the task says to send/submit,
-        4. take a screenshot and confirm the text appears where it should.
-        Report the text as typed or sent only if YOU called `type` in this turn. If you are certain the field cannot be typed into, say why starting with "Stopped:".
-        """
-
-    static func fallbackAddendum(reason: String, history: [JevDriver.HistoryEntry], maxRounds: Int) -> String {
-        var s = "\n\n# Fallback mode\n"
-        s += "You are assisting a faster driver (Jev) that decides steps from the accessibility tree. It handed you this single step because: \(reason)\n"
-        if !history.isEmpty {
-            s += "\nSteps taken so far:\n" + history.suffix(8).map { h in
-                "- \(h.action)" + (h.pageChanged == false ? " (no visible change)" : "")
-            }.joined(separator: "\n") + "\n"
-        }
-        s += """
-
-        Perform at most the next 1–3 actions (you have \(maxRounds) tool rounds), then stop and summarise what you did in one line:
-        - start with "Did:" when the task still needs more steps (Jev resumes from there),
-        - start with "Done:" only if the entire task is now visibly complete,
-        - start with "Stopped:" if the task cannot or must not be continued.
-        """
-        return s
     }
 
     // MARK: - Claude-only driver

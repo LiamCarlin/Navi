@@ -227,6 +227,81 @@ final class ClaudeClient: @unchecked Sendable {
         return m.text
     }
 
+    /// One JSON object that matches `schema`, enforced by the API
+    /// (`output_config.format`). The packet goes in as JSON text, after the image
+    /// when one is given. Used by the computer-use writer (`CUWriter`): every free
+    /// text Navi's native agent types, opens or says comes back through here.
+    func structured(model: String, system: String, packet: [String: Any], schema: [String: Any],
+                    maxTokens: Int, imagePNG: Data? = nil, effort: String = "low") async throws -> [String: Any] {
+        let text = String(decoding: (try? JSONSerialization.data(withJSONObject: packet, options: [.sortedKeys])) ?? Data(), as: UTF8.self)
+        var content: [[String: Any]] = [["type": "text", "text": text]]
+        if let imagePNG {
+            content.insert(["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": imagePNG.base64EncodedString()]], at: 0)
+        }
+        var output: [String: Any] = ["format": ["type": "json_schema", "schema": schema]]
+        if Self.supportsEffort(model) { output["effort"] = effort }
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": maxTokens,
+            "system": system,
+            "messages": [["role": "user", "content": content]],
+            "output_config": output,
+        ]
+        var req = try request(body: body, fallbackFeature: .task)
+        // Sorted keys make the schema's property order deterministic (the model writes the
+        // properties in that order: `reason` lands before `submit`, `achieved` first).
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        let data: Data
+        if cloud.isActive {
+            (data, _) = try await cloud.send(req)
+        } else {
+            let (d, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response") }
+            guard (200..<300).contains(http.statusCode) else {
+                throw NaviError.http(status: http.statusCode, body: String(data: d, encoding: .utf8) ?? "")
+            }
+            data = d
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let blocks = json["content"] as? [[String: Any]] else { throw NaviError.decoding("Claude response missing content") }
+        if let usage = json["usage"] as? [String: Any] {
+            let i = usage["input_tokens"] as? Int ?? 0, o = usage["output_tokens"] as? Int ?? 0
+            await MainActor.run {
+                NaviSettings.shared.usageClaudeInputTokens += i
+                NaviSettings.shared.usageClaudeOutputTokens += o
+            }
+        }
+        let reply = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined()
+        guard let object = Self.firstJSONObject(in: reply) else {
+            throw NaviError.decoding("The writer answered without usable JSON: \(reply.prefix(300))")
+        }
+        return object
+    }
+
+    /// The first JSON object in a reply, wherever it starts (typesafe-computer-use `parse_json`).
+    static func firstJSONObject(in text: String) -> [String: Any]? {
+        var start = text.startIndex
+        while let open = text[start...].firstIndex(of: "{") {
+            var depth = 0, inString = false, escaped = false
+            var i = open
+            while i < text.endIndex {
+                let c = text[i]
+                if inString {
+                    if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { inString = false }
+                } else if c == "\"" { inString = true } else if c == "{" { depth += 1 } else if c == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        if let obj = try? JSONSerialization.jsonObject(with: Data(text[open...i].utf8)) as? [String: Any] { return obj }
+                        break
+                    }
+                }
+                i = text.index(after: i)
+            }
+            start = text.index(after: open)
+        }
+        return nil
+    }
+
     /// Vision helper: describe/summarize an image (JPEG/PNG data) with a prompt.
     func describeImage(model: String, prompt: String, imageData: Data, mediaType: String = "image/jpeg",
                        system: String? = nil, maxTokens: Int = 1024) async throws -> String {

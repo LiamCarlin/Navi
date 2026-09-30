@@ -8,6 +8,7 @@ struct CaptureConfig: Sendable, Equatable {
     var intervalSeconds: Int
     var excludedBundleIDs: Set<String>
     var keepScreenshots: Bool
+    var personalData: PersonalData.Policy = .strict
 
     @MainActor static var current: CaptureConfig {
         let s = NaviSettings.shared
@@ -15,7 +16,8 @@ struct CaptureConfig: Sendable, Equatable {
                              paused: s.memoryIsPaused,
                              intervalSeconds: max(5, s.memoryCaptureIntervalSeconds),
                              excludedBundleIDs: Set(s.memoryExcludedBundleIDs),
-                             keepScreenshots: s.memoryKeepScreenshots)
+                             keepScreenshots: s.memoryKeepScreenshots,
+                             personalData: s.personalDataPolicy)
     }
 }
 
@@ -155,7 +157,7 @@ final class CaptureScheduler: @unchecked Sendable {
                                           ocrText: ocr, previousApp: prev?.bundleID, previousTitle: prev?.title)
             // One cloud run per frame (`X-Navi-Run`), metered under `recall_triage`.
             let triage = await CloudRun.$current.withValue(CloudRun(feature: .recallTriage)) {
-                await FrameTriage.triage(input, jev: jev)
+                await FrameTriage.triage(input, jev: jev, policy: cfg.personalData)
             }
 
             var record = FrameRecord(timestamp: now, bundleID: bundleID, appName: front.appName ?? bundleID,

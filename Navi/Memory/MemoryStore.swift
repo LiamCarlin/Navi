@@ -182,6 +182,14 @@ final class MemoryStore: @unchecked Sendable {
         }
     }
 
+    /// Frames that still hold text, by id, one page at a time (for `PersonalDataCleanup`).
+    func framesWithText(afterID: Int64, limit: Int = 500) throws -> [FrameRecord] {
+        try queue.sync {
+            try query("SELECT * FROM frames WHERE id > ? AND (ocr_text != '' OR window_title IS NOT NULL) ORDER BY id ASC LIMIT ?",
+                      [afterID, limit]).map(Self.frame(from:))
+        }
+    }
+
     /// Frames not yet folded into a session, oldest first.
     func undigestedFrames(since: Date? = nil, limit: Int = 2000) throws -> [FrameRecord] {
         try queue.sync {
@@ -293,6 +301,35 @@ final class MemoryStore: @unchecked Sendable {
                 try? exec("ROLLBACK;")
                 throw error
             }
+        }
+    }
+
+    /// Rewrites a session's text (and its search row) after redaction.
+    func updateSessionText(_ s: SessionRecord) throws {
+        try queue.sync {
+            try exec("BEGIN;")
+            do {
+                try run("UPDATE sessions SET title = ?, summary = ?, topics = ?, entities = ? WHERE id = ?",
+                        [s.title, s.summary, Self.json(s.topics), Self.json(s.entities.map { ["name": $0.name, "type": $0.type] }), s.id])
+                try run("DELETE FROM sessions_fts WHERE rowid = ?", [s.id])
+                try run("INSERT INTO sessions_fts(rowid, summary, topics, entities, title) VALUES (?,?,?,?,?)",
+                        [s.id, s.summary, s.topics.joined(separator: ", "), s.entities.map(\.name).joined(separator: ", "), s.title])
+                try exec("COMMIT;")
+            } catch {
+                try? exec("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    /// After redacting: merges the FTS indexes and rewrites the file so the old
+    /// text survives in no free page, index segment or WAL frame.
+    func compactAfterRedaction() throws {
+        try queue.sync {
+            try exec("INSERT INTO frames_fts(frames_fts) VALUES('optimize');")
+            try exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize');")
+            try exec("VACUUM;")
+            try exec("PRAGMA wal_checkpoint(TRUNCATE);")
         }
     }
 

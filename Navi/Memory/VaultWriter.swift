@@ -339,7 +339,9 @@ final class VaultWriter: @unchecked Sendable {
     `Apps/`) and updates their `last_seen` / `count` frontmatter; it never rewrites your text.
     Sessions are written once. Deleting a note is safe.
 
-    Nothing marked sensitive by Jev (password fields, banking, 2FA codes) ever reaches this vault.
+    Nothing marked sensitive (password fields, banking, 2FA codes, sign-up and patient forms) ever
+    reaches this vault, and personal identifiers (dates of birth, addresses, phone, card and ID
+    numbers) are redacted from summaries.
     """
 }
 

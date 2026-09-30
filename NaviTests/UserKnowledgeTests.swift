@@ -157,10 +157,10 @@ import Testing
     }
 
     @Test func jevStateCarriesUserContext() {
-        var input = JevDriverTests.input()
-        #expect(JevDriver.stateJSON(for: input)["user_context"] == nil)
+        var input = TypesafeCUTests.input()
+        #expect(CUDecide.state(input)["user_context"] == nil)
         input.userContext = [["name": "Bella Chen", "type": "person"]]
-        let ctx = JevDriver.stateJSON(for: input)["user_context"] as? [String: Any]
+        let ctx = CUDecide.state(input)["user_context"] as? [String: Any]
         #expect((ctx?["things"] as? [[String: Any]])?.first?["name"] as? String == "Bella Chen")
     }
 
@@ -170,6 +170,10 @@ import Testing
         #expect(md.contains("## People"))
         #expect(md.contains("[[Dhvan Shah]] — talk in WhatsApp (5)"))
         #expect(md.contains("usually canvas.olin.edu → MATLAB"))
+        // Dhvan worked in the HCI doc, but that page is the doc's, not his.
+        let dhvan = md.split(separator: "\n").first { $0.hasPrefix("- [[Dhvan Shah]]") }
+        #expect(dhvan?.contains("[open]") == false)
+        #expect(md.contains("[[HCI Team Notes]]") && md.contains("[open](https://docs.google.com/document/d/1AfP/edit)"))
         #expect(!md.contains("private summary"))
     }
 }
