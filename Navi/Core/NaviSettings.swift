@@ -98,6 +98,9 @@ final class NaviSettings: ObservableObject {
     @Published var memoryVaultPath: String { didSet { d.set(memoryVaultPath, forKey: "memoryVaultPath") } }
     @Published var memoryExcludedBundleIDs: [String] { didSet { d.set(memoryExcludedBundleIDs, forKey: "memoryExcludedBundleIDs") } }
     @Published var memoryKeepScreenshots: Bool { didSet { d.set(memoryKeepScreenshots, forKey: "memoryKeepScreenshots") } }
+    /// Personal-information categories screen memory may keep (`PersonalData.Category` raw values);
+    /// everything else is blocked from frames, digests and the vault.
+    @Published var memoryAllowedPersonalData: [String] { didSet { d.set(memoryAllowedPersonalData, forKey: "memoryAllowedPersonalData") } }
     @Published var memoryPausedUntil: Date? { didSet { d.set(memoryPausedUntil, forKey: "memoryPausedUntil") } }
 
     // MARK: Usage / cost tracking (rough, local only)
@@ -150,6 +153,7 @@ final class NaviSettings: ObservableObject {
             "memoryVaultPath": NSString(string: "~/Navi Vault").expandingTildeInPath,
             "memoryExcludedBundleIDs": ["com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"],
             "memoryKeepScreenshots": true,
+            "memoryAllowedPersonalData": PersonalData.Category.allCases.filter { PersonalData.Category.allowedByDefault.contains($0) }.map(\.rawValue),
             "usageJevCalls": 0, "usageClaudeInputTokens": 0, "usageClaudeOutputTokens": 0, "usageDigestFrames": 0,
         ])
         isFirstLaunch = d.bool(forKey: "isFirstLaunch")
@@ -194,6 +198,7 @@ final class NaviSettings: ObservableObject {
         memoryVaultPath = d.string(forKey: "memoryVaultPath") ?? ""
         memoryExcludedBundleIDs = d.stringArray(forKey: "memoryExcludedBundleIDs") ?? []
         memoryKeepScreenshots = d.bool(forKey: "memoryKeepScreenshots")
+        memoryAllowedPersonalData = d.stringArray(forKey: "memoryAllowedPersonalData") ?? []
         memoryPausedUntil = d.object(forKey: "memoryPausedUntil") as? Date
         usageJevCalls = d.integer(forKey: "usageJevCalls")
         usageClaudeInputTokens = d.integer(forKey: "usageClaudeInputTokens")
@@ -252,6 +257,16 @@ final class NaviSettings: ObservableObject {
     var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }
     var hasClaudeKey: Bool { Keychain.has(.anthropic) }
     var hasGeminiKey: Bool { Keychain.has(.gemini) }
+
+    var personalDataPolicy: PersonalData.Policy { PersonalData.Policy(allowedRawValues: memoryAllowedPersonalData) }
+
+    func allowsPersonalData(_ c: PersonalData.Category) -> Bool { memoryAllowedPersonalData.contains(c.rawValue) }
+
+    func setPersonalData(_ c: PersonalData.Category, allowed: Bool) {
+        var set = Set(memoryAllowedPersonalData)
+        if allowed { set.insert(c.rawValue) } else { set.remove(c.rawValue) }
+        memoryAllowedPersonalData = PersonalData.Category.allCases.map(\.rawValue).filter(set.contains)
+    }
 
     var memoryIsPaused: Bool {
         if let until = memoryPausedUntil { return until > Date() }
