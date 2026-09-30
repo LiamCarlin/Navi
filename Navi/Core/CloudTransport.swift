@@ -196,12 +196,12 @@ final class CloudTransport: @unchecked Sendable {
     /// Sends an authenticated request. Refreshes the session once on 401.
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var req = request
-        try await attachBearer(&req)
+        let used = try await attachBearer(&req)
         var (data, http) = try await perform(req)
         if http.statusCode == 401 {
             Log.app.info("cloud: 401 on \(req.url?.path ?? "?", privacy: .public); refreshing session")
-            guard await refresher.refresh(using: self) else { throw NaviError.signedOut }
-            try await attachBearer(&req)
+            guard await refresher.refresh(using: self, replacing: used) else { throw NaviError.signedOut }
+            try attachFreshBearer(&req)
             (data, http) = try await perform(req)
             if http.statusCode == 401 { await signOutLocally(); throw NaviError.signedOut }
         }
@@ -215,12 +215,12 @@ final class CloudTransport: @unchecked Sendable {
     /// decided before the first byte of a successful stream.
     func bytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
         var req = request
-        try await attachBearer(&req)
+        let used = try await attachBearer(&req)
         var (bytes, http) = try await performStream(req)
         if http.statusCode == 401 {
             Log.app.info("cloud: 401 on \(req.url?.path ?? "?", privacy: .public) (stream); refreshing session")
-            guard await refresher.refresh(using: self) else { throw NaviError.signedOut }
-            try await attachBearer(&req)
+            guard await refresher.refresh(using: self, replacing: used) else { throw NaviError.signedOut }
+            try attachFreshBearer(&req)
             (bytes, http) = try await performStream(req)
             if http.statusCode == 401 { await signOutLocally(); throw NaviError.signedOut }
         }
@@ -258,19 +258,29 @@ final class CloudTransport: @unchecked Sendable {
         return (bytes, http)
     }
 
-    private func attachBearer(_ req: inout URLRequest) async throws {
+    /// Attaches the bearer for a first attempt and returns the token used, so a
+    /// 401 can tell the refresher which token it saw fail.
+    @discardableResult
+    private func attachBearer(_ req: inout URLRequest) async throws -> String? {
         // Proactive refresh when the access token is about to lapse, so a
         // streaming answer never starts on a token that dies mid-flight.
         if let exp = tokens.accessExpiresAt, exp.timeIntervalSinceNow < 30, tokens.refreshToken != nil {
-            _ = await refresher.refresh(using: self)
+            _ = await refresher.refresh(using: self, replacing: tokens.accessToken)
         }
-        guard let token = tokens.accessToken, !token.isEmpty else {
-            if tokens.refreshToken != nil, await refresher.refresh(using: self), let t = tokens.accessToken {
-                req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
-                return
-            }
-            throw NaviError.signedOut
+        if tokens.accessToken?.isEmpty ?? true, tokens.refreshToken != nil {
+            _ = await refresher.refresh(using: self, replacing: tokens.accessToken)
         }
+        guard let token = tokens.accessToken, !token.isEmpty else { throw NaviError.signedOut }
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return token
+    }
+
+    /// Attaches the token a refresh just produced, for the single retry after a
+    /// 401. No proactive refresh here: a new token whose `expiresAt` already
+    /// reads as lapsed (clock skew, a short-lived token) must not be refreshed
+    /// a second time — each 401 retries once, on one refresh.
+    private func attachFreshBearer(_ req: inout URLRequest) throws {
+        guard let token = tokens.accessToken, !token.isEmpty else { throw NaviError.signedOut }
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
@@ -439,10 +449,15 @@ final class CloudTransport: @unchecked Sendable {
     // MARK: Internals
 
     /// Single-flight refresh: concurrent 401s share one `/auth/refresh`.
+    /// `replacing` is the access token the caller saw fail (or lapse). When the
+    /// store already holds a different one, another request refreshed after
+    /// this one was sent — a 401 that lands just after a refresh finished must
+    /// reuse it, not rotate the session again.
     private actor Refresher {
         private var inflight: Task<Bool, Never>?
-        func refresh(using transport: CloudTransport) async -> Bool {
+        func refresh(using transport: CloudTransport, replacing stale: String?) async -> Bool {
             if let inflight { return await inflight.value }
+            if let current = transport.tokens.accessToken, !current.isEmpty, current != stale { return true }
             let t = Task { await transport.performRefresh() }
             inflight = t
             let ok = await t.value
