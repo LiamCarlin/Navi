@@ -6,8 +6,10 @@ import Foundation
 /// speakers play from the microphone, but a loud video can still leak through.
 /// So Navi also transcribes the Mac's own audio (`SpeechListener` with
 /// `capturesSystemAudio`) and keeps the last few seconds of those words here.
-/// Before a clause is decided, runs of its words that the Mac said too are
-/// cut out; a clause that is mostly the Mac's words is dropped.
+/// Before a clause is decided, a clause containing a run of words the Mac
+/// said too is dropped — whole: the words around the run are almost always
+/// the Mac's as well, just misheard or not transcribed yet (a live test kept
+/// "today we are talking about what the tallest" and ran it as a task).
 ///
 /// Only runs of `minRun`+ consecutive words count (with one misheard word
 /// allowed inside a run): the two recognizers hear different audio — one
@@ -20,18 +22,17 @@ struct EchoFilter: Equatable {
     static let windowSeconds: TimeInterval = 10
     /// Consecutive shared words that make a run echo.
     static let minRun = 3
-    /// A clause at least this much echo is dropped whole.
-    static let dropFraction = 0.7
     /// While the Mac has said something this recently, it is "talking".
     static let activeSeconds: TimeInterval = 3
+    /// A short clause this soon after a dropped echo clause is its tail.
+    static let trailingSeconds: TimeInterval = 2.5
+    static let trailingMaxWords = 2
 
     enum Verdict: Equatable {
         /// Nothing the Mac said: decide as usual.
         case clean
         /// The clause is the Mac's audio: drop it.
         case echo
-        /// The user's words with the Mac's cut out.
-        case trimmed(String)
     }
 
     private var finals: [(core: String, at: Date)] = []
@@ -83,15 +84,20 @@ struct EchoFilter: Equatable {
     func classify(_ head: String, at now: Date = Date()) -> Verdict {
         let echo = recentWords(at: now)
         guard !echo.isEmpty else { return .clean }
-        let tokens = head.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        let cores = tokens.map(UtteranceSegmenter.core)
-        let mask = Self.echoedMask(cores, in: echo)
-        let echoed = mask.filter { $0 }.count
-        guard echoed > 0 else { return .clean }
-        let kept = zip(tokens, mask).filter { !$0.1 }.map(\.0)
-        let meaningful = kept.map(UtteranceSegmenter.core).filter { !$0.isEmpty && !Self.fillers.contains($0) }
-        if meaningful.isEmpty || Double(echoed) / Double(max(1, cores.count)) >= Self.dropFraction { return .echo }
-        return .trimmed(UtteranceSegmenter.clean(kept))
+        let cores = Self.cores(head)
+        return Self.echoedMask(cores, in: echo).contains(true) ? .echo : .clean
+    }
+
+    /// The last word or two of what the Mac was saying, split off after a
+    /// connector — "…make sure to like | and subscribe": the recognizer heard
+    /// "liken. be", so nothing matches, but it came straight after a dropped
+    /// echo clause while the Mac was still talking. Control words ("stop",
+    /// "wait") are always the user's.
+    static func isTrailingEcho(_ head: String, secondsSinceEchoDrop: TimeInterval, macTalking: Bool) -> Bool {
+        guard macTalking, secondsSinceEchoDrop <= trailingSeconds else { return false }
+        let words = cores(head)
+        guard !words.isEmpty, words.count <= trailingMaxWords else { return false }
+        return VoiceDecider.heuristicControl(words.joined(separator: " ")) == nil
     }
 
     /// Which head words belong to a run the Mac also said. A two- or
@@ -143,7 +149,4 @@ struct EchoFilter: Equatable {
     static func cores(_ text: String) -> [String] {
         text.split(whereSeparator: { $0.isWhitespace }).map { UtteranceSegmenter.core(String($0)) }.filter { !$0.isEmpty }
     }
-
-    /// Words that don't make what is left of a clause an instruction.
-    static let fillers: Set<String> = VoiceDecider.fragmentWords.union(UtteranceSegmenter.leadingFillers)
 }

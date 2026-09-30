@@ -191,7 +191,7 @@ final class SpeechListener {
         #if DEBUG
         DebugTrace.log("voice listener ready (\(locale.identifier), \(audioFile == nil ? "microphone" : "file"))")
         #endif
-        Log.voice.info("listening (\(locale.identifier, privacy: .public), \(audioFile == nil ? "microphone" : "file", privacy: .public))")
+        Log.voice.info("listening (\(locale.identifier, privacy: .public), \(self.capturesSystemAudio ? "the Mac's audio" : audioFile == nil ? "microphone" : "file", privacy: .public))")
         onEvent?(.ready(locale.identifier))
     }
 

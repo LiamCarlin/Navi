@@ -670,9 +670,11 @@ struct VoiceCurrentTabTests {
         #expect(f.classify("open the calculate app") == .echo)
     }
 
-    @Test func theUsersWordsAroundTheEchoAreKept() {
-        let f = filter("smash that like button and subscribe for more videos")
-        #expect(f.classify("smash that like button what is two plus two") == .trimmed("what is two plus two"))
+    @Test func aClauseWithAnyEchoRunIsDroppedWhole() {
+        // Live test: the Mac's transcript missed the start and misheard "tallest … world";
+        // keeping the unmatched words ran "today we are talking about what the tallest" as a task.
+        let f = filter("The white mountain in the wild is. Then we will explain how many moons Jupiter has.")
+        #expect(f.classify("Today we are talking about what the tallest mountain in the world is") == .echo)
         #expect(f.classify("what is two plus two") == .clean)
     }
 
@@ -702,6 +704,17 @@ struct VoiceCurrentTabTests {
         f.update(finalized: "play the next video", volatile: "now", at: t0.addingTimeInterval(0.5))
         f.update(finalized: "play the next video now please", volatile: "", at: t0.addingTimeInterval(1))
         #expect(f.recentWords(at: t0.addingTimeInterval(1)) == ["play", "the", "next", "video", "now", "please"])
+    }
+
+    @Test func theTailOfADroppedClauseIsEchoToo() {
+        // Live test: "…make sure to like | and subscribe" — the Mac's transcript read "liken. be".
+        #expect(EchoFilter.isTrailingEcho("subscribe", secondsSinceEchoDrop: 0.5, macTalking: true))
+        #expect(!EchoFilter.isTrailingEcho("subscribe", secondsSinceEchoDrop: 4, macTalking: true))
+        #expect(!EchoFilter.isTrailingEcho("subscribe", secondsSinceEchoDrop: 0.5, macTalking: false))
+        #expect(!EchoFilter.isTrailingEcho("what is two plus two", secondsSinceEchoDrop: 0.5, macTalking: true))
+        // The user can always interrupt.
+        #expect(!EchoFilter.isTrailingEcho("stop", secondsSinceEchoDrop: 0.5, macTalking: true))
+        #expect(!EchoFilter.isTrailingEcho("wait", secondsSinceEchoDrop: 0.5, macTalking: true))
     }
 
     @Test func fuzzyWordsAllowOnlySmallDrift() {

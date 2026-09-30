@@ -64,6 +64,11 @@ final class VoiceSession: ObservableObject {
     private var echoFilter = EchoFilter()
     /// When the clause starting at this word was first held for the Mac's transcript.
     private var echoHold: (start: Int, since: Date)?
+    /// When the Mac last made a sound, and when the current stretch of sound
+    /// began (the Mac-audio recognizer needs ~2 s before its first words).
+    private var macSoundAt = Date.distantPast
+    private var macSoundSince = Date.distantPast
+    private var lastEchoDropAt = Date.distantPast
     private var segmenter = UtteranceSegmenter()
     private var startTask: Task<Void, Never>?
     private var decideTask: Task<Void, Never>?
@@ -112,6 +117,8 @@ final class VoiceSession: ObservableObject {
     static let echoHoldMaxMs = 1200
     /// The Mac's transcript counts as caught up once it changed this long after the clause did.
     static let echoCatchUpMs = 300
+    /// A new stretch of the Mac's sound holds clauses even before its words arrive, this long.
+    static let macWarmUpMs = 3000
     /// Keep Jev's connection warm while listening: a cold call costs ~2×.
     static let keepWarmSeconds: TimeInterval = 20
 
@@ -266,6 +273,15 @@ final class VoiceSession: ObservableObject {
 
     // MARK: The Mac's own audio
 
+    /// The Mac has said words recently, or has just started making sound and
+    /// its recognizer hasn't caught up yet.
+    private var macIsTalking: Bool {
+        let now = Date()
+        if echoFilter.isActive(at: now) { return true }
+        let playing = now.timeIntervalSince(macSoundAt) < 0.5
+        return playing && now.timeIntervalSince(macSoundSince) * 1000 < Double(Self.macWarmUpMs)
+    }
+
     /// Starts transcribing what the Mac plays. Optional: without Screen
     /// Recording, or if capture fails, voice control works as before.
     private func startEchoListener(locale: Locale) async {
@@ -281,6 +297,7 @@ final class VoiceSession: ObservableObject {
             switch ev {
             case .transcript(let finalized, let volatile):
                 self.echoFilter.update(finalized: finalized, volatile: volatile)
+                Log.voice.debug("mac-audio | final=…\(String(finalized.suffix(50)), privacy: .public) | volatile=\(volatile, privacy: .public)")
                 #if DEBUG
                 DebugTrace.log("voice mac-audio | final=“\(finalized.suffix(60))” volatile=“\(volatile)”")
                 #endif
@@ -288,7 +305,12 @@ final class VoiceSession: ObservableObject {
                 Log.voice.error("mac audio transcription stopped: \(msg, privacy: .public)")
                 let e = self.echoListener
                 Task { await e.stop() }
-            case .ready, .downloading, .level:
+            case .level:
+                // Levels only arrive while the Mac is making sound (silence isn't transcribed).
+                let now = Date()
+                if now.timeIntervalSince(self.macSoundAt) > 2 { self.macSoundSince = now }
+                self.macSoundAt = now
+            case .ready, .downloading:
                 break
             }
         }
@@ -423,7 +445,7 @@ final class VoiceSession: ObservableObject {
         // The Mac is talking (a video, music): give its transcript a moment to
         // catch up with these words, then cut out whatever it said too.
         // One word ("stop") is never echo, so it never waits.
-        if clause.headWordCount > 1, echoFilter.isActive(), echoFilter.lastUpdateAt < segmenter.lastChangeAt.addingTimeInterval(Double(Self.echoCatchUpMs) / 1000) {
+        if clause.headWordCount > 1, macIsTalking, echoFilter.lastUpdateAt < segmenter.lastChangeAt.addingTimeInterval(Double(Self.echoCatchUpMs) / 1000) {
             if echoHold?.start != clause.start { echoHold = (clause.start, Date()) }
             if let h = echoHold, Date().timeIntervalSince(h.since) * 1000 < Double(Self.echoHoldMaxMs) {
                 hint = "…"
@@ -432,17 +454,16 @@ final class VoiceSession: ObservableObject {
             }
         }
         echoHold = nil
-        var heardClause = clause
+        let heardClause = clause
         var echoDecision: VoiceDecider.Decision?
-        switch echoFilter.classify(clause.head) {
-        case .clean: break
-        case .echo: echoDecision = .drop(reason: "the Mac's own audio")
-        case .trimmed(let head): heardClause.head = head
-        }
-        if heardClause.head != clause.head || echoDecision != nil {
-            Log.voice.info("echo: “\(clause.head, privacy: .public)” → \(echoDecision == nil ? heardClause.head : "dropped", privacy: .public)")
+        let trailing = EchoFilter.isTrailingEcho(clause.head, secondsSinceEchoDrop: Date().timeIntervalSince(lastEchoDropAt),
+                                                  macTalking: macIsTalking)
+        if trailing || echoFilter.classify(clause.head) == .echo {
+            echoDecision = .drop(reason: "the Mac's own audio")
+            lastEchoDropAt = Date()
+            Log.voice.info("echo: dropped “\(clause.head, privacy: .public)” (\(trailing ? "tail of what the Mac said" : "the Mac said it", privacy: .public))")
             #if DEBUG
-            DebugTrace.log("voice echo | “\(clause.head)” → \(echoDecision.map { "\($0)" } ?? "“\(heardClause.head)”") | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
+            DebugTrace.log("voice echo | dropped “\(clause.head)” | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
             #endif
         }
         let silence = silenceMs
