@@ -13,3 +13,4 @@ scripts/ultrafast/__pycache__/
 # Release signing keys never live in the repo (docs/RELEASE.md)
 *.pem
 *.p12
+vendor/typesafe-computer-use/.venv/
