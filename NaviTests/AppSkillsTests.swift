@@ -188,52 +188,25 @@ struct AppSkillsTests {
         #expect(names.contains("cmd+2"))
         #expect(Set(names).count == names.count)
         #expect(combos.first { $0.0 == "cmd+n" }?.1.contains("Outlook") == true)
-        #expect(combos.first { $0.0 == "Escape" }?.1 == JevDriver.keyCombos.first { $0.0 == "Escape" }?.1)
-        #expect(AppSkills.keyCombos(for: nil).map(\.0) == JevDriver.keyCombos.map(\.0))
+        #expect(combos.first { $0.0 == "Escape" }?.1 == CUDecide.keyCombos.first { $0.0 == "Escape" }?.1)
+        #expect(AppSkills.keyCombos(for: nil).map(\.0) == CUDecide.keyCombos.map(\.0))
     }
 
     @Test func driverOffersAppShortcutsAndCarriesPlaybook() throws {
         let outlook = try #require(AppSkills.skill(bundleID: "com.microsoft.Outlook"))
-        var input = JevDriverTests.input()
+        var input = TypesafeCUTests.input()
         input.playbook = AppSkills.playbook(for: outlook, goal: "create a calendar event")
         input.experience = ["create an event → Press ⌘2 · Press ⌘N · Type ‘…’ into ‘Subject’ · Press Return"]
-        input.keyCombos = AppSkills.keyCombos(for: outlook)
-        input.actionsTaken = 2
-        let req = JevDriver.request(for: input)
-        #expect(req.heads["key_target"]?.contains("cmd+2") == true)
-        let json = try #require(try JSONSerialization.jsonObject(with: Data(JevDriver.formatState(input).utf8)) as? [String: Any])
-        #expect((json["playbook"] as? [String: Any])?["app"] as? String == "Outlook")
-        #expect((json["experience"] as? [String])?.count == 1)
-        #expect((json["progress"] as? [String: Any])?["actions_taken"] as? Int == 2)
-        #expect((json["progress"] as? [String: Any])?["note"] == nil)
-        input.doneRejected = true
-        let again = try #require(try JSONSerialization.jsonObject(with: Data(JevDriver.formatState(input).utf8)) as? [String: Any])
-        #expect((again["progress"] as? [String: Any])?["note"] != nil)
-        // The coach can name an app-specific combo.
-        #expect(JevDriver.coachAction(operation: "KEY", target: "cmd+2", request: req) == .key("cmd+2"))
-        #expect(JevDriver.coachAction(operation: "KEY", target: "not a key", request: req) == nil)
-    }
-
-    // MARK: Premature DONE
-
-    @Test func prematureDoneIsReaskedOnce() {
-        let input = JevDriverTests.input()
-        let req = JevDriver.request(for: input)
-        let done = JevDriverTests.verdict(op: "DONE", confidence: 0.9, request: req)
-        // Effect goal, nothing done yet, not certain → look again.
-        #expect(JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 0) == .prematureDone(reason: "Jev chose DONE (90%) before any action"))
-        // Already rejected once → final. Something was done → final. Lookup → final. Very sure → final.
-        #expect(JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 0, doneRejected: true) == .finish(reason: "Jev chose DONE (90%)"))
-        #expect(JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 1) == .finish(reason: "Jev chose DONE (90%)"))
-        #expect(JevDriver.decide(done, request: req, threshold: 0.5, effectGoal: false, actionsTaken: 0) == .finish(reason: "Jev chose DONE (90%)"))
-        let sure = JevDriverTests.verdict(op: "DONE", confidence: 0.99, request: req)
-        #expect(JevDriver.decide(sure, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 0) == .finish(reason: "Jev chose DONE (99%)"))
-        // task_complete noul follows the same rule.
-        let complete = JevDriverTests.verdict(op: "CLICK", request: req, target: ("click_target", "2"), taskComplete: 0.9)
-        #expect(JevDriver.decide(complete, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 0) == .prematureDone(reason: "Jev sees the goal satisfied (90%) before any action"))
-        #expect(JevDriver.decide(complete, request: req, threshold: 0.5, effectGoal: true, actionsTaken: 3) == .finish(reason: "Jev sees the goal satisfied (90%)"))
-        // Default arguments keep the old behaviour.
-        #expect(JevDriver.decide(done, request: req, threshold: 0.5) == .finish(reason: "Jev chose DONE (90%)"))
+        input.shortcuts = AppSkills.keyCombos(for: outlook)
+        let req = CUDecide.request(input)
+        #expect(req.shortcutTargets.values.contains("cmd+2"))
+        // Return and Escape are kinds of their own, never also shortcuts (mutually exclusive options).
+        #expect(!req.shortcutTargets.values.contains { ["return", "escape"].contains($0.lowercased()) })
+        #expect((req.state["playbook"] as? [String: Any])?["app"] as? String == "Outlook")
+        #expect((req.state["experience"] as? [String])?.count == 1)
+        if case .choice(let instructions, _) = try #require(req.questions["kind"]) {
+            #expect(instructions.contains("`playbook`"))
+        } else { Issue.record("kind must be a choice") }
     }
 
     // MARK: Experience store
@@ -352,8 +325,11 @@ struct AppSkillsTests {
         #expect(web.allSatisfy { !($0["hosts"] as? [String] ?? []).isEmpty })
         #expect(web.contains { $0["app"] as? String == "Google Drive" })
         let field = AXElement(id: "e1", role: "AXTextArea", label: "", frame: .zero)
-        let ctx = FieldText.context(goal: "g", field: field, pageTitle: nil, pageText: "", recentActions: [], hints: ["first line is the title"])
+        // The app's field hints reach the writer's packet, and only when there are some.
+        let ctx = CUWriter.textPacket(goal: "g", field: field, screen: TypesafeCUTests.screen, history: [], guidance: CUGuidance(),
+                                      conversation: [], hints: ["first line is the title"])
         #expect(ctx["field_hints"] as? [String] == ["first line is the title"])
-        #expect(FieldText.context(goal: "g", field: field, pageTitle: nil, pageText: "", recentActions: [])["field_hints"] == nil)
+        #expect(CUWriter.textPacket(goal: "g", field: field, screen: TypesafeCUTests.screen, history: [], guidance: CUGuidance(),
+                                    conversation: [], hints: [])["field_hints"] == nil)
     }
 }

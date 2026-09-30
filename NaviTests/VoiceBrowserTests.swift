@@ -152,34 +152,17 @@ struct VoiceBrowserTests {
     }
 
     @Test func localGuessTypesWhatTheGoalSpellsOut() {
-        #expect(FieldText.localGuess(goal: "type good night in the message box", field: field("Message"), history: []) == "good night")
-        #expect(FieldText.localGuess(goal: "tell her I'm running late", field: field("Message"), history: []) == "I'm running late")
-        #expect(FieldText.localGuess(goal: "text mom see you at 5", field: field("iMessage"), history: []) == "see you at 5")
-        #expect(FieldText.localGuess(goal: "put 'hello' in the title", field: field("Title"), history: []) == "hello")
-        #expect(FieldText.localGuess(goal: "look up Matt Armstrong", field: field("Search in Drive", role: "AXSearchField"), history: []) == "Matt Armstrong")
-        #expect(FieldText.localGuess(goal: "search for lo-fi beats", field: field("Search"), history: []) == "lo-fi beats")
-        // Described, not spelled out: no guess (Haiku, then vision, may compose it).
-        #expect(FieldText.localGuess(goal: "write a love message to my mom", field: field("Message"), history: []) == nil)
-        #expect(FieldText.localGuess(goal: "click the message area", field: field("Message"), history: []) == nil)
+        #expect(FieldText.localGuess(goal: "type good night in the message box", field: field("Message")) == "good night")
+        #expect(FieldText.localGuess(goal: "tell her I'm running late", field: field("Message")) == "I'm running late")
+        #expect(FieldText.localGuess(goal: "text mom see you at 5", field: field("iMessage")) == "see you at 5")
+        #expect(FieldText.localGuess(goal: "put 'hello' in the title", field: field("Title")) == "hello")
+        #expect(FieldText.localGuess(goal: "look up Matt Armstrong", field: field("Search in Drive", role: "AXSearchField")) == "Matt Armstrong")
+        #expect(FieldText.localGuess(goal: "search for lo-fi beats", field: field("Search")) == "lo-fi beats")
+        // Described, not spelled out: no guess (the writer composes it).
+        #expect(FieldText.localGuess(goal: "write a love message to my mom", field: field("Message")) == nil)
+        #expect(FieldText.localGuess(goal: "click the message area", field: field("Message")) == nil)
         // Already typed once: not again.
-        let typed = [JevDriver.HistoryEntry(action: "Type ‘good night’ into ‘Message’", kind: "type_text", text: "good night", pageChanged: true)]
-        #expect(FieldText.localGuess(goal: "type good night in the message box", field: field("Message"), history: typed) == nil)
-    }
-
-    // MARK: Submits in the state
-
-    @Test func stateMarksTheLastActionAndSubmits() throws {
-        let hist = [JevDriver.HistoryEntry(action: "Type ‘hi’ into ‘Message’", kind: "type_text", text: "hi", pageChanged: true),
-                    JevDriver.HistoryEntry(action: "Press ↩", kind: "key", text: nil, pageChanged: true)]
-        var input = JevDriverTests.input(history: hist)
-        input.actionsTaken = 2
-        let json = try #require(try JSONSerialization.jsonObject(with: Data(JevDriver.formatState(input).utf8)) as? [String: Any])
-        let progress = try #require(json["progress"] as? [String: Any])
-        #expect(progress["last_action"] as? String == "Press ↩")
-        #expect(progress["last_action_submitted"] as? Bool == true)
-        #expect(JevDriver.isSubmit(.init(action: "Click ‘Send’", kind: "click", text: nil, pageChanged: true)))
-        #expect(!JevDriver.isSubmit(.init(action: "Click ‘Home’", kind: "click", text: nil, pageChanged: true)))
-        #expect(!JevDriver.isSubmit(.init(action: "Press ⌘N", kind: "key", text: nil, pageChanged: true)))
+        #expect(FieldText.localGuess(goal: "type good night in the message box", field: field("Message"), typed: ["good night"]) == nil)
     }
 
     // MARK: Browser chrome in the AX table

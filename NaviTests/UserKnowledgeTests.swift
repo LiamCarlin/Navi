@@ -157,10 +157,10 @@ import Testing
     }
 
     @Test func jevStateCarriesUserContext() {
-        var input = JevDriverTests.input()
-        #expect(JevDriver.stateJSON(for: input)["user_context"] == nil)
+        var input = TypesafeCUTests.input()
+        #expect(CUDecide.state(input)["user_context"] == nil)
         input.userContext = [["name": "Bella Chen", "type": "person"]]
-        let ctx = JevDriver.stateJSON(for: input)["user_context"] as? [String: Any]
+        let ctx = CUDecide.state(input)["user_context"] as? [String: Any]
         #expect((ctx?["things"] as? [[String: Any]])?.first?["name"] as? String == "Bella Chen")
     }
 

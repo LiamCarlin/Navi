@@ -1,7 +1,8 @@
 #!/bin/zsh
 # Builds `build/axprobe`: a CLI that snapshots a running app's accessibility
-# table exactly as the Jev-first driver sees it (AXSnapshotter + browser-chrome
-# tidying + the app/web playbook) and asks Jev what it would do for each goal —
+# tree and prints the numbered item list exactly as the native driver builds it
+# (CUPerception: controls + static text, dates, rows, regions) and asks Jev what
+# it would do for each goal (CUDecide, one request) —
 # read-only, nothing is clicked. The fastest way to check a site or app before
 # trusting a voice command on it.
 #
@@ -16,6 +17,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p build
 swiftc -O -o build/axprobe scripts/axprobe/Stubs.swift scripts/axprobe/main.swift \
-  Navi/Agent/AXSnapshot.swift Navi/Agent/AgentTarget.swift Navi/Agent/JevDriver.swift Navi/Agent/JevGate.swift \
+  Navi/Agent/AXSnapshot.swift Navi/Agent/AgentTarget.swift Navi/Agent/AgentAction.swift Navi/Agent/JevGate.swift \
+  Navi/Agent/TypesafeCU/CUModels.swift Navi/Agent/TypesafeCU/CUFacts.swift Navi/Agent/TypesafeCU/CUPerception.swift \
+  Navi/Agent/TypesafeCU/CUDecide.swift \
   Navi/Providers/JevClient.swift Navi/Agent/AppSkills.swift Navi/Agent/AppSkillLibrary.swift Navi/Agent/TextCandidates.swift
 echo "build/axprobe"

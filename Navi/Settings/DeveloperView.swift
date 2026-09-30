@@ -130,11 +130,11 @@ struct AgentTuningSection: View {
                     Slider(value: $settings.agentJevConfidenceThreshold, in: 0.2...0.95, step: 0.05) {
                         Text("Jev confidence threshold")
                     } minimumValueLabel: { Text("20%") } maximumValueLabel: { Text("95%") }
-                    Text("Currently \(Int((settings.agentJevConfidenceThreshold * 100).rounded()))% — below this, the step goes to Claude's vision loop.")
+                    Text("Currently \(Int((settings.agentJevConfidenceThreshold * 100).rounded()))% — below this Jev stops, and Claude reads the screen and hands it back one move to make.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Stepper(value: $settings.agentMaxClaudeFallbacks, in: 0...30) {
-                    LabeledContent("Maximum Claude fallbacks per task") {
+                    LabeledContent("Maximum hand-backs per task") {
                         Text("\(settings.agentMaxClaudeFallbacks)").monospacedDigit()
                     }
                 }
@@ -145,7 +145,7 @@ struct AgentTuningSection: View {
             Text("Agent · driver")
         } footer: {
             Text(settings.agentDriver == .jevFirst
-                 ? "Each step: enumerate on-screen controls via Accessibility → one Jev call chooses the operation and target (~100 ms) → execute. Field text comes from Claude Haiku; only NEED_VISION, low confidence or a stuck screen wakes the screenshot loop."
+                 ? "typesafe-computer-use: each step reads the accessibility tree (OCR where it is thin) into one numbered item list, code adds the facts (dates, rows, what was already tried), one Jev call picks the action and its target → execute. Claude only writes: field text, and an answer when Jev stops — never a click."
                  : "Every step sends a screenshot to Claude. Slower and costlier, but works on canvas apps and anything Accessibility can't describe.")
         }
 
@@ -169,11 +169,11 @@ struct AgentTuningSection: View {
     private var driverExplanation: String {
         let t = Int((settings.agentJevConfidenceThreshold * 100).rounded())
         let n = settings.agentMaxClaudeFallbacks
-        var s = "Jev picks CLICK / TYPE_TEXT / SELECT / KEY / SCROLL / OPEN_APP / OPEN_URL / WAIT / DONE from the accessibility tree. "
-        s += t >= 70 ? "A \(t)% bar is strict: expect Claude to step in often on busy screens. "
+        var s = "Jev picks click / type / choose / shortcut / open / Return / Escape / back / scroll / wait / done from what is on screen. "
+        s += t >= 70 ? "A \(t)% bar is strict: expect Jev to stop and Claude to read the screen often on busy screens. "
             : t <= 35 ? "A \(t)% bar is permissive: Jev will act on close calls; keep an approval mode on. "
             : "At \(t)% Jev acts when it clearly prefers one operation and defers ambiguous screens. "
-        s += n == 0 ? "With 0 fallbacks the run fails as soon as Jev can't decide." : "Up to \(n) bounded Claude turns (≤3 actions each) per task."
+        s += n == 0 ? "With 0 hand-backs Jev's first stop ends the run (Claude still says what happened)." : "Up to \(n) times per task Claude reads the screen where Jev stopped and gives it the next move."
         if !settings.hasJevKey { s += " No Jev key yet — the Claude-only driver will be used until one is added above." }
         return s
     }

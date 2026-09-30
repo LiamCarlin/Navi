@@ -1,7 +1,7 @@
 #if DEBUG
 import Foundation
 
-/// `navi://debug-jev-probe?out=/tmp/x.json` — runs one JevDriver decision on a
+/// `navi://debug-jev-probe?out=/tmp/x.json` — runs one native-driver decision (`CUDecide`) on a
 /// synthetic Finder-like snapshot against the live API and writes the verdict.
 /// Validates the exact request the native driver sends, without Accessibility.
 enum DebugJevProbe {
@@ -20,25 +20,22 @@ enum DebugJevProbe {
         let snap = AXSnapshot(elements: els, windowTitle: "Desktop", url: nil, focused: nil,
                               visibleText: "Favorites Documents Downloads Desktop  budget-2026.xlsx notes.md",
                               pid: 1, bundleID: "com.apple.finder", appName: "Finder")
-        let input = JevDriver.StepInput(task: "Open the budget spreadsheet", step: 1, maxSteps: 40, snapshot: snap, history: [])
+        let input = CUDecide.Input(goal: "Open the budget spreadsheet", screen: CUPerception.perceive(snap, ocr: nil, goal: "Open the budget spreadsheet"),
+                                   history: [])
         Task.detached {
-            let driver = JevDriver(jev: jev)
             var result: [String: Any] = [:]
             do {
                 let t = Date()
-                let (v, req) = try await driver.ask(input)
-                let d = JevDriver.decide(v, request: req, threshold: 0.5)
+                let (v, req) = try await CUDecide.ask(jev, input)
+                let d = CUDecide.decision(v, request: req)
                 result = [
                     "ok": true,
                     "wall_ms": Int(Date().timeIntervalSince(t) * 1000),
                     "api_ms": v.latencyMs,
-                    "operation": v.operation?.choice ?? "",
-                    "operation_confidence": v.operation?.confidence ?? 0,
-                    "operation_probabilities": v.operation?.probabilities ?? [:],
-                    "targets": v.targets.mapValues { ["choice": $0.choice, "confidence": $0.confidence] },
-                    "task_complete": v.taskComplete,
-                    "decision": String(describing: d),
-                    "offered_operations": req.operations,
+                    "heads": v.heads.mapValues { ["choice": $0.choice, "confidence": $0.confidence, "probabilities": $0.probabilities] },
+                    "decision": d.map(\.chosen) ?? "none usable",
+                    "confidence": d?.confidence ?? 0,
+                    "offered": req.offered,
                 ]
             } catch {
                 result = ["ok": false, "error": error.localizedDescription]
