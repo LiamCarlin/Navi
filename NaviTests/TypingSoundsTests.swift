@@ -46,10 +46,14 @@ import Testing
 
     @Test func returnIsHeardEvenRightAfterAKey() {
         var pacer = TypingSoundPacer(seed: 3)
-        #expect(pacer.shouldVoice(.key, at: 0))
-        #expect(!pacer.shouldVoice(.key, at: 0.008))
-        #expect(pacer.shouldVoice(.returnKey, at: 0.04))
-        #expect(!pacer.shouldVoice(.returnKey, at: 0.05))  // a double press merges
+        let first = pacer.shouldVoice(.key, at: 0)
+        let tooSoon = pacer.shouldVoice(.key, at: 0.008)
+        let returnKey = pacer.shouldVoice(.returnKey, at: 0.04)
+        let doublePress = pacer.shouldVoice(.returnKey, at: 0.05)
+        #expect(first)
+        #expect(!tooSoon)
+        #expect(returnKey)
+        #expect(!doublePress)  // a double press merges
     }
 
     // MARK: Bursts

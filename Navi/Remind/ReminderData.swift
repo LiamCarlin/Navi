@@ -66,11 +66,11 @@ final class ReminderStore: @unchecked Sendable {
     /// Open reminders due on `day` (start of day), soonest first.
     func due(on day: Date, calendar cal: Calendar) async -> [DueReminder] {
         guard status == .granted, let end = cal.date(byAdding: .day, value: 1, to: day) else { return [] }
+        let store = self.store
         let predicate: NSPredicate = {
             lock.lock(); defer { lock.unlock() }
             return store.predicateForIncompleteReminders(withDueDateStarting: day, ending: end, calendars: nil)
         }()
-        let store = self.store
         return await withCheckedContinuation { (continuation: CheckedContinuation<[DueReminder], Never>) in
             _ = store.fetchReminders(matching: predicate) { reminders in
                 let items = (reminders ?? []).map { r in
