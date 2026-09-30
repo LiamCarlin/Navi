@@ -209,7 +209,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     reused when the pause arrives (no second Jev trip); "stop" while busy and "yes"
     while asking skip Jev (`instantDecision`). Pauses come from `SpeechActivity`: a
     10th-percentile noise floor over 4 s, so music or a video becomes the floor in
-    seconds instead of reading as nonstop talking. Commands
+    seconds instead of reading as nonstop talking. Echo cancellation
+    (`voiceEchoCancellation`, default on): `SpeechListener` turns on macOS voice
+    processing, so what the output device plays (a video, music, Navi's answers) is
+    subtracted from the mic; other audio is not ducked, only channel 0 of the 3-channel
+    VP input is used (`AudioPipe.firstChannelOnly`), and a device that refuses VP falls
+    back to the plain mic. Commands
     run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the
