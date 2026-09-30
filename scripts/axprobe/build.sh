@@ -8,6 +8,8 @@
 #   scripts/axprobe/build.sh
 #   TYPESAFE_API_KEY=… build/axprobe com.apple.Safari "click the File menu" "type hello in the document"
 #   build/axprobe com.google.Chrome            # no goals: just print the element table
+#   AXPROBE_CONTEXT='[{"name":"Mikey Ku","type":"person","talks_with_them_in":["Messages (55)"]}]' \
+#     build/axprobe com.apple.MobileSMS "open my conversation with mikey"   # UserKnowledge A/B
 #
 # Stubs.swift stands in for app-only types (Keychain → env vars, settings, logging).
 set -euo pipefail

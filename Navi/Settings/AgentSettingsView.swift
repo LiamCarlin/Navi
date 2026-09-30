@@ -62,7 +62,7 @@ struct AgentSettingsView: View {
 
             Section {
                 Toggle("Do things the way I do", isOn: $settings.agentUsesScreenHabits)
-                Text("Navi plans each task from your screen memory: the apps and sites you actually use (the Outlook app for email, your school's Canvas) and where a person or document last showed up on your screen. Only app names, page titles and links are used — never the text on your screen.")
+                Text("Navi plans and acts from your screen memory: the apps and sites you actually use (the Outlook app for email, your school's Canvas), the people you talk to and where (the app you text each person in), and your projects and documents — their pages, who works on them, the order you usually go through them. Only names, page titles and links are used — never the text on your screen. See what Navi knows in your vault's Navi/How you work note.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } header: {

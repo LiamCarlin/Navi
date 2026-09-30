@@ -365,6 +365,9 @@ enum TaskSurface {
     ///      results page full of relevant links rather than an unrelated tab.
     static func startURL(task: String, frontmost: FrontmostProbe.Info, start: Start? = nil) -> String? {
         if let u = TextCandidates.urls(in: task).first { return u.contains("://") ? u : "https://" + u }
+        // A document or project of the user's the task names: its own page ("open the lead
+        // screw summary" → that Google Doc, "mth3199 assignment 1 on canvas" → the assignment).
+        if let mine = UserKnowledge.liveStartURL(for: task) { return mine }
         // A web app the task names, with its query ("play lofi beats on youtube" → the results page),
         // on the host this user really uses for it (their school's Canvas, not canvas.instructure.com).
         if let deep = AppSkills.startURL(for: task) { return UserHabits.personalized(deep) }
