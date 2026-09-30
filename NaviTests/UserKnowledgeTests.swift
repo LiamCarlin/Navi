@@ -170,6 +170,10 @@ import Testing
         #expect(md.contains("## People"))
         #expect(md.contains("[[Dhvan Shah]] — talk in WhatsApp (5)"))
         #expect(md.contains("usually canvas.olin.edu → MATLAB"))
+        // Dhvan worked in the HCI doc, but that page is the doc's, not his.
+        let dhvan = md.split(separator: "\n").first { $0.hasPrefix("- [[Dhvan Shah]]") }
+        #expect(dhvan?.contains("[open]") == false)
+        #expect(md.contains("[[HCI Team Notes]]") && md.contains("[open](https://docs.google.com/document/d/1AfP/edit)"))
         #expect(!md.contains("private summary"))
     }
 }
