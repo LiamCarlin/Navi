@@ -56,6 +56,13 @@ final class PanelViewModel: ObservableObject {
     }
     /// 0..<options.count selects an option; options.count selects the text box.
     @Published var clarifySelection: Int = 0
+    // Scheduler (mode == .schedule): the card that drops down when the query
+    // asks to put something on the calendar (`ScheduleParser`, or Jev's `wants_to_schedule`).
+    @Published private(set) var scheduler: SchedulerModel?
+    /// ⎋ put the card away; it stays away until the query stops being a scheduling request.
+    private var schedulerDismissed = false
+    /// Jev opened the card (the parser alone wouldn't have): keep it while the query still parses.
+    private var schedulerViaJev = false
     /// Footer diagnostics ("Jev · Open app 92% · 140 ms"); empty unless developer mode is on.
     @Published private(set) var statusLine: String = ""
     @Published private(set) var isRouting = false
@@ -72,7 +79,7 @@ final class PanelViewModel: ObservableObject {
     /// (after a clarification the refined task must win over an incidental app match).
     var submitPreferredKind: ResultKind?
 
-    enum Mode: Equatable { case results, answer, agent, clarify }
+    enum Mode: Equatable { case results, answer, agent, clarify, schedule }
 
     let services: NaviServices
     var onDismiss: (() -> Void)?
@@ -109,7 +116,7 @@ final class PanelViewModel: ObservableObject {
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }
         // Reopening while a task runs (or just finished) lands on the task, not an
         // empty search — typing anything switches back to results.
-        mode = prefill == nil && hasAgentToShow ? .agent : .results
+        mode = prefill == nil && hasAgentToShow ? .agent : (scheduler != nil ? .schedule : .results)
         focusRequestID &+= 1
     }
 
@@ -208,6 +215,8 @@ final class PanelViewModel: ObservableObject {
         answerText = ""
         isAnswering = false
         clearClarification()
+        scheduler = nil
+        schedulerDismissed = false
         mode = .results
         statusLine = ""
         errorMessage = nil
@@ -221,7 +230,16 @@ final class PanelViewModel: ObservableObject {
     private func queryChanged() {
         routeTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if mode != .results && !q.isEmpty { mode = .results }
+        // A scheduling request drops the scheduler card down at once — no need to wait for Jev.
+        let schedule = q.isEmpty ? nil : ScheduleParser.parse(q)
+        if let schedule, !schedulerDismissed, schedule.isExplicit || (scheduler != nil && schedulerViaJev) {
+            if schedule.isExplicit { schedulerViaJev = false }
+            showScheduler(schedule)
+        } else {
+            if schedule?.isExplicit != true { schedulerDismissed = false }
+            if scheduler != nil { hideScheduler() }
+        }
+        if mode != .results && mode != .schedule && !q.isEmpty { mode = .results }
         guard !q.isEmpty else {
             results = []; decision = nil; statusLine = ""; selectedIndex = 0
             return
@@ -246,6 +264,12 @@ final class PanelViewModel: ObservableObject {
             self.results = Self.merge(instant: self.services.router.instantResults(for: q, context: self.context), routed: full, decision: d)
             self.selectedIndex = min(self.selectedIndex, max(0, self.results.count - 1))
             self.isRouting = false
+            // Phrasings the parser can't call ("lunch w/ ana thursday?"): Jev decides.
+            if self.mode == .results, !self.schedulerDismissed, !self.submitAfterRouting,
+               let req = ScheduleParser.parse(q), (self.services.router.scheduleLikelihood(for: q) ?? 0) >= 0.7 {
+                self.schedulerViaJev = true
+                self.showScheduler(req)
+            }
             if self.submitAfterRouting {
                 Log.panel.info("submitAfterRouting → \(d.intent.rawValue, privacy: .public), \(self.results.count) rows")
                 #if DEBUG
@@ -255,7 +279,8 @@ final class PanelViewModel: ObservableObject {
                 let preferred = self.submitPreferredKind
                 self.submitPreferredKind = nil
                 self.selectedIndex = preferred.flatMap { k in self.results.firstIndex { $0.kind == k } } ?? 0
-                self.performSelected()
+                // A scheduling request waits on the card: booking is the user's ⏎.
+                if self.mode != .schedule { self.performSelected() }
             }
         }
     }
@@ -281,6 +306,7 @@ final class PanelViewModel: ObservableObject {
     // MARK: - Actions
 
     func moveSelection(_ delta: Int) {
+        if mode == .schedule { scheduler?.cycleSuggestion(delta); return }
         if mode == .clarify {
             guard let c = clarification else { return }
             let n = c.options.count + 1   // options + the text box
@@ -293,6 +319,10 @@ final class PanelViewModel: ObservableObject {
 
     func performSelected() {
         if mode == .clarify { submitClarification(); return }
+        if mode == .schedule, let s = scheduler {
+            if s.editingVideoLink { s.saveVideoLink(); requestFocus() } else { s.book() }
+            return
+        }
         guard !results.isEmpty, results.indices.contains(selectedIndex) else {
             // Nothing matched yet: treat ⏎ as "ask Navi".
             if !query.isEmpty { askNavi(query) }
@@ -398,6 +428,38 @@ final class PanelViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Scheduler
+
+    private func showScheduler(_ request: ScheduleRequest) {
+        if let s = scheduler {
+            s.update(request)
+        } else {
+            let s = SchedulerModel(request: request)
+            s.onBooked = { [weak self] text in
+                self?.showToast(text)
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(1400))
+                    self?.onDismiss?()
+                }
+            }
+            scheduler = s
+            Log.panel.info("scheduler card for “\(request.activity, privacy: .public)” (\(request.people.count) people)")
+        }
+        if mode != .schedule { mode = .schedule }
+    }
+
+    private func hideScheduler() {
+        scheduler = nil
+        schedulerViaJev = false
+        if mode == .schedule { mode = .results }
+    }
+
+    /// Recognised names in the query, tinted in the search bar while the card is open.
+    var queryHighlights: [ScheduleRequest.Token] {
+        guard mode == .schedule, let s = scheduler else { return [] }
+        return s.request.tokens.filter { $0.kind == .person }
+    }
+
     // MARK: - Clarification
 
     func startClarification(_ req: ClarificationRequest) {
@@ -476,6 +538,16 @@ final class PanelViewModel: ObservableObject {
     }
 
     func escape() {
+        if mode == .schedule {
+            if let s = scheduler, s.editingVideoLink {
+                s.editingVideoLink = false
+                requestFocus()
+            } else {
+                schedulerDismissed = true
+                hideScheduler()
+            }
+            return
+        }
         if mode != .results {
             answerTask?.cancel()
             isAnswering = false

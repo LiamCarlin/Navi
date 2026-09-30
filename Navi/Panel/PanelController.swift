@@ -165,6 +165,14 @@ final class PanelController {
                 return nil
             case 51 where cmd && vm.pendingApproval != nil:                // ⌘⌫: deny
                 vm.approvePending(false); return nil
+            case 33 where cmd && vm.mode == .schedule:                     // ⌘[ / ⌘]: previous / next day
+                vm.scheduler?.shiftDay(-1); return nil
+            case 30 where cmd && vm.mode == .schedule:
+                vm.scheduler?.shiftDay(1); return nil
+            case 27 where cmd && vm.mode == .schedule:                     // ⌘- / ⌘=: shorter / longer
+                vm.scheduler?.changeDuration(-1); return nil
+            case 24 where cmd && vm.mode == .schedule:
+                vm.scheduler?.changeDuration(1); return nil
             case 8 where cmd && vm.mode == .answer:                        // ⌘C in answer mode: copy the answer
                 if vm.copyAnswer() { return nil }
                 return ev
