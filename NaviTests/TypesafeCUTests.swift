@@ -143,6 +143,18 @@ struct TypesafeCUTests {
         #expect(!Self.sig(thirty).same(as: Self.sig(Array(thirty[3...]) + ["Row 30", "Row 31", "Row 32"])))
     }
 
+    @Test func oneChangedLineOfTreeTextIsAChangeButOneOCRSlipIsNot() {
+        func calc(_ display: String, _ source: CUItem.Source) -> CUSignature {
+            let keys = (0..<20).map { Self.item($0 + 1, "key \($0)", y1: 100 + 20 * CGFloat($0), y2: 115 + 20 * CGFloat($0), role: "button", source: .ax) }
+            return .of(app: "Calculator", url: nil, field: nil, items: [Self.item(0, display, y1: 50, y2: 65, source: source)] + keys)
+        }
+        #expect(!calc("57", .text).same(as: calc("57×2", .text)))   // a digit typed into the display
+        #expect(calc("57", .ocr).same(as: calc("57x", .ocr)))        // an OCR slip on a busy screen
+        #expect(AgentRun.asksForResult("open Calculator and compute 57 times 23"))
+        #expect(AgentRun.asksForResult("open Finder and tell me how many files are in Downloads"))
+        #expect(!AgentRun.asksForResult("make a new note titled groceries"))
+    }
+
     @Test func aTabsMemoryFigureDoesNotMakeANewScreen() {
         func capture(_ tab: String, _ clock: String) -> CUSignature {
             let lines = [tab, clock] + (0..<9).map { "Setting \($0)" }
@@ -298,6 +310,16 @@ struct TypesafeCUTests {
         #expect(s.editableItems.map(\.text) == ["Search"])
         #expect(s.selectableItems.map(\.text) == ["Size"])
         #expect(s.field?.label == "Search")
+        // A list row's name field (Notes' "Quick Notes" folder) is clickable but never typed into…
+        var rows = Self.snapshot
+        rows.elements.append(AXElement(id: "e7", role: "AXTextField", label: "Quick Notes", value: "Quick Notes",
+                                       frame: CGRect(x: 10, y: 200, width: 150, height: 20), actions: ["AXPress"], inRow: true))
+        let listed = CUPerception.perceive(rows, ocr: nil, goal: "x")
+        #expect(listed.items.contains { $0.text == "Quick Notes" })
+        #expect(!listed.editableItems.contains { $0.text == "Quick Notes" })
+        // …unless it is being edited.
+        rows.elements[6].isFocused = true
+        #expect(CUPerception.perceive(rows, ocr: nil, goal: "x").editableItems.contains { $0.text == "Quick Notes" })
         // Text inside the focused one-line field is the field's, not an item of its own.
         var snap = Self.snapshot
         snap.texts.append(AXTextLine(text: "jev", frame: CGRect(x: 20, y: 12, width: 30, height: 16)))

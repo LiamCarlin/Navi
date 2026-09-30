@@ -644,6 +644,13 @@ final class AgentRun: @unchecked Sendable {
     /// round trip where the review adds nothing (the user sees the result in front of them).
     static let acceptDoneConfidence = 0.9
 
+    /// Does the goal ask for something to be read back, even while it does something ("compute …",
+    /// "open X and tell me how many …")? Then Jev's own `done` is still reviewed: only the writer reads values.
+    static func asksForResult(_ goal: String) -> Bool {
+        isLookup(goal) || goal.lowercased().range(of: #"\b(compute|calculate|convert|solve|add up|total|sum of|count|how (many|much|long|far)|what('s| is| are| was)|tell me|read me|show me)\b"#,
+                                                  options: .regularExpression) != nil
+    }
+
     /// The native step loop, after typesafe-computer-use's `runner.run`
     /// (vendor/typesafe-computer-use, docs/TYPESAFE_CU.md):
     ///
@@ -691,6 +698,8 @@ final class AgentRun: @unchecked Sendable {
         var appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
         let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
         let effectGoal = !Self.isLookup(task)
+        /// The user wants something read back ("compute 57 × 23", "how many…"): the writer's answer is the deliverable.
+        let wantsResult = Self.asksForResult(task)
         let obvious = TextCandidates.obviousText(in: task)
         let browserBundle = NativeBrowser.defaultBrowserBundleID()
         let browserName = browserBundle.map(NativeBrowser.displayName) ?? "Safari"
@@ -753,7 +762,7 @@ final class AgentRun: @unchecked Sendable {
         /// Jev back to work (runner.py `hand_off`). True to resume; otherwise the run has ended.
         func handOff(_ stopped: CURunState.Outcome, doneConfidence: Double = 0) async throws -> Bool {
             let outcome = run.countStall(stopped)
-            if outcome == .done, effectGoal, !humanLog.isEmpty, doneConfidence >= Self.acceptDoneConfidence || !writerAvailable {
+            if outcome == .done, effectGoal, !wantsResult, !humanLog.isEmpty, doneConfidence >= Self.acceptDoneConfidence || !writerAvailable {
                 writeRun(outcome.rawValue)
                 remember()
                 handle.emit(.completed(summary: Self.summary(humanLog)))
@@ -1040,8 +1049,10 @@ final class AgentRun: @unchecked Sendable {
                                 calls.jev(ms: r.latencyMs)
                                 let p = r["ok"]?.noul ?? 1
                                 if p < 0.5 {
-                                    let restored = await executor.restore(field, typed: typed)
-                                    line += String(format: " but verification failed (%.2f); ", p) + (restored ? "restored previous value" : "could not safely restore previous value")
+                                    let outcome: String
+                                    if value != typed { outcome = "the field did not take it" }
+                                    else { outcome = await executor.restore(field, typed: typed) ? "restored previous value" : "could not safely restore previous value" }
+                                    line += String(format: " but verification failed (%.2f); ", p) + outcome
                                 } else {
                                     line += String(format: " (verified %.2f)", p)
                                 }

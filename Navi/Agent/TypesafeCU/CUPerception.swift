@@ -32,9 +32,12 @@ struct CUScreen: @unchecked Sendable {
     var signature: CUSignature { .of(app: app, url: url ?? snapshot.windowTitle, field: field, items: items) }
 
     func element(forItem index: Int) -> AXElement? { elementForItem[index].flatMap(snapshot.element) }
-    /// Text inputs Jev may type into, as items (secure fields never).
+    /// Text inputs Jev may type into, as items. Never a secure field, and never a list row's
+    /// name edited in place (Notes' folders, Finder's files) unless it already has the focus:
+    /// upstream types only into the focused field; Navi lets Jev name the field, so it must not
+    /// be able to name one that renames something.
     var editableItems: [CUItem] {
-        items.filter { it in element(forItem: it.index).map { $0.isTextInput && !$0.isSecure } ?? false }
+        items.filter { it in element(forItem: it.index).map { $0.isTextInput && !$0.isSecure && (!$0.inRow || $0.isFocused) } ?? false }
     }
     /// Pop-ups whose options the tree enumerates.
     var selectableItems: [CUItem] {

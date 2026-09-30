@@ -92,7 +92,10 @@ struct CUGuidance: Equatable, Sendable {
 /// can do, so it counts. A scroll keeps most of the text and moves all of it, so the row
 /// counts too: the same line lower down is a different line.
 struct CUSignature: Equatable, Sendable {
-    struct Line: Hashable, Sendable { var text: String; var row: Int }
+    /// `exact`: read from the accessibility tree, not OCR. Upstream tolerates one differing line
+    /// for a clock or an OCR slip; tree text has neither (the menu bar is not walked), so one
+    /// changed exact line is a change — a calculator's display after a digit is exactly that.
+    struct Line: Hashable, Sendable { var text: String; var row: Int; var exact = false }
     var app: String
     var url: String?
     var focused: String?
@@ -114,7 +117,7 @@ struct CUSignature: Equatable, Sendable {
         let lines = items.map { it -> Line in
             let ns = it.text as NSString
             let text = tabMemory.stringByReplacingMatches(in: it.text, range: NSRange(location: 0, length: ns.length), withTemplate: "")
-            return Line(text: text, row: Int((it.center.y / rowPt).rounded()))
+            return Line(text: text, row: Int((it.center.y / rowPt).rounded()), exact: it.source != .ocr)
         }
         return CUSignature(app: app, url: url, focused: focused, lines: lines)
     }
@@ -124,7 +127,9 @@ struct CUSignature: Equatable, Sendable {
     func same(as other: CUSignature) -> Bool {
         guard app == other.app, url == other.url, focused == other.focused else { return false }
         let a = Set(lines), b = Set(other.lines)
-        let differing = max(a.subtracting(b).count, b.subtracting(a).count)
+        let gone = a.subtracting(b), came = b.subtracting(a)
+        if gone.contains(where: \.exact) || came.contains(where: \.exact) { return false }
+        let differing = max(gone.count, came.count)
         return differing <= Self.maxDifferingLines && differing * Self.linesPerDifference <= max(a.count, b.count)
     }
 }

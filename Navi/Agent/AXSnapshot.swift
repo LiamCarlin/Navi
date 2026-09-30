@@ -44,15 +44,19 @@ struct AXElement: @unchecked Sendable {
     var isWebContent: Bool
     /// `AXSelected` of a row, cell or tab: which sidebar list / tab is current.
     var isSelected: Bool
+    /// Inside a native list/outline row (Notes' folder names, Finder's file names): a text
+    /// field there renames the row, so it is never a typing target unless it has the focus.
+    var inRow: Bool = false
     /// Live reference; nil in tests.
     var ref: AXUIElement?
 
     init(id: String = "", role: String, subrole: String? = nil, label: String, value: String? = nil,
          frame: CGRect, isFocused: Bool = false, path: String = "", actions: [String] = [],
-         pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, isSelected: Bool = false, ref: AXUIElement? = nil) {
+         pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, isSelected: Bool = false, inRow: Bool = false,
+         ref: AXUIElement? = nil) {
         self.id = id; self.role = role; self.subrole = subrole; self.label = label; self.value = value
         self.frame = frame; self.isFocused = isFocused; self.path = path; self.actions = actions
-        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.isSelected = isSelected; self.ref = ref
+        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.isSelected = isSelected; self.inRow = inRow; self.ref = ref
     }
 
     /// Numeric index Jev sees ("e12" → 12).
@@ -489,6 +493,8 @@ final class AXSnapshotter: @unchecked Sendable {
         var depth: Int
         var ancestors: [String]
         var inWebArea: Bool = false
+        /// Under a list/outline row or cell: a text field there is a row's name edited in place.
+        var inRow: Bool = false
     }
 
     /// Chromium/Electron apps: `AXPress` on web content returns success without
@@ -609,7 +615,7 @@ final class AXSnapshotter: @unchecked Sendable {
                 raw.append(AXElement(role: role, subrole: vals[1] as? String, label: label,
                                      value: role == "AXSecureTextField" ? "••••" : shownValue.map { String($0.prefix(60)) },
                                      frame: f, isFocused: focused, path: path, actions: actions, pid: pid, options: options,
-                                     isWebContent: node.inWebArea || role == "AXWebArea", isSelected: selected, ref: el))
+                                     isWebContent: node.inWebArea || role == "AXWebArea", isSelected: selected, inRow: node.inRow, ref: el))
             }
 
             guard node.depth < AXSnapshot.maxDepth, let children = elements(vals[8]) else { continue }
@@ -619,7 +625,8 @@ final class AXSnapshotter: @unchecked Sendable {
             if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" { ancestors.append(String(label.prefix(30))) }
             let inWebArea = node.inWebArea || role == "AXWebArea"
             // Push in reverse so the DFS visits children in their natural (reading) order.
-            for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea)) }
+            let inRow = node.inRow || (!inWebArea && (role == "AXRow" || role == "AXCell"))
+            for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea, inRow: inRow)) }
         }
 
         // Name what has no name: the text inside it, else its identifier, else its role description.
