@@ -59,6 +59,11 @@ final class VoiceSession: ObservableObject {
     let services: NaviServices
     let executor: VoiceCommandExecutor
     private let listener = SpeechListener()
+    /// The second echo layer: transcribes what the Mac plays (see `EchoFilter`).
+    private let echoListener = SpeechListener()
+    private var echoFilter = EchoFilter()
+    /// When the clause starting at this word was first held for the Mac's transcript.
+    private var echoHold: (start: Int, since: Date)?
     private var segmenter = UtteranceSegmenter()
     private var startTask: Task<Void, Never>?
     private var decideTask: Task<Void, Never>?
@@ -102,6 +107,11 @@ final class VoiceSession: ObservableObject {
     static let flushAfterMs = 350
     /// A settled verdict is reused for this long.
     static let settledReuseMs = 3000
+    /// While the Mac is talking, a clause waits (at most this long) for the
+    /// Mac's own transcript to catch up, so its words can be recognised as echo.
+    static let echoHoldMaxMs = 1200
+    /// The Mac's transcript counts as caught up once it changed this long after the clause did.
+    static let echoCatchUpMs = 300
     /// Keep Jev's connection warm while listening: a cold call costs ~2×.
     static let keepWarmSeconds: TimeInterval = 20
 
@@ -144,6 +154,7 @@ final class VoiceSession: ObservableObject {
             let locale = await SpeechListener.resolveLocale(preferred: settings.voiceLocale)
             do {
                 try await self.listener.start(locale: locale, audioFile: audioFile)
+                if settings.voiceEchoCancellation { await self.startEchoListener(locale: locale) }
             } catch {
                 guard !Task.isCancelled else { return }
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
@@ -170,8 +181,9 @@ final class VoiceSession: ObservableObject {
         hint = ""
         pendingText = ""
         level = 0
-        let l = listener
-        Task { await l.stop() }
+        let l = listener, e = echoListener
+        Task { await l.stop(); await e.stop() }
+        echoFilter.reset()
         if executor.isBusy { executor.stopAll() }
         Log.voice.info("voice session stopped")
     }
@@ -252,6 +264,43 @@ final class VoiceSession: ObservableObject {
         }
     }
 
+    // MARK: The Mac's own audio
+
+    /// Starts transcribing what the Mac plays. Optional: without Screen
+    /// Recording, or if capture fails, voice control works as before.
+    private func startEchoListener(locale: Locale) async {
+        guard phase.isActive, ScreenCapture.hasPermission else {
+            Log.voice.info("second echo layer off (no Screen Recording permission)")
+            return
+        }
+        echoFilter.reset()
+        echoListener.capturesSystemAudio = true
+        echoListener.echoCancellation = false
+        echoListener.onEvent = { [weak self] ev in
+            guard let self else { return }
+            switch ev {
+            case .transcript(let finalized, let volatile):
+                self.echoFilter.update(finalized: finalized, volatile: volatile)
+                #if DEBUG
+                DebugTrace.log("voice mac-audio | final=“\(finalized.suffix(60))” volatile=“\(volatile)”")
+                #endif
+            case .failed(let msg):
+                Log.voice.error("mac audio transcription stopped: \(msg, privacy: .public)")
+                let e = self.echoListener
+                Task { await e.stop() }
+            case .ready, .downloading, .level:
+                break
+            }
+        }
+        do {
+            try await echoListener.start(locale: locale)
+            // Voice control may have been stopped while this was starting.
+            if !phase.isActive { await echoListener.stop() }
+        } catch {
+            Log.voice.error("second echo layer failed to start: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: Acoustic pauses
 
     private func heard(level l: Float) {
@@ -269,6 +318,7 @@ final class VoiceSession: ObservableObject {
                 self.spokeSinceFlush = false
                 self.flushTask = nil
                 await self.listener.flush()
+                await self.echoListener.flush()
             }
         }
     }
@@ -370,11 +420,38 @@ final class VoiceSession: ObservableObject {
             if phase == .listening { hint = "" }
             return
         }
+        // The Mac is talking (a video, music): give its transcript a moment to
+        // catch up with these words, then cut out whatever it said too.
+        // One word ("stop") is never echo, so it never waits.
+        if clause.headWordCount > 1, echoFilter.isActive(), echoFilter.lastUpdateAt < segmenter.lastChangeAt.addingTimeInterval(Double(Self.echoCatchUpMs) / 1000) {
+            if echoHold?.start != clause.start { echoHold = (clause.start, Date()) }
+            if let h = echoHold, Date().timeIntervalSince(h.since) * 1000 < Double(Self.echoHoldMaxMs) {
+                hint = "…"
+                scheduleDecision(after: 150)
+                return
+            }
+        }
+        echoHold = nil
+        var heardClause = clause
+        var echoDecision: VoiceDecider.Decision?
+        switch echoFilter.classify(clause.head) {
+        case .clean: break
+        case .echo: echoDecision = .drop(reason: "the Mac's own audio")
+        case .trimmed(let head): heardClause.head = head
+        }
+        if heardClause.head != clause.head || echoDecision != nil {
+            Log.voice.info("echo: “\(clause.head, privacy: .public)” → \(echoDecision == nil ? heardClause.head : "dropped", privacy: .public)")
+            #if DEBUG
+            DebugTrace.log("voice echo | “\(clause.head)” → \(echoDecision.map { "\($0)" } ?? "“\(heardClause.head)”") | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
+            #endif
+        }
         let silence = silenceMs
-        var input = VoiceDecider.Input(clause: clause, silenceMs: silence, context: context(for: clause))
+        var input = VoiceDecider.Input(clause: heardClause, silenceMs: silence, context: context(for: heardClause))
         var decision: VoiceDecider.Decision
-        let key = [clause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
-        if let instant = VoiceDecider.instantDecision(input) {
+        let key = [heardClause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
+        if let echoDecision {
+            decision = echoDecision
+        } else if let instant = VoiceDecider.instantDecision(input) {
             jevStatus = "Instant · no Jev call"
             decision = instant
             #if DEBUG

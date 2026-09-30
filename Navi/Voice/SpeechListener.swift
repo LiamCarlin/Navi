@@ -43,6 +43,11 @@ final class SpeechListener {
     /// recognizer and the pause detector hear only the user. Applied at `start`.
     var echoCancellation = true
 
+    /// Transcribe what the Mac is playing instead of the microphone (the
+    /// second echo layer, `EchoFilter`). Needs Screen Recording permission.
+    var capturesSystemAudio = false
+    private var systemAudio: SystemAudioCapture?
+
     private let engine = AVAudioEngine()
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
@@ -96,7 +101,7 @@ final class SpeechListener {
     /// microphone is denied, the locale is unsupported or the engine can't start.
     func start(locale: Locale, audioFile: URL? = nil) async throws {
         guard !isRunning else { return }
-        if audioFile == nil {
+        if audioFile == nil, !capturesSystemAudio {
             guard await Self.requestMicrophone() else {
                 throw NaviError.permissionDenied("Microphone — allow Navi in System Settings → Privacy & Security → Microphone")
             }
@@ -162,7 +167,22 @@ final class SpeechListener {
         let onLevel: @Sendable (Float) -> Void = { [weak self] l in
             Task { @MainActor in self?.onEvent?(.level(l)) }
         }
-        if let audioFile {
+        if capturesSystemAudio {
+            let capture = SystemAudioCapture(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+            capture.onStop = { [weak self] message in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+                    self.onEvent?(.failed(message))
+                }
+            }
+            do { try await capture.start() } catch {
+                await analyzer.cancelAndFinishNow()
+                resultsTask?.cancel(); resultsTask = nil
+                self.analyzer = nil; self.transcriber = nil
+                throw NaviError.other("Couldn't capture the Mac's audio: \(error.localizedDescription)")
+            }
+            systemAudio = capture
+        } else if let audioFile {
             try startFilePlayback(audioFile, analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
         } else {
             try startEngine(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
@@ -180,6 +200,7 @@ final class SpeechListener {
         isRunning = false
         if let configObserver { NotificationCenter.default.removeObserver(configObserver); self.configObserver = nil }
         fileTask?.cancel(); fileTask = nil
+        if let systemAudio { await systemAudio.stop(); self.systemAudio = nil }
         if engine.isRunning {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()

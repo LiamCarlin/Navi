@@ -652,3 +652,62 @@ struct VoiceCurrentTabTests {
         #expect((0..<480).allSatisfy { out.floatChannelData![0][$0] == 0.25 })
     }
 }
+
+// MARK: - Echo filter (the Mac's own words)
+
+@Suite struct EchoFilterTests {
+    private func filter(_ macSaid: String, volatile: String = "", at t: Date = Date()) -> EchoFilter {
+        var f = EchoFilter()
+        f.update(finalized: macSaid, volatile: volatile, at: t)
+        return f
+    }
+
+    @Test func aClauseTheMacSaidIsDropped() {
+        let f = filter("Today we're going to open the calculator app and type five hundred.")
+        #expect(f.classify("open the calculator app") == .echo)
+        #expect(f.classify("and type five hundred") == .echo)
+        // Heard through the room, one word differs: still the video.
+        #expect(f.classify("open the calculate app") == .echo)
+    }
+
+    @Test func theUsersWordsAroundTheEchoAreKept() {
+        let f = filter("smash that like button and subscribe for more videos")
+        #expect(f.classify("smash that like button what is two plus two") == .trimmed("what is two plus two"))
+        #expect(f.classify("what is two plus two") == .clean)
+    }
+
+    @Test func singleSharedWordsAreNotEcho() {
+        let f = filter("open the door and stop right there")
+        #expect(f.classify("stop") == .clean)
+        #expect(f.classify("open notes") == .clean)
+        #expect(f.classify("open safari and search the web") == .clean)
+    }
+
+    @Test func theMacsWordsExpire() {
+        let t0 = Date()
+        var f = filter("search for cheap flights to paris", at: t0)
+        #expect(f.classify("search for cheap flights", at: t0.addingTimeInterval(2)) == .echo)
+        #expect(f.classify("search for cheap flights", at: t0.addingTimeInterval(EchoFilter.windowSeconds + 1)) == .clean)
+        #expect(f.isActive(at: t0.addingTimeInterval(1)))
+        #expect(!f.isActive(at: t0.addingTimeInterval(EchoFilter.activeSeconds + 1)))
+        // Volatile words count until the recognizer revises them away.
+        f.update(finalized: "search for cheap flights to paris", volatile: "book a table for two", at: t0.addingTimeInterval(1))
+        #expect(f.classify("book a table for two", at: t0.addingTimeInterval(1.2)) == .echo)
+    }
+
+    @Test func finalizedWordsAreAppendedOnce() {
+        let t0 = Date()
+        var f = EchoFilter()
+        f.update(finalized: "play the next video", volatile: "", at: t0)
+        f.update(finalized: "play the next video", volatile: "now", at: t0.addingTimeInterval(0.5))
+        f.update(finalized: "play the next video now please", volatile: "", at: t0.addingTimeInterval(1))
+        #expect(f.recentWords(at: t0.addingTimeInterval(1)) == ["play", "the", "next", "video", "now", "please"])
+    }
+
+    @Test func fuzzyWordsAllowOnlySmallDrift() {
+        #expect(EchoFilter.sameWord("video", "videos"))
+        #expect(EchoFilter.sameWord("colour", "color"))
+        #expect(!EchoFilter.sameWord("notes", "notion"))
+        #expect(!EchoFilter.sameWord("the", "a"))
+    }
+}
