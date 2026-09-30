@@ -38,6 +38,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
 | `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
+| `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
@@ -148,6 +149,17 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     which sends the invites. ↑↓ times, ⌘[ ⌘] day, ⌘- ⌘= length, esc back to results. Video
     toggle adds the user's own meeting link (`schedulerVideoLink`, pasted once in the card).
     `navi://run` never books by itself. Needs Calendar (full access) + Contacts; the card asks.
+  - **Reminder card** (`Remind`, `Panel/Views/ReminderCardView`): "remind me to call mom tomorrow
+    at 5", "todo: renew passport next week", "don't forget…", "set a reminder…" drop a card under
+    the bar (`Mode.remind`; it wins over the scheduler). `ReminderParser` reuses
+    `ScheduleParser.parseWhen` for days/times (lengths stay in the task: "walk for 30 min") and adds
+    "in 45 min / 2 days", repeats ("every sunday morning", "daily", "weekdays", "every month") and
+    "urgent" → high priority. Due: a day alone is 9 AM, morning/afternoon/evening 9/2/6, a passed
+    time means tomorrow. Chips: In 1 hour · This evening/Tonight · Tomorrow · This weekend · Next
+    week · No date; repeat menu, priority, list menu (Reminders lists), "Also due" that day. ⏎ adds
+    (EventKit, with an alert at the due time); ↑↓ steps the chips. Jev's `wants_reminder` noul
+    opens it for phrasings without an opener ("buy milk tomorrow"), competing with
+    `wants_to_schedule`. Needs Reminders (full access); the card asks.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,

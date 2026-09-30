@@ -25,11 +25,15 @@ protocol QueryRouting: AnyObject, Sendable {
     /// Jev's `wants_to_schedule` for a query it has routed (nil before that):
     /// opens the scheduler card for phrasings the local parser can't call.
     func scheduleLikelihood(for query: String) -> Double?
+
+    /// Jev's `wants_reminder` for a routed query (nil before that): opens the reminder card.
+    func reminderLikelihood(for query: String) -> Double?
 }
 
 extension QueryRouting {
     func didClarify(query: String, intent: Intent) {}
     func scheduleLikelihood(for query: String) -> Double? { nil }
+    func reminderLikelihood(for query: String) -> Double? { nil }
 }
 
 /// Streams a text answer for a question (Claude).

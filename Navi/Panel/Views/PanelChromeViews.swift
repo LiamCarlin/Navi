@@ -50,6 +50,8 @@ struct PanelFooterView: View {
             return "Pick one, or keep typing"
         case .schedule:
             return "Navi · schedule"
+        case .remind:
+            return "Navi · reminder"
         }
     }
 
@@ -90,6 +92,10 @@ struct PanelFooterView: View {
                 KeyHint(keys: "⌘[ ⌘]", label: "day")
                 KeyHint(keys: "⌘- ⌘=", label: "length")
                 KeyHint(keys: "⏎", label: "book")
+                KeyHint(keys: "esc", label: "results")
+            case .remind:
+                KeyHint(keys: "↑↓", label: "when")
+                KeyHint(keys: "⏎", label: "add")
                 KeyHint(keys: "esc", label: "results")
             }
         }

@@ -84,6 +84,11 @@ struct NaviPanelView: View {
                 SchedulerCardView(model: scheduler) { example in vm.query = example }
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+        case .remind:
+            if let reminder = vm.reminder {
+                ReminderCardView(model: reminder) { example in vm.query = example }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
     }
 
@@ -122,7 +127,7 @@ struct NaviPanelView: View {
                        approval: vm.pendingApproval != nil,
                        hasScreenshot: vm.agentScreenshot != nil,
                        clarifyOptions: vm.clarification?.options.count ?? -1,
-                       scheduling: vm.scheduler != nil,
+                       scheduling: vm.scheduler != nil || vm.reminder != nil,
                        error: vm.errorMessage)
     }
 

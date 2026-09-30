@@ -578,6 +578,8 @@ enum ScheduleTokenStyle {
         case .partOfDay: return .brown
         case .time: return .orange
         case .duration: return .green
+        case .recurrence: return .teal
+        case .priority: return .red
         case .activity: return nil
         }
     }

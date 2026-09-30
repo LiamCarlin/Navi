@@ -4,7 +4,7 @@ import Foundation
 /// harshil tomorrow afternoon for 45 min". Parsed locally on every keystroke —
 /// before Jev has answered — so the scheduler card can drop down instantly.
 struct ScheduleRequest: Equatable, Sendable {
-    enum TokenKind: String, Equatable, Sendable { case activity, person, day, partOfDay, time, duration }
+    enum TokenKind: String, Equatable, Sendable { case activity, person, day, partOfDay, time, duration, recurrence, priority }
 
     /// A recognised stretch of the query, in `Character` offsets (for highlighting).
     struct Token: Equatable, Sendable {
