@@ -13,7 +13,7 @@ import Foundation
 /// and messaged the open conversation instead of the person asked for.
 ///
 /// A skill rides along in three places:
-///   - `state.playbook` of every Jev request (`JevDriver.stateJSON`), trimmed to
+///   - `state.playbook` of every Jev request (`CUDecide.state`), trimmed to
 ///     the recipes that match the goal so the state stays small;
 ///   - the KEY head: the skill's shortcuts are *offered* (an app-specific combo
 ///     such as Outlook's ⌘2 can't be chosen unless it is a candidate) and the
@@ -278,7 +278,7 @@ enum AppSkills {
 
     /// KEY candidates for this app: the generic combos, re-described where the
     /// skill gives them an app-specific meaning, plus the skill's own combos.
-    static func keyCombos(for skill: AppSkill?, base: [(String, String)] = JevDriver.keyCombos) -> [(String, String)] {
+    static func keyCombos(for skill: AppSkill?, base: [(String, String)] = CUDecide.keyCombos) -> [(String, String)] {
         guard let skill else { return base }
         var out: [(String, String)] = base.map { k, d in (k, skill.shortcuts[k].map { "\($0) (\(skill.name))" } ?? d) }
         let known = Set(base.map { $0.0.lowercased() })

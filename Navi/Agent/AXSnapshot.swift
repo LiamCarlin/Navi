@@ -102,6 +102,12 @@ extension AXElement: Equatable {
     }
 }
 
+/// One AXStaticText line, in screen points.
+struct AXTextLine: Equatable, Sendable {
+    var text: String
+    var frame: CGRect
+}
+
 // MARK: - Snapshot
 
 /// What's actionable on screen right now, plus cheap text context so Jev can
@@ -117,8 +123,18 @@ struct AXSnapshot: @unchecked Sendable {
     var bundleID: String?
     var appName: String?
     var windowFrame: CGRect?
+    /// Every line of static text on screen with its frame, in walk order. They become
+    /// plain-text items for Jev (typesafe-computer-use reads all visible text as items;
+    /// here the accessibility tree hands it over exactly, no OCR needed).
+    var texts: [AXTextLine] = []
+    /// Labelled controls the app exposes but does not show (scrolled out, parked off the
+    /// window): `AXPress` needs no pixel, so Jev may still pick one (`press_offscreen`).
+    /// Ids are "o1", "o2", ….
+    var offscreen: [AXElement] = []
 
     static let cap = 120
+    static let textLineCap = 400
+    static let offscreenCap = 60
     static let visibleTextCap = 1500
     static let maxDepth = 25
     static let nodeBudget = 4000
@@ -151,7 +167,9 @@ struct AXSnapshot: @unchecked Sendable {
 
     static let empty = AXSnapshot(elements: [])
 
-    func element(_ id: String) -> AXElement? { elements.first { $0.id == id } }
+    func element(_ id: String) -> AXElement? {
+        id.hasPrefix("o") ? offscreen.first { $0.id == id } : elements.first { $0.id == id }
+    }
     var focusedElement: AXElement? { focused.flatMap(element) }
 
     /// One-line description of what changed since `previous` ("12 new elements, title changed").
@@ -519,6 +537,9 @@ final class AXSnapshotter: @unchecked Sendable {
         var texts: [(String, CGRect)] = []
         /// Candidates without a label, to be named in the post-pass.
         var unlabelled: [(index: Int, identifier: String, roleDescription: String)] = []
+        /// Full static-text lines for Jev's items, and the off-window controls (see `AXSnapshot.offscreen`).
+        var lines: [AXTextLine] = []
+        var offscreen: [AXElement] = []
 
         while let node = stack.popLast() {
             if visited >= AXSnapshot.nodeBudget || Date() > deadline { break }
@@ -529,7 +550,16 @@ final class AXSnapshotter: @unchecked Sendable {
             if (vals[9] as? Bool) == true { continue }                       // AXHidden
             if role == "AXWebArea", snap.url == nil, let u = stringValue(attr(el, "AXURL")), !u.isEmpty { snap.url = u }
             let f = rect(vals[7]) ?? frame(of: el)
-            if let f, let wf = windowFrame, !f.isEmpty, !f.intersects(wf), node.depth > 0 { continue }  // scrolled off / other display
+            if let f, let wf = windowFrame, !f.isEmpty, !f.intersects(wf), node.depth > 0 {
+                // Scrolled off / parked outside the window: not on screen, so its subtree is
+                // pruned — but a labelled control that takes AXPress is still reachable
+                // (typesafe-computer-use `walk_actionable`'s off-screen list).
+                if offscreen.count < AXSnapshot.offscreenCap, offscreenRoles.contains(role),
+                   let o = offscreenControl(el, role: role, vals: vals, frame: f, path: node.ancestors, pid: pid) {
+                    offscreen.append(o)
+                }
+                continue
+            }
             let enabled = (vals[5] as? Bool) ?? true
             let title = (vals[2] as? String) ?? ""
             let desc = (vals[3] as? String) ?? ""
@@ -549,6 +579,9 @@ final class AXSnapshotter: @unchecked Sendable {
                 if !t.isEmpty {
                     if textLength < AXSnapshot.visibleTextCap { text.append(t); textLength += t.count + 1 }
                     if let f, !f.isEmpty, texts.count < 600 { texts.append((String(t.prefix(60)), f)) }
+                    if let f, f.width >= 1, f.height >= 1, lines.count < AXSnapshot.textLineCap, windowFrame.map({ $0.intersects(f) }) ?? true {
+                        lines.append(AXTextLine(text: String(t.replacingOccurrences(of: "\n", with: " ").prefix(200)), frame: f))
+                    }
                 }
             }
 
@@ -600,8 +633,43 @@ final class AXSnapshotter: @unchecked Sendable {
         snap.elements = ranked
         snap.focused = ranked.first(where: \.isFocused)?.id
         snap.visibleText = String(text.joined(separator: "\n").prefix(AXSnapshot.visibleTextCap))
+        snap.texts = lines
+        var seenOff = Set<String>()
+        snap.offscreen = offscreen.filter { seenOff.insert("\($0.role)|\($0.label)").inserted }.enumerated().map { i, e in
+            var e = e; e.id = "o\(i + 1)"; return e
+        }
         snap.capturedAt = Date()
         return snap
+    }
+
+    /// Roles worth offering off screen: things a press does something to.
+    static let offscreenRoles: Set<String> = ["AXButton", "AXLink", "AXRow", "AXCell", "AXMenuButton", "AXPopUpButton",
+                                              "AXCheckBox", "AXRadioButton", "AXTab", "AXDisclosureTriangle", "AXMenuBarItem"]
+
+    /// A pruned node as an off-screen control: labelled (its own title/description, or for a
+    /// row/cell the first static text within two levels) and accepting `AXPress`.
+    static func offscreenControl(_ el: AXUIElement, role: String, vals: [AnyObject?], frame f: CGRect,
+                                 path: [String], pid: pid_t) -> AXElement? {
+        var label = firstNonEmpty([(vals[2] as? String) ?? "", (vals[3] as? String) ?? "", (vals[11] as? String) ?? ""])
+        if label.isEmpty, role == "AXRow" || role == "AXCell" { label = descendantLabel(el) }
+        guard !label.isEmpty else { return nil }
+        let actions = actionNames(el)
+        guard actions.contains("AXPress") else { return nil }
+        return AXElement(role: role, subrole: vals[1] as? String, label: String(label.prefix(80)), frame: f,
+                         path: path.suffix(3).joined(separator: " › "), actions: actions, pid: pid, ref: el)
+    }
+
+    /// The first static text within two levels, where list rows keep their label (ax_walk.py `descendant_label`).
+    static func descendantLabel(_ el: AXUIElement) -> String {
+        let kids = Array((elements(attr(el, kAXChildrenAttribute)) ?? []).prefix(8))
+        func text(_ e: AXUIElement) -> String? {
+            guard (attr(e, kAXRoleAttribute) as? String) == "AXStaticText" else { return nil }
+            let v = stringValue(attr(e, kAXValueAttribute))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return v.isEmpty ? nil : v
+        }
+        for k in kids { if let t = text(k) { return t } }
+        for k in kids { for g in (elements(attr(k, kAXChildrenAttribute)) ?? []).prefix(8) { if let t = text(g) { return t } } }
+        return ""
     }
 
     // MARK: AX helpers (queue-only)

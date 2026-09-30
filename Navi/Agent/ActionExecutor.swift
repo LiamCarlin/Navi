@@ -40,6 +40,16 @@ final class ActionExecutor: @unchecked Sendable {
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
             guard let text, !text.isEmpty else { throw NaviError.other("No text to type") }
             try await type(text, into: el, realClick: unreliablePress && el.isWebContent)
+        case .clickPoint(let x, let y, _):
+            // A line of text with no element of its own: a real click at its centre, addressed
+            // to the target process in background mode (the route carries the window).
+            if !isBackground, snapshot.pid > 0 { await activate(pid: snapshot.pid) }
+            await input.click(at: CGPoint(x: x, y: y))
+        case .press(let id):
+            // Off-screen: AXPress needs no pixel, and there is none to fall back on.
+            guard let el = snapshot.element(id), let ref = el.ref else { throw NaviError.other("The off-screen control \(id) is gone") }
+            let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
+            if err != .success { throw NaviError.other("\(el.displayName) did not accept the press") }
         case .select(let id, let option):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }
             try await select(option, in: el, realClick: unreliablePress && el.isWebContent)
@@ -134,6 +144,27 @@ final class ActionExecutor: @unchecked Sendable {
         try? await Task.sleep(for: .milliseconds(60))
         if let after = await Self.currentValue(of: el), !Self.textLanded(text, before: before, after: after) {
             throw NaviError.other("Typed, but \(el.displayName) did not take the text (keyboard focus was elsewhere)")
+        }
+    }
+
+    /// Undoes only our own write, through the original element, never through the current
+    /// focus (actions.py `restore_field`): if the element is gone or its value changed again,
+    /// it is left alone. There is no keyboard fallback — ⌘A/Delete could wipe an unrelated field.
+    func restore(_ el: AXElement, typed: String) async -> Bool {
+        guard let ref = el.ref else { return false }
+        return await AXQueue.run {
+            guard AXSnapshotter.stringValue(AXSnapshotter.attr(ref, kAXValueAttribute)) == typed else { return false }
+            let previous = el.value ?? ""
+            guard AXUIElementSetAttributeValue(ref, kAXValueAttribute as CFString, previous as CFTypeRef) == .success else { return false }
+            return AXSnapshotter.stringValue(AXSnapshotter.attr(ref, kAXValueAttribute)) == previous
+        }
+    }
+
+    /// The field's live value and whether it still has the keyboard focus (for the typing check).
+    static func readBack(_ el: AXElement) async -> (value: String?, focused: Bool) {
+        guard let ref = el.ref else { return (nil, false) }
+        return await AXQueue.run {
+            (AXSnapshotter.stringValue(AXSnapshotter.attr(ref, kAXValueAttribute)), (AXSnapshotter.attr(ref, kAXFocusedAttribute) as? Bool) ?? false)
         }
     }
 
@@ -274,7 +305,7 @@ enum TaskSurface {
             "frontmost_is_browser": frontmost.bundleID.map(AXSnapshotter.isBrowser) ?? false,
         ]
         if let habits { s["user_usually_uses"] = habits }
-        return JevDriver.serialize(s)
+        return JevClient.serialize(s)
     }
 
     struct Classification: Sendable {

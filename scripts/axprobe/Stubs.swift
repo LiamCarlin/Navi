@@ -26,3 +26,19 @@ final class ClaudeClient { var isConfigured = false; func complete(model: String
 enum AgentRun { static func isLookup(_ g: String) -> Bool { ["find","what","look up","search","how","check"].contains { g.lowercased().hasPrefix($0) } } }
 enum UltrafastBridge { static func searchQuery(for task: String) -> String { task } }
 enum ApprovalMode: String { case alwaysAsk, askForRisky, autonomous }
+/// No screen capture in the probe: perception is the accessibility tree alone (the OCR fallback needs the app).
+enum ScreenCapture {
+    struct Frame { var image: CGImage; var bounds: CGRect }
+    static var hasPermission: Bool { false }
+    static func captureWindow(id: CGWindowID) async throws -> Frame { throw NaviError.permissionDenied("Screen Recording") }
+}
+/// The probe talks to Jev with a key from the environment, never through a Navi account.
+enum CloudFeature { case route }
+struct CloudRun { static func resolve(fallback: CloudFeature) -> CloudRun { CloudRun() } }
+final class CloudTransport: @unchecked Sendable {
+    static let shared = CloudTransport()
+    var isActive: Bool { false }
+    func warm() {}
+    func request(path: String, body: Data, run: CloudRun) -> URLRequest { URLRequest(url: URL(string: "https://invalid.local")!) }
+    func send(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { throw NaviError.other("no Navi account in the probe") }
+}

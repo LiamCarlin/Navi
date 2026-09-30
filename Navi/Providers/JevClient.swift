@@ -455,3 +455,12 @@ final class JevClient: @unchecked Sendable {
         }
     }
 }
+
+extension JevClient {
+    /// A state object as the compact, key-sorted JSON string Jev reads.
+    static func serialize(_ obj: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(obj),
+              let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return "\(obj)" }
+        return String(decoding: data, as: UTF8.self)
+    }
+}

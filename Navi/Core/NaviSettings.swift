@@ -122,7 +122,7 @@ final class NaviSettings: ObservableObject {
             "agentMaxSteps": 40,
             "agentShowLiveOverlay": true,
             "agentDriver": AgentDriver.jevFirst.rawValue,
-            "agentJevConfidenceThreshold": 0.5,
+            "agentJevConfidenceThreshold": 0.4,
             "agentMaxClaudeFallbacks": 6,
             "agentRunInBackground": true,
             "agentRevealWhenDone": true,
@@ -195,6 +195,13 @@ final class NaviSettings: ObservableObject {
         usageClaudeOutputTokens = d.integer(forKey: "usageClaudeOutputTokens")
         usageDigestFrames = d.integer(forKey: "usageDigestFrames")
 
+        // 2026-09-29: the native driver follows typesafe-computer-use, whose stop threshold is
+        // 0.4 (a stop now costs one writer read, not a vision loop). Move the old default once.
+        if !d.bool(forKey: "migratedJevThresholdToTypesafeCU") {
+            if agentJevConfidenceThreshold == 0.5 { agentJevConfidenceThreshold = 0.4 }
+            d.set(true, forKey: "migratedJevThresholdToTypesafeCU")
+        }
+
         // 2026-09-19: default model moved from Opus 5 to Sonnet 5 (cost). Migrate once.
         if !d.bool(forKey: "migratedDefaultModelToSonnet") {
             if answerModel == "claude-opus-5" { answerModel = "claude-sonnet-5" }
@@ -213,8 +220,8 @@ final class NaviSettings: ObservableObject {
     // MARK: Auto mode
 
     /// **Auto mode**: Navi acts on its own. Jev decides every step from what is
-    /// on screen (native apps and any browser alike), Claude is consulted only
-    /// when Jev is stuck, and nothing pauses for approval except actions that
+    /// on screen (native apps and any browser alike), Claude reads the screen only
+    /// when Jev stops, and nothing pauses for approval except actions that
     /// cannot be undone — sending, paying, deleting. Off ⇒ every action asks
     /// first. It is a preset over the agent settings, so the two stay in step.
     var autoMode: Bool {
