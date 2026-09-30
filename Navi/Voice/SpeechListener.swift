@@ -38,6 +38,11 @@ final class SpeechListener {
     /// recognition of proper nouns like "Xcode" or "Obsidian".
     var contextualStrings: [String] = []
 
+    /// Echo cancellation (macOS voice processing): what the Mac plays — a video,
+    /// music, Navi's own answers — is subtracted from the microphone, so the
+    /// recognizer and the pause detector hear only the user. Applied at `start`.
+    var echoCancellation = true
+
     private let engine = AVAudioEngine()
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
@@ -45,6 +50,7 @@ final class SpeechListener {
     private var resultsTask: Task<Void, Never>?
     private var fileTask: Task<Void, Never>?
     private var configObserver: NSObjectProtocol?
+    private var engineStartedAt = Date.distantPast
     private var finalized = ""
     /// The last volatile text shown for the audio that is not yet finalized.
     private var lastVolatile = ""
@@ -225,11 +231,62 @@ final class SpeechListener {
     private func startEngine(analyzerFormat: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
                              onLevel: @escaping @Sendable (Float) -> Void) throws {
         let input = engine.inputNode
+        setVoiceProcessing(echoCancellation)
+        do {
+            try startTap(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+        } catch where input.isVoiceProcessingEnabled {
+            // Some input devices refuse voice processing: listen without it rather than not at all.
+            Log.voice.error("microphone with echo cancellation failed (\(error.localizedDescription, privacy: .public)); retrying without")
+            setVoiceProcessing(false)
+            try startTap(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+        }
+        engineStartedAt = Date()
+        #if DEBUG
+        DebugTrace.log("voice microphone \(input.outputFormat(forBus: 0)) echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off")")
+        #endif
+        Log.voice.info("microphone started, echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off", privacy: .public)")
+        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
+                                                                queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isRunning else { return }
+                // Voice processing builds its aggregate device just after start and
+                // may announce it; only a change that stopped the engine needs a restart.
+                if self.engine.isRunning, Date().timeIntervalSince(self.engineStartedAt) < Self.settleSeconds { return }
+                Log.voice.info("audio configuration changed — restarting the microphone")
+                self.onEvent?(.failed("The audio input device changed"))
+            }
+        }
+    }
+
+    static let settleSeconds: TimeInterval = 2
+
+    /// Turns voice processing on or off (engine stopped). On, it gets both
+    /// halves: the output node joins the graph (the echo reference is what the
+    /// output device plays, every app's audio), and other audio is not ducked —
+    /// a video keeps its volume while the user talks over it.
+    private func setVoiceProcessing(_ on: Bool) {
+        let input = engine.inputNode
+        if input.isVoiceProcessingEnabled != on {
+            do { try input.setVoiceProcessingEnabled(on) } catch {
+                Log.voice.error("couldn't turn echo cancellation \(on ? "on" : "off", privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        guard input.isVoiceProcessingEnabled else { return }
+        input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
+        _ = engine.mainMixerNode   // connects the mixer to the output node
+    }
+
+    private func startTap(analyzerFormat: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
+                          onLevel: @escaping @Sendable (Float) -> Void) throws {
+        let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NaviError.other("No microphone input device is available")
         }
-        let pipe = AudioPipe(input: format, output: analyzerFormat, continuation: continuation, onLevel: onLevel)
+        // With voice processing the input has extra channels (3 on this hardware);
+        // only the first is the cleaned-up voice — the rest would mix the echo back in.
+        let pipe = AudioPipe(input: format, output: analyzerFormat, firstChannelOnly: input.isVoiceProcessingEnabled,
+                             continuation: continuation, onLevel: onLevel)
         self.pipe = pipe
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
             pipe.ingest(buffer)   // audio thread
@@ -237,15 +294,8 @@ final class SpeechListener {
         engine.prepare()
         do { try engine.start() } catch {
             input.removeTap(onBus: 0)
+            self.pipe = nil
             throw NaviError.other("Couldn't start the microphone: \(error.localizedDescription)")
-        }
-        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
-                                                                queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isRunning else { return }
-                Log.voice.info("audio configuration changed — restarting the microphone")
-                self.onEvent?(.failed("The audio input device changed"))
-            }
         }
     }
 
@@ -325,26 +375,44 @@ final class SpeechListener {
 /// on the main actor.
 final class AudioPipe: @unchecked Sendable {
     private let output: AVAudioFormat
+    /// Set when only channel 0 of a multichannel input is wanted (voice processing).
+    private let mono: AVAudioFormat?
     private let converter: AVAudioConverter?
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
     private let onLevel: @Sendable (Float) -> Void
     private var sampler = LevelSampler()
 
-    init(input: AVAudioFormat, output: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
-         onLevel: @escaping @Sendable (Float) -> Void) {
+    init(input: AVAudioFormat, output: AVAudioFormat, firstChannelOnly: Bool = false,
+         continuation: AsyncStream<AnalyzerInput>.Continuation, onLevel: @escaping @Sendable (Float) -> Void) {
         self.output = output
-        self.converter = input == output ? nil : AVAudioConverter(from: input, to: output)
+        let mono = firstChannelOnly && input.channelCount > 1 && input.commonFormat == .pcmFormatFloat32
+            ? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: input.sampleRate, channels: 1, interleaved: false) : nil
+        self.mono = mono
+        let source = mono ?? input
+        self.converter = source == output ? nil : AVAudioConverter(from: source, to: output)
         self.continuation = continuation
         self.onLevel = onLevel
     }
 
     func ingest(_ buffer: AVAudioPCMBuffer) {
+        guard let buffer = firstChannel(of: buffer) else { return }
         if let level = sampler.sample(buffer) { onLevel(level) }
         guard let converted = convert(buffer) else { return }
         continuation.yield(AnalyzerInput(buffer: converted))
     }
 
     func finish() { continuation.finish() }
+
+    /// Channel 0 as a mono buffer when `mono` is set; the buffer itself otherwise.
+    private func firstChannel(of buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let mono else { return buffer }
+        guard let src = buffer.floatChannelData, !buffer.format.isInterleaved,
+              let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength),
+              let dst = out.floatChannelData else { return nil }
+        out.frameLength = buffer.frameLength
+        dst[0].update(from: src[0], count: Int(buffer.frameLength))
+        return out
+    }
 
     /// Resamples a buffer to the analyzer's format (usually 16 kHz mono float).
     private func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

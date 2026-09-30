@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import Speech
 import Testing
 @testable import Navi
 
@@ -620,5 +622,33 @@ struct VoiceCurrentTabTests {
         let lastPeaks = flags.suffix(pattern.count).enumerated().filter { pattern[$0.offset] >= 0.7 }.map(\.element)
         #expect(lastPeaks.allSatisfy { $0 })
         #expect(a.floor < 0.5)
+    }
+}
+
+// MARK: - Audio pipe (echo cancellation channels)
+
+@Suite struct AudioPipeTests {
+    /// Voice processing hands the tap 3 channels; only channel 0 is the cleaned-up
+    /// voice. Mixing the others in would put the video's audio right back.
+    @Test func voiceProcessingKeepsOnlyTheCleanedChannel() async throws {
+        let layout = try #require(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3))
+        let input = AVAudioFormat(standardFormatWithSampleRate: 48000, channelLayout: layout)
+        #expect(input.channelCount == 3)
+        let output = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false))
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        let pipe = AudioPipe(input: input, output: output, firstChannelOnly: true, continuation: continuation, onLevel: { _ in })
+        let buf = try #require(AVAudioPCMBuffer(pcmFormat: input, frameCapacity: 480))
+        buf.frameLength = 480
+        for (ch, v) in [Float(0.25), 0.9, -0.9].enumerated() {
+            for i in 0..<480 { buf.floatChannelData![ch][i] = v }
+        }
+        pipe.ingest(buf)
+        pipe.finish()
+        var got: [AVAudioPCMBuffer] = []
+        for await item in stream { got.append(item.buffer) }
+        let out = try #require(got.first)
+        #expect(out.format.channelCount == 1)
+        #expect(out.frameLength == 480)
+        #expect((0..<480).allSatisfy { out.floatChannelData![0][$0] == 0.25 })
     }
 }
