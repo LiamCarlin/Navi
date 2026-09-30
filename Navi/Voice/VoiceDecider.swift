@@ -27,9 +27,9 @@ enum VoiceDecider {
         var criteria: String {
             switch self {
             case .complete:
-                return "HEAD is a complete instruction or question Navi can act on right now, exactly as said — a follow-up that leans on recent_instructions_already_carried_out for context ('how many people were on board' after a question about Apollo 11) still counts. If FOLLOWING has words, they begin a separate instruction or are unrelated chatter — nothing in FOLLOWING is needed for HEAD. A CONNECTOR of '?', '.' or '!' means the recognizer heard the sentence end there, which almost always makes HEAD complete."
+                return "HEAD is a complete instruction or question Navi can act on right now, exactly as said — a follow-up that leans on recent_instructions_already_carried_out for context ('how many people were on board' after a question about Apollo 11) still counts. If FOLLOWING has words, they begin a separate instruction or are unrelated chatter — nothing in FOLLOWING is needed for HEAD. A CONNECTOR of '?', '.' or '!' means the recognizer heard the sentence end there, which almost always makes HEAD complete. When CONNECTOR says there is no connector word, the split is only a guess at where a new instruction starts ('open chrome' | 'search for cats') — HEAD is complete when it stands on its own and FOLLOWING is a new instruction."
             case .continues:
-                return "HEAD is not finished: FOLLOWING (or words still to come) belongs to the same instruction, e.g. an object, a search query, the text to type, a recipient, or a place to do it. Also pick this when HEAD ends mid-phrase ('open', 'open up the', 'search for', 'and make the title', 'what year did')."
+                return "HEAD is not finished: FOLLOWING (or words still to come) belongs to the same instruction, e.g. an object, a search query, the text to type, a recipient, or a place to do it. Also pick this when HEAD ends mid-phrase ('open', 'open up the', 'search for', 'and make the title', 'what year did'), or when FOLLOWING is the object or text of HEAD rather than a new instruction ('search for how to' | 'open a file')."
             case .notACommand:
                 return "HEAD is not something Navi should act on: thinking aloud, filler, a reaction ('oh nice', 'hmm okay'), talking to someone else, or a fragment that will never become an instruction."
             }
@@ -93,6 +93,9 @@ enum VoiceDecider {
         var isPaused = false
         /// `UserHabits.surfaceHint` for HEAD: the app/site this user really uses for it.
         var userUsuallyUses: String?
+        /// The last words of HEAD begin a longer installed app name ("visual
+        /// studio" → Visual Studio Code): an open can't be acted on early.
+        var headMayContinueAppName = false
     }
 
     struct Input: Sendable {
@@ -108,7 +111,7 @@ enum VoiceDecider {
         let ctx = input.context
         var transcript: [String: Any] = [
             "HEAD": c.head,
-            "CONNECTOR": c.connector,
+            "CONNECTOR": c.soft ? "(no connector word: FOLLOWING starts with a verb, maybe a new instruction)" : c.connector,
             "FOLLOWING": c.following,
             "silence_ms_since_last_word": input.silenceMs,
             "recent_instructions_already_carried_out": ctx.recentDone,
@@ -231,6 +234,9 @@ enum VoiceDecider {
         case merge
         /// The head is noise: skip it.
         case drop(reason: String)
+        /// The user stopped talking long ago and the head still isn't an
+        /// instruction: clear it and say so, instead of waiting for good.
+        case giveUp(reason: String)
     }
 
     // Thresholds. Complete below `commitP` still commits once the user has
@@ -267,6 +273,15 @@ enum VoiceDecider {
     static let settleMs = 650
     static let settleFastMs = 400
     static let settleFastConfidence = 0.8
+    /// "open chrome" with nothing after it: opening an app is right whatever
+    /// the user adds, so only a short pause is needed (see `isClearOpen`).
+    static let openSettleMs = 250
+    static let clearOpenP = 0.7
+    /// A soft split (no connector word) needs a surer "complete" than a spoken "and".
+    static let softCommitP = 0.6
+    /// Silence after which a head that is still not an instruction is cleared.
+    /// Every wait before this retries; nothing the user said hangs for good.
+    static let giveUpMs = 6000
 
     static func decide(_ v: Verdict, input: Input) -> Decision {
         let c = input.clause
@@ -286,20 +301,22 @@ enum VoiceDecider {
             if !c.following.isEmpty || silence >= dropAfterMs { return .drop(reason: "not an instruction (\(pct(pNoise)))") }
             return .wait(reason: "sounds like chatter, waiting", retryAfterMs: dropAfterMs - silence)
         }
-        // Complete.
-        if pComplete >= commitP, pComplete >= pContinues {
+        // Complete. A guessed split (no connector word) must be surer than a spoken one.
+        let needComplete = c.soft ? softCommitP : commitP
+        if pComplete >= needComplete, pComplete >= pContinues {
             if bareConnector, silence < bareConnectorWaitMs {
                 return .wait(reason: "connector with nothing after it yet", retryAfterMs: bareConnectorWaitMs - silence)
             }
             if !c.hasBoundary {
                 // Nothing marks the end yet: let the pause prove it (or a very sure Jev after a shorter one).
-                let need = b.confidence >= settleFastConfidence ? settleFastMs : settleMs
+                let need = isClearOpen(v, input: input) ? openSettleMs
+                    : b.confidence >= settleFastConfidence ? settleFastMs : settleMs
                 if silence < need { return .wait(reason: "…", retryAfterMs: need - silence) }
             }
             return act(v, input: input)
         }
         // Continues: merge a false boundary, otherwise keep listening — unless the user has stopped talking.
-        if pContinues >= pComplete || pComplete < commitP {
+        if pContinues >= pComplete || pComplete < needComplete {
             if !c.following.isEmpty { return .merge }
             let sentenceEnded = Self.isSentenceMark(c.connector) && c.connector != ","
             if sentenceEnded, silence >= sentencePauseMs { return act(v, input: input) }
@@ -307,15 +324,43 @@ enum VoiceDecider {
             if pNoise > pComplete, pNoise >= 0.4, silence >= dropAfterMs { return .drop(reason: "more likely chatter (\(pct(pNoise)))") }
             if silence >= longPauseMs, pComplete >= commitOnLongPauseP { return act(v, input: input) }
             if silence >= pauseMs, pComplete >= commitOnPauseP { return act(v, input: input) }
-            let retry: Int?
+            if silence >= giveUpMs { return .giveUp(reason: "no instruction after \(silence / 1000) s of silence (\(pct(pContinues)) continues)") }
+            let retry: Int
             if sentenceEnded { retry = max(100, sentencePauseMs - silence) }
             else if pComplete >= commitOnPauseP { retry = max(100, pauseMs - silence) }
             else if pComplete >= commitOnLongPauseP { retry = max(100, longPauseMs - silence) }
-            else { retry = nil }
+            else { retry = max(100, giveUpMs - silence) }
             return .wait(reason: "waiting for the rest (\(pct(pContinues)) continues)", retryAfterMs: retry)
         }
         return .wait(reason: "undecided", retryAfterMs: pauseMs)
     }
+
+    /// "open chrome": Jev is sure it only opens an app, the head ends with that
+    /// app's name, and no longer app name starts with those words. Whatever the
+    /// user says next, opening that app was right — act after a short pause.
+    static func isClearOpen(_ v: Verdict, input: Input) -> Bool {
+        guard !input.context.headMayContinueAppName, let kind = v.kind, kind.choice == Kind.openApp.rawValue,
+              kind.p(Kind.openApp.rawValue) >= clearOpenP,
+              let app = appChoice(v, input: input), app.score >= 0.9, (v.appTarget?.confidence ?? 1) >= clearOpenP else { return false }
+        let head = normalizedGoal(input.clause.head).lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .filter { !["app", "application", "please", "now"].contains($0) }
+            .joined(separator: " ")
+        return head.hasSuffix(app.phrase.lowercased()) || head.hasSuffix(app.entry.name.lowercased())
+    }
+
+    /// Decisions that need no Jev call: "stop" while Navi is working, "yes"
+    /// while it waits for approval. The user wants these the instant they say them.
+    static func instantDecision(_ input: Input) -> Decision? {
+        let text = normalizedGoal(input.clause.head).lowercased()
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+        if input.context.busyWith != nil, instantStops.contains(text) { return .commit(.control(.stop, text: text)) }
+        if input.context.awaitingApproval != nil, instantConfirms.contains(text) { return .commit(.control(.confirm, text: text)) }
+        return nil
+    }
+
+    static let instantStops: Set<String> = ["stop", "stop it", "stop that", "stop stop", "cancel", "cancel that", "never mind", "nevermind"]
+    static let instantConfirms: Set<String> = ["yes", "yeah", "yep", "yes please", "go ahead", "do it", "confirm"]
 
     /// No Jev (no key, timeout): connectors and pauses decide, everything is a task.
     static func heuristicDecision(_ input: Input) -> Decision {

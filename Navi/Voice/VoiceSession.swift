@@ -80,10 +80,15 @@ final class VoiceSession: ObservableObject {
     // still talking; the microphone level does. A short real pause also
     // triggers a recognizer flush so the last words arrive right away.
     private var lastLoudAt = Date.distantPast
-    private var noiseFloor: Float = 0.06
+    private var activityDetector = SpeechActivity()
     private var heardSpeech = false
     private var flushTask: Task<Void, Never>?
     private var spokeSinceFlush = false
+    /// Jev's last verdict for a head it called complete but that still had to
+    /// wait for the pause: when the pause arrives with the words unchanged, it
+    /// is decided on again locally instead of paying a second round trip.
+    private var settled: (key: String, verdict: VoiceDecider.Verdict, at: Date)?
+    private var lastWarmAt = Date.distantPast
 
     static let maxCommittedShown = 3
     static let jevTimeoutMs = 1800
@@ -95,8 +100,10 @@ final class VoiceSession: ObservableObject {
     /// While paused, only the last few words are kept (enough for "resume").
     static let pausedTailWords = 6
     static let flushAfterMs = 350
-    /// Level above the running noise floor that counts as speech.
-    static let speechAboveFloor: Float = 0.16
+    /// A settled verdict is reused for this long.
+    static let settledReuseMs = 3000
+    /// Keep Jev's connection warm while listening: a cold call costs ~2×.
+    static let keepWarmSeconds: TimeInterval = 20
 
     init(services: NaviServices) {
         self.services = services
@@ -119,7 +126,8 @@ final class VoiceSession: ObservableObject {
         committed = []; pendingText = ""; lastOutcome = nil; answerText = ""; isAnswering = false; activity = nil; approval = nil
         jevStatus = ""
         restarts = 0
-        lastLoudAt = .distantPast; heardSpeech = false; noiseFloor = 0.06; spokeSinceFlush = false
+        lastLoudAt = .distantPast; heardSpeech = false; activityDetector.reset(); spokeSinceFlush = false
+        settled = nil
         flushTask?.cancel(); flushTask = nil
         waitedForText = nil
         executor.foreground = settings.voiceBringsAppsForward
@@ -246,9 +254,7 @@ final class VoiceSession: ObservableObject {
     // MARK: Acoustic pauses
 
     private func heard(level l: Float) {
-        // Track the quiet level slowly (fast down, slow up) so the gate follows the room.
-        noiseFloor = l < noiseFloor ? noiseFloor * 0.85 + l * 0.15 : min(0.4, noiseFloor + 0.0004)
-        if l >= noiseFloor + Self.speechAboveFloor {
+        if activityDetector.isSpeech(l, at: ProcessInfo.processInfo.systemUptime) {
             lastLoudAt = Date()
             heardSpeech = true
             spokeSinceFlush = true
@@ -336,10 +342,15 @@ final class VoiceSession: ObservableObject {
     }
 
     private func watchdogTick() {
+        if phase == .listening, Date().timeIntervalSince(lastWarmAt) >= Self.keepWarmSeconds {
+            lastWarmAt = Date()
+            services.jev.warm()   // no-op while the connection is in use
+        }
         guard phase == .listening, decideTask == nil, let clause = segmenter.pending() else { return }
         let text = segmenter.pendingText
-        if let waited = waitedForText, waited == text { return }
         let age = Int(Date().timeIntervalSince(segmenter.lastChangeAt) * 1000)
+        // "Wait for more words" is honoured only until the give-up point.
+        if let waited = waitedForText, waited == text, age < VoiceDecider.giveUpMs { return }
         guard age >= Self.watchdogStaleMs else { return }
         Log.voice.warning("watchdog: “\(clause.head, privacy: .public)” had no decision for \(age) ms — deciding now")
         #if DEBUG
@@ -359,9 +370,22 @@ final class VoiceSession: ObservableObject {
             return
         }
         let silence = silenceMs
-        let input = VoiceDecider.Input(clause: clause, silenceMs: silence, context: context(for: clause))
+        var input = VoiceDecider.Input(clause: clause, silenceMs: silence, context: context(for: clause))
         var decision: VoiceDecider.Decision
-        if services.jev.isConfigured {
+        let key = [clause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
+        if let instant = VoiceDecider.instantDecision(input) {
+            jevStatus = "Instant · no Jev call"
+            decision = instant
+            #if DEBUG
+            DebugTrace.log("voice decide | head=“\(clause.head)” instant ⇒ \(decision)")
+            #endif
+        } else if let s = settled, s.key == key, Date().timeIntervalSince(s.at) * 1000 < Double(Self.settledReuseMs) {
+            // Jev already called these exact words complete; only the pause was missing.
+            decision = VoiceDecider.decide(s.verdict, input: input)
+            #if DEBUG
+            DebugTrace.log("voice decide | head=“\(clause.head)” reused verdict silence=\(silence)ms ⇒ \(decision)")
+            #endif
+        } else if services.jev.isConfigured {
             inflightHead = clause.head
             let jev = services.jev
             let state = JevClient.JSONValue(any: VoiceDecider.stateJSON(input))
@@ -375,13 +399,18 @@ final class VoiceSession: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
                 let v = VoiceDecider.verdict(from: resp)
+                // The pause kept growing during the round trip: judge it as it is now.
+                input.silenceMs = silenceMs
                 if let b = v.boundary {
                     jevStatus = "Jev · \(b.choice) \(Int(b.confidence * 100))%" + (v.kind.map { " · \($0.choice)" } ?? "") + " · \(v.latencyMs) ms"
                 }
                 decision = VoiceDecider.decide(v, input: input)
+                if case .wait = decision, let b = v.boundary, b.p(VoiceDecider.Boundary.complete.rawValue) >= VoiceDecider.commitP {
+                    settled = (key, v, Date())
+                }
                 Log.voice.debug("decide “\(clause.head, privacy: .public)” | “\(clause.following.prefix(40), privacy: .public)” → \(String(describing: decision), privacy: .public)")
                 #if DEBUG
-                DebugTrace.log("voice decide | head=“\(clause.head)” conn=“\(clause.connector)” following=“\(clause.following)” silence=\(silence)ms → \(v.boundary?.choice ?? "?") \(Int((v.boundary?.confidence ?? 0) * 100))% kind=\(v.kind?.choice ?? "?") \(v.latencyMs)ms ⇒ \(decision)")
+                DebugTrace.log("voice decide | head=“\(clause.head)” conn=“\(clause.soft ? "(soft)" : clause.connector)” following=“\(clause.following)” silence=\(silence)→\(input.silenceMs)ms → \(v.boundary?.choice ?? "?") \(Int((v.boundary?.confidence ?? 0) * 100))% kind=\(v.kind?.choice ?? "?") \(v.latencyMs)ms ⇒ \(decision)")
                 #endif
             } catch {
                 guard !Task.isCancelled else { return }
@@ -407,6 +436,7 @@ final class VoiceSession: ObservableObject {
 
     private func apply(_ decision: VoiceDecider.Decision, to clause: UtteranceSegmenter.Clause) {
         waitedForText = nil
+        if case .wait = decision {} else { settled = nil }
         switch decision {
         case .commit(let command):
             #if DEBUG
@@ -443,6 +473,16 @@ final class VoiceSession: ObservableObject {
             segmenter.drop(clause)
             pendingText = segmenter.pendingText
             hint = ""
+            if segmenter.pending() != nil { scheduleDecision(after: 60) }
+        case .giveUp(let reason):
+            Log.voice.info("give up on “\(clause.head, privacy: .public)”: \(reason, privacy: .public)")
+            #if DEBUG
+            DebugTrace.log("voice give up | “\(clause.head)” — \(reason)")
+            #endif
+            segmenter.drop(clause)
+            pendingText = segmenter.pendingText
+            hint = ""
+            showOutcome("Didn’t catch an instruction in “\(clause.head)” — say it again", ok: false)
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
         case .wait(let reason, let retry):
             hint = reason
@@ -556,6 +596,7 @@ final class VoiceSession: ObservableObject {
         ctx.appCandidates = VoiceAppMatcher.candidates(in: clause.head, index: AppIndex.shared, running: AppIndex.runningBundleIDs())
         ctx.isPaused = phase == .paused
         ctx.userUsuallyUses = UserHabits.current?.cachedProfile().flatMap { UserHabits.surfaceHint(task: clause.head, profile: $0) }
+        ctx.headMayContinueAppName = !clause.hasBoundary && VoiceAppMatcher.mayContinueAppName(clause.head, index: AppIndex.shared)
         return ctx
     }
 
