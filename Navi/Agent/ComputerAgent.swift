@@ -389,6 +389,15 @@ final class AgentRun: @unchecked Sendable {
                                            isRunning: { running.contains($0) },
                                            usage: { s in profile.map { UserHabits.usage(of: s, in: $0).app?.screens ?? 0 } ?? 0 }) else { return nil }
         if let f = frontmost.bundleID, hit.skill.bundleIDs.contains(f) { return nil }
+        // "text dhvan …" goes where the user actually talks to Dhvan (WhatsApp), not the
+        // default texting app — unless the task names an app.
+        if AppSkills.mentioned(in: task) == nil, let chat = UserKnowledge.liveChatApp(for: task), chat != hit.bundleID,
+           let s = AppSkills.skill(bundleID: hit.bundleID), UserHabits.kinds.first(where: { $0.kind == "texting" })?.skills.contains(s.name) == true,
+           NSWorkspace.shared.urlForApplication(withBundleIdentifier: chat) != nil {
+            if let f = frontmost.bundleID, f == chat { return nil }
+            Log.agent.info("UserKnowledge: the person is reached in \(chat, privacy: .public)")
+            return chat
+        }
         return hit.bundleID
     }
 
@@ -698,7 +707,11 @@ final class AgentRun: @unchecked Sendable {
         where !appCandidates.contains(where: { $0.lowercased() == s.name.lowercased() }) && !(snapshot.bundleID.map(s.bundleIDs.contains) ?? false) {
             appCandidates.append(s.name)
         }
-        let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        var urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        // What the task names in the user's own life ("the HCI notes" → that Google Doc):
+        // in Jev's state every step, and its page as an OPEN_URL target.
+        let userContext = UserKnowledge.context(for: task)
+        for u in UserKnowledge.liveURLCandidates(for: task) where !urlCandidates.contains(u) { urlCandidates.append(u) }
         /// Does the goal ask for an effect (create/send/type…) rather than information?
         let effectGoal = !Self.isLookup(task)
         /// Does it ask for typing? Then a TYPE_TEXT Jev is only fairly sure of stays with Jev.
@@ -763,7 +776,7 @@ final class AgentRun: @unchecked Sendable {
             var png: Data?
             if visionAvailable, let (small, _) = try? await captureDownscaled() { png = ScreenCapture.pngData(small) }
             var screenInput = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot, history: [],
-                                                  conversation: context.conversation)
+                                                  conversation: context.conversation, userContext: userContext)
             screenInput.playbook = AppSkills.skill(bundleID: snapshot.bundleID, url: snapshot.url).map { AppSkills.playbook(for: $0, goal: task) }
             let screen = JevDriver.stateJSON(for: screenInput)
             let (advice, ms) = try await JevCoach.ask(claude: claude, model: config.model, goal: task, screen: screen,
@@ -821,7 +834,7 @@ final class AgentRun: @unchecked Sendable {
             let actionsTaken = history.filter { $0.kind != "declined" && $0.kind != "coach" }.count
             var input = JevDriver.StepInput(task: task, step: step, maxSteps: config.maxSteps, snapshot: snapshot,
                                             history: history, appCandidates: appCandidates, urlCandidates: urlCandidates,
-                                            guidance: guidance, conversation: context.conversation)
+                                            guidance: guidance, conversation: context.conversation, userContext: userContext)
             input.playbook = skill.map { AppSkills.playbook(for: $0, goal: task) }
             input.experience = AgentExperience.shared.recall(bundleID: snapshot.bundleID, goal: task)
             input.keyCombos = AppSkills.keyCombos(for: skill)
@@ -995,7 +1008,10 @@ final class AgentRun: @unchecked Sendable {
                 if let field = recipientField, let typed = text {
                     handle.emit(.status("Waiting for the contact suggestion for ‘\(typed)’"))
                     let pid = field.pid > 0 ? field.pid : snapshot.pid
-                    let recent = snapshot.visibleText + "\n" + snapshot.elements.map(\.label).joined(separator: "\n")
+                    // The full names of people the task names ("mikey" → Mikey Ku, from screen memory)
+                    // count as recently seen: that suggestion wins over another Mikey or a group.
+                    let known = userContext.filter { $0["type"] as? String == "person" }.compactMap { $0["name"] as? String }
+                    let recent = ([snapshot.visibleText] + snapshot.elements.map(\.label) + known).joined(separator: "\n")
                     func resolve(_ name: String) async -> RecipientPicker.Outcome {
                         await RecipientPicker.resolve(typed: name, pid: pid, field: field.frame, baseline: recipientBaseline,
                                                       recent: recent, executor: executor) { [self] in !isCancelled }

@@ -104,6 +104,10 @@ struct JevDriver: Sendable {
     ]
 
     static let thresholdTaskComplete = 0.8
+    /// How Jev (and the browser runner) should read `state.user_context` (`UserKnowledge`).
+    static let userContextNote = "People, projects and documents the goal names, from this user's own screen history: "
+        + "a person's full name and the app they talk in, a document's page, the usual workflow. "
+        + "Use them to pick the right contact, conversation, document or page; never type this text."
     static let historyInState = 10
     /// BLOCKED below this confidence (or with WAIT ≥ `tentativeBlockedWaitShare`)
     /// gets a wait and a fresh snapshot before it counts.
@@ -148,6 +152,9 @@ struct JevDriver: Sendable {
         /// Earlier instructions and their outcomes (`QueryContext.conversation`),
         /// so "the text", "him", "that one" in the goal resolve without a round trip.
         var conversation: [String] = []
+        /// `UserKnowledge.context`: the people, projects and documents the goal names,
+        /// as this user's screen memory knows them (full name, where they live, the page).
+        var userContext: [[String: Any]] = []
     }
 
     /// Everything one Jev call needs, plus the id sets used to validate the answer.
@@ -200,6 +207,9 @@ struct JevDriver: Sendable {
             progress["note"] = "DONE was rejected once because nothing had been done yet; choose DONE again only if the result is already visible."
         }
         state["progress"] = progress
+        if !input.userContext.isEmpty {
+            state["user_context"] = ["note": JevDriver.userContextNote, "things": input.userContext]
+        }
         if !input.conversation.isEmpty {
             state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that', 'now send it').",
                                      "earlier": input.conversation]

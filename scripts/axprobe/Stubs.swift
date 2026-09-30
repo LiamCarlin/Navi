@@ -26,3 +26,16 @@ final class ClaudeClient { var isConfigured = false; func complete(model: String
 enum AgentRun { static func isLookup(_ g: String) -> Bool { ["find","what","look up","search","how","check"].contains { g.lowercased().hasPrefix($0) } } }
 enum UltrafastBridge { static func searchQuery(for task: String) -> String { task } }
 enum ApprovalMode: String { case alwaysAsk, askForRisky, autonomous }
+// Navi's cloud (signed-in accounts) is never used by the probe: Jev is called with the env key.
+enum CloudFeature: String { case route, agent, voice, memory, answer }
+struct CloudRun: Sendable {
+    var feature: CloudFeature
+    static func resolve(fallback: CloudFeature) -> CloudRun { CloudRun(feature: fallback) }
+}
+final class CloudTransport: @unchecked Sendable {
+    static let shared = CloudTransport()
+    var isActive: Bool { false }
+    func request(path: String, body: Data, run: CloudRun) -> URLRequest { URLRequest(url: URL(string: "https://invalid.invalid")!) }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { throw NaviError.other("cloud unavailable in the probe") }
+    func warm() {}
+}

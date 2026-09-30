@@ -194,7 +194,11 @@ final class Digester: @unchecked Sendable {
     "key_facts": [≤ 6 concrete facts worth remembering], "links": [URLs seen]}
     Rules: never invent details not present in the input; never include passwords, codes or secrets; \
     prefer proper nouns for entities; keep topic names reusable across days (e.g. "swift concurrency", \
-    not "the thing I read").
+    not "the thing I read"). Entities are how Navi later finds things for the user, so name them the way \
+    they are named on screen, the same way every time: a person by their full name when shown (the \
+    contact or sender name, not an email address), a document or file by its exact title, a project or \
+    course by its code or name ("MTH3199", "Baja SAE"); never list the user themself (the owner of this \
+    Mac, whose own name appears on their account) as a person.
     Privacy (strict — applies to title, summary, key_facts, entities, topics and links): never copy \
     personal identifiers from the screen: dates of birth or ages, home/street addresses, home town, \
     city + ZIP, phone numbers, email addresses typed into forms, SSNs or other government/ID numbers, \

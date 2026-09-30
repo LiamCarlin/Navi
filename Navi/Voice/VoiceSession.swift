@@ -136,6 +136,7 @@ final class VoiceSession: ObservableObject {
         services.jev.warm()
         services.claude.warm()
         listener.contextualStrings = ["Navi", "Jev"] + AppIndex.shared.entries.prefix(300).map(\.name)
+        listener.echoCancellation = settings.voiceEchoCancellation
         listener.onEvent = { [weak self] ev in self?.handle(ev) }
         startTask?.cancel()
         startTask = Task { [weak self] in

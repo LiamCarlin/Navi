@@ -261,6 +261,13 @@ final class VaultWriter: @unchecked Sendable {
         let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.dateFormat = "HH:mm"; return f.string(from: d)
     }
 
+    // MARK: Generated notes
+
+    /// Replaces a note Navi owns outright (e.g. `Navi/How you work.md`), relative to the vault.
+    func writeGenerated(_ relativePath: String, _ text: String) throws {
+        try queue.sync { try atomicWrite(root.appendingPathComponent(relativePath), text) }
+    }
+
     // MARK: File helpers
 
     private func atomicWrite(_ url: URL, _ text: String) throws {
