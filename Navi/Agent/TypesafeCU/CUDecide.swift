@@ -113,6 +113,9 @@ enum CUDecide {
         var playbook: [String: Any]?
         var experience: [String] = []
         var conversation: [String] = []
+        /// Integration hook for `UserKnowledge` (branch claude/navi-autonomous-context): what this
+        /// user's screen memory says about the people/documents the goal names → `user_context`.
+        var userContext: [String: Any]?
         var today = CUFacts.Day.from(Date())
         var now: [String: Any] = CUFacts.nowContext()
     }
@@ -168,6 +171,7 @@ enum CUDecide {
             state["offscreen_controls"] = screen.offscreen.enumerated().map { ["k": $0.offset, "role": CURoles.word($0.element.role), "label": $0.element.label] }
         }
         if let p = input.playbook { state["playbook"] = p }
+        if let u = input.userContext, !u.isEmpty { state["user_context"] = u }
         if !input.experience.isEmpty { state["experience"] = input.experience }
         if !input.conversation.isEmpty {
             state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that').",
