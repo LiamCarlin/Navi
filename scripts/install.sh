@@ -1,8 +1,10 @@
 #!/bin/zsh
 # Build Navi (Release) and install it to /Applications/Navi.app.
-# Usage: scripts/install.sh [--no-launch] [--release]
+# Usage: scripts/install.sh [--no-launch] [--release] [--force]
 #   --release   go through scripts/release.sh --dry-run (deep-signed, bundled runtime, DMG)
 #               and install the app out of that DMG — exercises exactly what ships.
+#   --force     install even if /Applications has commits this checkout lacks (a downgrade).
+# One install runs at a time across every checkout and worktree; others wait (install-guard.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,10 +12,12 @@ DD="build/DerivedData-release"
 DEST="/Applications/Navi.app"
 LAUNCH=1
 RELEASE=0
+FORCE=0
 for a in "$@"; do
   case "$a" in
     --no-launch) LAUNCH=0 ;;
     --release) RELEASE=1 ;;
+    --force) FORCE=1 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
@@ -21,9 +25,18 @@ done
 command -v xcodegen >/dev/null || { echo "xcodegen not found: brew install xcodegen"; exit 1; }
 command -v xcodebuild >/dev/null || { echo "xcodebuild not found: install Xcode 26"; exit 1; }
 
+source scripts/install-guard.sh
+
 MOUNT=""
-cleanup() { [[ -n "$MOUNT" ]] && hdiutil detach "$MOUNT" -quiet -force 2>/dev/null || true; }
+cleanup() {
+  [[ -n "$MOUNT" ]] && hdiutil detach "$MOUNT" -quiet -force 2>/dev/null || true
+  install_lock_release
+}
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+install_lock_acquire
+(( FORCE )) || install_check_newer
 if (( RELEASE )); then
   echo "▸ Release pipeline (dry run)…"
   scripts/release.sh --dry-run
@@ -55,7 +68,8 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DEST/Contents/Info.plist" 2>/dev/null || echo "?")
 RUNTIME="repo checkout (Debug-style)"
 [[ -d "$DEST/Contents/Resources/browser-runtime" ]] && RUNTIME="bundled ($(du -sh "$DEST/Contents/Resources/browser-runtime" | awk '{print $1}'))"
-echo "✓ Installed Navi $VERSION at $DEST · browser runtime: $RUNTIME"
+install_record
+echo "✓ Installed Navi $VERSION at $DEST · browser runtime: $RUNTIME · $(_navi_head_desc)"
 
 if (( LAUNCH )); then
   echo "▸ Launching…"

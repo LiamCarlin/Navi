@@ -26,6 +26,12 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
   SwiftUI / Vision / ScreenCaptureKit / SQLite3 (C API). Keep it dependency-free.
 - When building concurrently with other agents, pass a private derived-data
   dir: `scripts/build.sh Debug build/DerivedData-<yourname>`.
+- `scripts/install.sh` is guarded (`scripts/install-guard.sh`, test:
+  `scripts/dev/test-install-guard.sh`): one install at a time across every checkout
+  and worktree (others wait and say who holds the lock), and it refuses to install a
+  checkout that lacks commits already in /Applications (merge origin/main first;
+  `--force` only to deliberately downgrade, e.g. after installing a test branch that
+  was dropped). State: `~/Library/Caches/com.liamcarlin.navi.install/`.
 
 ## Architecture (module → directory)
 
