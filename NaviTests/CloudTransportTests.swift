@@ -307,6 +307,34 @@ struct CloudErrorTests {
         #expect(paths == ["/v1/me", "/auth/refresh", "/v1/me"])
     }
 
+    @Test func concurrent401sShareOneRefresh() async throws {
+        let host = "refresh-many.test"
+        StubProtocol.install(host: host) { req in
+            switch req.url!.path {
+            case "/auth/refresh":
+                return StubProtocol.json(200, ["accessToken": "acc-2", "refreshToken": "ref-2"])
+            case "/v1/me":
+                if req.value(forHTTPHeaderField: "Authorization") == "Bearer acc-2" {
+                    return StubProtocol.json(200, ["user": ["id": "u", "email": "a@b.c"], "tier": "pro",
+                                                   "entitlements": ["answers": true, "tasks": true, "voice": true],
+                                                   "quotas": [:], "usage": [:]])
+                }
+                return StubProtocol.json(401, ["error": "unauthenticated"])
+            default:
+                return StubProtocol.json(404, [:])
+            }
+        }
+        let cloud = transport(host: host)
+        // Whether a 401 lands while the refresh is in flight or just after it
+        // finished, every request retries on the one new token.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<6 { group.addTask { _ = try await cloud.me() } }
+            try await group.waitForAll()
+        }
+        let refreshes = StubProtocol.requests(host: host).filter { $0.url!.path == "/auth/refresh" }
+        #expect(refreshes.count == 1)
+    }
+
     @Test func failedRefreshSignsOut() async {
         let host = "signout.test"
         StubProtocol.install(host: host) { req in

@@ -35,6 +35,11 @@ final class SchedulerModel: ObservableObject {
     @Published private(set) var calendarAccess: Permissions.State
     @Published private(set) var contactsAccess: Permissions.State
     @Published private(set) var calendarColor: NSColor? = nil
+    /// Where this meeting will be booked: Settings → Calendars' choice, or one picked on the card.
+    @Published private(set) var bookingCalendarID: String? = CalendarPreferences.bookingCalendarID
+    @Published private(set) var bookingCalendar: CalendarInfo? = nil
+    /// Every calendar that can take the meeting, across accounts (the card's picker).
+    @Published private(set) var writableCalendars: [CalendarInfo] = []
     @Published private(set) var booking: Booking = .idle
     @Published private(set) var exampleNames: [String] = []
     @Published var videoOn: Bool
@@ -272,6 +277,15 @@ final class SchedulerModel: ObservableObject {
 
     // MARK: Booking
 
+    /// Book this one in another calendar (Settings → Calendars sets the usual one).
+    func selectBookingCalendar(_ id: String) {
+        bookingCalendarID = id
+        bookingCalendar = writableCalendars.first { $0.id == id }
+        calendarColor = bookingCalendar?.color
+        loadedKey = nil   // a work account may pick guests' work emails
+        reload()
+    }
+
     func book() {
         guard let start, let end, canBook else {
             if calendarAccess != .granted { requestCalendarAccess() }
@@ -282,10 +296,12 @@ final class SchedulerModel: ObservableObject {
         let guests = people
         let link = videoOn ? Self.videoLink : ""
         let store = self.store
+        let calendarID = bookingCalendarID
         Task {
             do {
                 let result = try await store.book(title: title, start: start, end: end,
-                                                  videoLink: link.isEmpty ? nil : link, guests: guests)
+                                                  videoLink: link.isEmpty ? nil : link, guests: guests,
+                                                  calendarID: calendarID)
                 let when = start.formatted(.dateTime.weekday(.abbreviated).hour().minute())
                 if let error = result.inviteError {
                     Log.app.error("scheduler: booked without guests: \(error, privacy: .public)")
@@ -318,26 +334,30 @@ final class SchedulerModel: ObservableObject {
         let calendar = self.calendar
         let directory = self.directory
         let store = self.store
+        let calendarID = bookingCalendarID
         let wantExamples = exampleNames.isEmpty && !request.hasDetails
         loadTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(140))
             guard !Task.isCancelled else { return }
-            let loaded = await Task.detached(priority: .userInitiated) { () -> (SchedulePerson?, [SchedulePerson], DayAvailability, (title: String, color: NSColor)?, [String]) in
-                let domain = store.accountDomain
+            let loaded = await Task.detached(priority: .userInitiated) { () -> (SchedulePerson?, [SchedulePerson], DayAvailability, CalendarInfo?, [String], [CalendarInfo]) in
+                let domain = store.accountDomain(bookingIn: calendarID)
                 let people = typed.map { directory.person(for: $0, preferredDomain: domain) }
                 // The same contact typed twice ("jil and jilles") is one guest.
                 var seen = Set<String>()
                 let unique = people.filter { seen.insert($0.id).inserted }
                 let availability = store.availability(on: day, for: unique, calendar: calendar)
                 let examples = wantExamples ? directory.exampleNames() : []
-                return (directory.me(), unique, availability, store.defaultCalendar, examples)
+                let writable = store.accounts().flatMap(\.calendars).filter(\.isWritable)
+                return (directory.me(), unique, availability, store.bookingTarget(calendarID), examples, writable)
             }.value
             guard let self, !Task.isCancelled else { return }
             self.me = loaded.0
             self.people = loaded.1
             self.myBusy = loaded.2.mine
             self.availability = loaded.2.others
+            self.bookingCalendar = loaded.3
             self.calendarColor = loaded.3?.color
+            self.writableCalendars = loaded.5
             if !loaded.4.isEmpty { self.exampleNames = loaded.4 }
             self.isLoading = false
             self.recomputeSlots()

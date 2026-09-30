@@ -38,6 +38,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
 | `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
+| `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
@@ -163,6 +164,27 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     which sends the invites. ↑↓ times, ⌘[ ⌘] day, ⌘- ⌘= length, esc back to results. Video
     toggle adds the user's own meeting link (`schedulerVideoLink`, pasted once in the card).
     `navi://run` never books by itself. Needs Calendar (full access) + Contacts; the card asks.
+    **Any calendar** (`Schedule/CalendarAccounts`, Settings → Calendars): no Google/Microsoft
+    sign-in in Navi — accounts added in System Settings › Internet Accounts (Google, Microsoft
+    Exchange for Outlook/M365/Outlook.com, iCloud) reach EventKit, and so the card. The page lists
+    them by account (`CalendarAccountKind.classify`), a "Busy" toggle per calendar
+    (`schedulerBusyCalendars`; default = own writable calendars, never subscriptions), "Book new
+    meetings in" (`schedulerBookingCalendar`, else Calendar's default; the card's calendar menu
+    overrides per meeting, and the account's domain picks guests' work emails), "Open Internet
+    Accounts", and "Subscribe" for a published ICS/webcal link (Outlook web › Publish, Google ›
+    Secret iCal address) — Calendar does the subscribing. Reminder lists show their account when
+    two share a name.
+  - **Reminder card** (`Remind`, `Panel/Views/ReminderCardView`): "remind me to call mom tomorrow
+    at 5", "todo: renew passport next week", "don't forget…", "set a reminder…" drop a card under
+    the bar (`Mode.remind`; it wins over the scheduler). `ReminderParser` reuses
+    `ScheduleParser.parseWhen` for days/times (lengths stay in the task: "walk for 30 min") and adds
+    "in 45 min / 2 days", repeats ("every sunday morning", "daily", "weekdays", "every month") and
+    "urgent" → high priority. Due: a day alone is 9 AM, morning/afternoon/evening 9/2/6, a passed
+    time means tomorrow. Chips: In 1 hour · This evening/Tonight · Tomorrow · This weekend · Next
+    week · No date; repeat menu, priority, list menu (Reminders lists), "Also due" that day. ⏎ adds
+    (EventKit, with an alert at the due time); ↑↓ steps the chips. Jev's `wants_reminder` noul
+    opens it for phrasings without an opener ("buy milk tomorrow"), competing with
+    `wants_to_schedule`. Needs Reminders (full access); the card asks.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,
@@ -171,13 +193,23 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `navi://voice`) and the island drops out of the notch. Apple's on-device
     `SpeechTranscriber` streams volatile words (~1 s windows; the session flushes it
     after ~350 ms of acoustic silence); `UtteranceSegmenter` splits the stream at
-    "and"/"then"/punctuation into HEAD + FOLLOWING; one Jev call per candidate
+    "and"/"then"/punctuation into HEAD + FOLLOWING — and proposes a *soft* split
+    before an imperative verb with no connector ("open chrome | search for cats";
+    not after "to"/"you"/"how", never inside dictated text; Jev must be ≥ 60 %
+    complete or it merges); one Jev call per candidate
     answers `boundary` (complete / continues / not_a_command) plus speculative heads
     `kind` (open_app, do_in_app, browse_or_search, answer, system_setting, control_navi),
     `app_target` (fuzzy matches from `VoiceAppMatcher`), `surface`, `start_from`,
     `is_risky`, `continues_previous`, `wants_memory`. `VoiceDecider.decide` is pure:
     following words or a sentence mark ⇒ act now; a boundary-less head waits ~650 ms
-    of real silence (400 ms when Jev ≥ 80 %); a bare "and" waits for a word. Commands
+    of real silence (400 ms when Jev ≥ 80 %, 250 ms for a clear "open <app>" that no
+    longer app name extends); a bare "and" waits for a word. Every wait retries: a head
+    still not an instruction after 6 s of silence is cleared with "Didn’t catch…"
+    (`Decision.giveUp`), never left hanging. A verdict that was complete-but-settling is
+    reused when the pause arrives (no second Jev trip); "stop" while busy and "yes"
+    while asking skip Jev (`instantDecision`). Pauses come from `SpeechActivity`: a
+    10th-percentile noise floor over 4 s, so music or a video becomes the floor in
+    seconds instead of reading as nonstop talking. Commands
     run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the

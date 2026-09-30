@@ -46,10 +46,14 @@ import Testing
 
     @Test func returnIsHeardEvenRightAfterAKey() {
         var pacer = TypingSoundPacer(seed: 3)
-        // #expect can't take a mutating call; evaluate first.
-        let heard = [pacer.shouldVoice(.key, at: 0), pacer.shouldVoice(.key, at: 0.008),
-                     pacer.shouldVoice(.returnKey, at: 0.04), pacer.shouldVoice(.returnKey, at: 0.05)]  // a double press merges
-        #expect(heard == [true, false, true, false])
+        let first = pacer.shouldVoice(.key, at: 0)
+        let tooSoon = pacer.shouldVoice(.key, at: 0.008)
+        let returnKey = pacer.shouldVoice(.returnKey, at: 0.04)
+        let doublePress = pacer.shouldVoice(.returnKey, at: 0.05)
+        #expect(first)
+        #expect(!tooSoon)
+        #expect(returnKey)
+        #expect(!doublePress)  // a double press merges
     }
 
     // MARK: Bursts

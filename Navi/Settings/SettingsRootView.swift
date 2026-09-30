@@ -55,6 +55,7 @@ struct SettingsRootView: View {
         case .permissions: PermissionsView()
         case .memory: MemoryView()
         case .agent: AgentSettingsView()
+        case .calendars: CalendarSettingsView()
         case .voice: VoiceSettingsView()
         case .usage: UsageView()
         case .about: AboutView()

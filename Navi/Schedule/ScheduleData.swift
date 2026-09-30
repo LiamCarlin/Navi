@@ -192,19 +192,99 @@ final class ScheduleCalendar: @unchecked Sendable {
         return granted
     }
 
-    /// "cloudflare.com" when new events go to a work account: picks guests' work emails.
-    var accountDomain: String? {
+    /// "cloudflare.com" when the meeting goes to a work account: picks guests' work emails.
+    func accountDomain(bookingIn calendarID: String?) -> String? {
         lock.lock(); defer { lock.unlock() }
-        guard status == .granted, let title = store.defaultCalendarForNewEvents?.source?.title,
+        guard status == .granted, let title = bookingCalendar(calendarID)?.source?.title,
               let at = title.lastIndex(of: "@") else { return nil }
         return String(title[title.index(after: at)...]).lowercased()
     }
 
-    /// The calendar new events go to, with its colour (the card's accent bar).
-    var defaultCalendar: (title: String, color: NSColor)? {
+    /// The calendar the meeting will be booked in (the chosen one, else Calendar's default).
+    func bookingTarget(_ calendarID: String?) -> CalendarInfo? {
         lock.lock(); defer { lock.unlock() }
-        guard status == .granted, let c = store.defaultCalendarForNewEvents else { return nil }
-        return (c.title, NSColor(cgColor: c.cgColor) ?? .systemBlue)
+        guard status == .granted, let c = bookingCalendar(calendarID) else { return nil }
+        return Self.info(c, overrides: CalendarPreferences.overrides)
+    }
+
+    /// Every calendar macOS syncs — iCloud, Google, Outlook / Exchange, On My Mac,
+    /// subscriptions — by account.
+    func accounts() -> [CalendarAccount] {
+        lock.lock(); defer { lock.unlock() }
+        guard status == .granted else { return [] }
+        let overrides = CalendarPreferences.overrides
+        var byID: [String: CalendarAccount] = [:]
+        for c in store.calendars(for: .event) {
+            let info = Self.info(c, overrides: overrides)
+            byID[info.accountID, default: CalendarAccount(id: info.accountID, title: info.accountTitle,
+                                                           kind: info.kind, calendars: [])].calendars.append(info)
+        }
+        return byID.values
+            .map { account in
+                var a = account
+                a.calendars.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+                return a
+            }
+            .sorted { (Self.accountOrder($0.kind), $0.title.lowercased()) < (Self.accountOrder($1.kind), $1.title.lowercased()) }
+    }
+
+    /// The chosen calendar when it can still take events, else Calendar's default. Call under `lock`.
+    private func bookingCalendar(_ calendarID: String?) -> EKCalendar? {
+        if let calendarID, let c = store.calendar(withIdentifier: calendarID), Self.isWritable(c) { return c }
+        return store.defaultCalendarForNewEvents
+    }
+
+    static func isSubscription(_ c: EKCalendar) -> Bool { c.type == .subscription || c.type == .birthday }
+    static func isWritable(_ c: EKCalendar) -> Bool { c.allowsContentModifications && !isSubscription(c) }
+
+    static func info(_ c: EKCalendar, overrides: [String: Bool]) -> CalendarInfo {
+        let accountTitle = c.source?.title ?? "Other"
+        let writable = isWritable(c)
+        let subscription = isSubscription(c)
+        return CalendarInfo(id: c.calendarIdentifier, title: c.title, color: NSColor(cgColor: c.cgColor),
+                            accountID: c.source?.sourceIdentifier ?? accountTitle, accountTitle: accountTitle,
+                            kind: CalendarAccountKind.classify(sourceType(c.source?.sourceType), title: accountTitle),
+                            isWritable: writable, isSubscription: subscription,
+                            countsAsBusy: CalendarPreferences.countsAsBusy(id: c.calendarIdentifier, isWritable: writable,
+                                                                          isSubscription: subscription, overrides: overrides))
+    }
+
+    static func sourceType(_ type: EKSourceType?) -> CalendarAccountKind.SourceType {
+        switch type {
+        case .local?: return .local
+        case .exchange?: return .exchange
+        case .calDAV?: return .calDAV
+        case .mobileMe?: return .mobileMe
+        case .subscribed?: return .subscribed
+        case .birthdays?: return .birthdays
+        default: return .other
+        }
+    }
+
+    static func accountOrder(_ kind: CalendarAccountKind) -> Int {
+        switch kind {
+        case .iCloud: return 0
+        case .google: return 1
+        case .exchange: return 2
+        case .other: return 3
+        case .local: return 4
+        case .subscribed: return 5
+        }
+    }
+
+    /// System Settings → Internet Accounts, where Google, Outlook (Microsoft Exchange) and
+    /// iCloud accounts are added; their calendars then show up in Navi by themselves.
+    static func openInternetAccounts() {
+        Opener.open("x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension")
+    }
+
+    /// Hands a published calendar link (an Outlook or Google ICS address) to Calendar,
+    /// which asks to subscribe. False when it isn't a link.
+    @discardableResult
+    static func subscribe(to link: String) -> Bool {
+        guard let url = CalendarPreferences.webcalURL(from: link) else { return false }
+        NSWorkspace.shared.open(url)
+        return true
     }
 
     /// Your busy time and each guest's for the day (start of day).
@@ -219,9 +299,12 @@ final class ScheduleCalendar: @unchecked Sendable {
             theirs[p.id] = calendars.filter { Self.calendarTitle($0.title, belongsTo: p) }
         }
         let theirIDs = Set(theirs.values.flatMap { $0.map(\.calendarIdentifier) })
+        // Every account's calendars that count as busy (Settings → Calendars; by default your own).
+        let overrides = CalendarPreferences.overrides
         let mine = calendars.filter { c in
-            !theirIDs.contains(c.calendarIdentifier) && c.allowsContentModifications
-                && c.type != .subscription && c.type != .birthday
+            !theirIDs.contains(c.calendarIdentifier)
+                && CalendarPreferences.countsAsBusy(id: c.calendarIdentifier, isWritable: Self.isWritable(c),
+                                                    isSubscription: Self.isSubscription(c), overrides: overrides)
         }
         func busyEvents(_ cals: [EKCalendar]) -> [EKEvent] {
             guard !cals.isEmpty else { return [] }
@@ -248,13 +331,14 @@ final class ScheduleCalendar: @unchecked Sendable {
         return DayAvailability(mine: intervals(myEvents), others: others)
     }
 
-    /// Saves the event to the default calendar, then adds the guests with an email.
-    func book(title: String, start: Date, end: Date, videoLink: String?, guests: [SchedulePerson]) async throws -> BookingResult {
+    /// Saves the event to `calendarID` (else Calendar's default), then adds the guests with an email.
+    func book(title: String, start: Date, end: Date, videoLink: String?, guests: [SchedulePerson],
+              calendarID: String?) async throws -> BookingResult {
         let saved: (id: String, uid: String?, calendar: String) = try {
             lock.lock(); defer { lock.unlock() }
             guard status == .granted else { throw NaviError.other("Navi needs Calendar access to book this.") }
-            guard let calendar = store.defaultCalendarForNewEvents else {
-                throw NaviError.other("No default calendar — pick one in Calendar › Settings › General.")
+            guard let calendar = bookingCalendar(calendarID) else {
+                throw NaviError.other("No calendar to book in — pick one in Navi › Calendars.")
             }
             let event = EKEvent(eventStore: store)
             event.title = title

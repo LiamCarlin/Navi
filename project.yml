@@ -56,6 +56,7 @@ targets:
         NSMicrophoneUsageDescription: "Navi can listen for voice queries when you enable voice input."
         NSSpeechRecognitionUsageDescription: "Navi transcribes voice queries on-device."
         NSCalendarsFullAccessUsageDescription: "Navi reads your calendar to find times when everyone is free and books the meetings you ask for."
+        NSRemindersFullAccessUsageDescription: "Navi adds the reminders you ask for and shows what else is due that day."
         NSContactsUsageDescription: "Navi looks up the people you schedule with to find their email and photo."
         NSLocationWhenInUseUsageDescription: "Navi uses your location for Maps and weather queries."
         NSUserNotificationsUsageDescription: "Navi notifies you when a background task completes."
