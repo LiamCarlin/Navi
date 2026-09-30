@@ -59,6 +59,16 @@ final class VoiceSession: ObservableObject {
     let services: NaviServices
     let executor: VoiceCommandExecutor
     private let listener = SpeechListener()
+    /// The second echo layer: transcribes what the Mac plays (see `EchoFilter`).
+    private let echoListener = SpeechListener()
+    private var echoFilter = EchoFilter()
+    /// When the clause starting at this word was first held for the Mac's transcript.
+    private var echoHold: (start: Int, since: Date)?
+    /// When the Mac last made a sound, and when the current stretch of sound
+    /// began (the Mac-audio recognizer needs ~2 s before its first words).
+    private var macSoundAt = Date.distantPast
+    private var macSoundSince = Date.distantPast
+    private var lastEchoDropAt = Date.distantPast
     private var segmenter = UtteranceSegmenter()
     private var startTask: Task<Void, Never>?
     private var decideTask: Task<Void, Never>?
@@ -102,6 +112,13 @@ final class VoiceSession: ObservableObject {
     static let flushAfterMs = 350
     /// A settled verdict is reused for this long.
     static let settledReuseMs = 3000
+    /// While the Mac is talking, a clause waits (at most this long) for the
+    /// Mac's own transcript to catch up, so its words can be recognised as echo.
+    static let echoHoldMaxMs = 1200
+    /// The Mac's transcript counts as caught up once it changed this long after the clause did.
+    static let echoCatchUpMs = 300
+    /// A new stretch of the Mac's sound holds clauses even before its words arrive, this long.
+    static let macWarmUpMs = 3000
     /// Keep Jev's connection warm while listening: a cold call costs ~2×.
     static let keepWarmSeconds: TimeInterval = 20
 
@@ -144,6 +161,7 @@ final class VoiceSession: ObservableObject {
             let locale = await SpeechListener.resolveLocale(preferred: settings.voiceLocale)
             do {
                 try await self.listener.start(locale: locale, audioFile: audioFile)
+                if settings.voiceEchoCancellation { await self.startEchoListener(locale: locale) }
             } catch {
                 guard !Task.isCancelled else { return }
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
@@ -170,8 +188,9 @@ final class VoiceSession: ObservableObject {
         hint = ""
         pendingText = ""
         level = 0
-        let l = listener
-        Task { await l.stop() }
+        let l = listener, e = echoListener
+        Task { await l.stop(); await e.stop() }
+        echoFilter.reset()
         if executor.isBusy { executor.stopAll() }
         Log.voice.info("voice session stopped")
     }
@@ -252,6 +271,58 @@ final class VoiceSession: ObservableObject {
         }
     }
 
+    // MARK: The Mac's own audio
+
+    /// The Mac has said words recently, or has just started making sound and
+    /// its recognizer hasn't caught up yet.
+    private var macIsTalking: Bool {
+        let now = Date()
+        if echoFilter.isActive(at: now) { return true }
+        let playing = now.timeIntervalSince(macSoundAt) < 0.5
+        return playing && now.timeIntervalSince(macSoundSince) * 1000 < Double(Self.macWarmUpMs)
+    }
+
+    /// Starts transcribing what the Mac plays. Optional: without Screen
+    /// Recording, or if capture fails, voice control works as before.
+    private func startEchoListener(locale: Locale) async {
+        guard phase.isActive, ScreenCapture.hasPermission else {
+            Log.voice.info("second echo layer off (no Screen Recording permission)")
+            return
+        }
+        echoFilter.reset()
+        echoListener.capturesSystemAudio = true
+        echoListener.echoCancellation = false
+        echoListener.onEvent = { [weak self] ev in
+            guard let self else { return }
+            switch ev {
+            case .transcript(let finalized, let volatile):
+                self.echoFilter.update(finalized: finalized, volatile: volatile)
+                Log.voice.debug("mac-audio | final=…\(String(finalized.suffix(50)), privacy: .public) | volatile=\(volatile, privacy: .public)")
+                #if DEBUG
+                DebugTrace.log("voice mac-audio | final=“\(finalized.suffix(60))” volatile=“\(volatile)”")
+                #endif
+            case .failed(let msg):
+                Log.voice.error("mac audio transcription stopped: \(msg, privacy: .public)")
+                let e = self.echoListener
+                Task { await e.stop() }
+            case .level:
+                // Levels only arrive while the Mac is making sound (silence isn't transcribed).
+                let now = Date()
+                if now.timeIntervalSince(self.macSoundAt) > 2 { self.macSoundSince = now }
+                self.macSoundAt = now
+            case .ready, .downloading:
+                break
+            }
+        }
+        do {
+            try await echoListener.start(locale: locale)
+            // Voice control may have been stopped while this was starting.
+            if !phase.isActive { await echoListener.stop() }
+        } catch {
+            Log.voice.error("second echo layer failed to start: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: Acoustic pauses
 
     private func heard(level l: Float) {
@@ -269,6 +340,7 @@ final class VoiceSession: ObservableObject {
                 self.spokeSinceFlush = false
                 self.flushTask = nil
                 await self.listener.flush()
+                await self.echoListener.flush()
             }
         }
     }
@@ -370,11 +442,37 @@ final class VoiceSession: ObservableObject {
             if phase == .listening { hint = "" }
             return
         }
+        // The Mac is talking (a video, music): give its transcript a moment to
+        // catch up with these words, then cut out whatever it said too.
+        // One word ("stop") is never echo, so it never waits.
+        if clause.headWordCount > 1, macIsTalking, echoFilter.lastUpdateAt < segmenter.lastChangeAt.addingTimeInterval(Double(Self.echoCatchUpMs) / 1000) {
+            if echoHold?.start != clause.start { echoHold = (clause.start, Date()) }
+            if let h = echoHold, Date().timeIntervalSince(h.since) * 1000 < Double(Self.echoHoldMaxMs) {
+                hint = "…"
+                scheduleDecision(after: 150)
+                return
+            }
+        }
+        echoHold = nil
+        let heardClause = clause
+        var echoDecision: VoiceDecider.Decision?
+        let trailing = EchoFilter.isTrailingEcho(clause.head, secondsSinceEchoDrop: Date().timeIntervalSince(lastEchoDropAt),
+                                                  macTalking: macIsTalking)
+        if trailing || echoFilter.classify(clause.head) == .echo {
+            echoDecision = .drop(reason: "the Mac's own audio")
+            lastEchoDropAt = Date()
+            Log.voice.info("echo: dropped “\(clause.head, privacy: .public)” (\(trailing ? "tail of what the Mac said" : "the Mac said it", privacy: .public))")
+            #if DEBUG
+            DebugTrace.log("voice echo | dropped “\(clause.head)” | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
+            #endif
+        }
         let silence = silenceMs
-        var input = VoiceDecider.Input(clause: clause, silenceMs: silence, context: context(for: clause))
+        var input = VoiceDecider.Input(clause: heardClause, silenceMs: silence, context: context(for: heardClause))
         var decision: VoiceDecider.Decision
-        let key = [clause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
-        if let instant = VoiceDecider.instantDecision(input) {
+        let key = [heardClause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
+        if let echoDecision {
+            decision = echoDecision
+        } else if let instant = VoiceDecider.instantDecision(input) {
             jevStatus = "Instant · no Jev call"
             decision = instant
             #if DEBUG

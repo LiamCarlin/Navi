@@ -236,7 +236,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     processing, so what the output device plays (a video, music, Navi's answers) is
     subtracted from the mic; other audio is not ducked, only channel 0 of the 3-channel
     VP input is used (`AudioPipe.firstChannelOnly`), and a device that refuses VP falls
-    back to the plain mic. Commands
+    back to the plain mic. Second layer (same toggle, needs Screen Recording): a second
+    `SpeechListener` with `capturesSystemAudio` transcribes what the Mac plays
+    (`SystemAudioCapture`, ScreenCaptureKit audio minus Navi's own, silence not fed) into
+    `EchoFilter`; while the Mac is talking a multi-word clause waits ≤ 1.2 s for that
+    transcript to catch up, then any 3-word run it shares (one misheard word allowed) drops
+    the clause *whole* — trimming kept misheard video words and ran them as a task — and a
+    ≤ 2-word tail right after such a drop goes too, control words excepted. Commands
     run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the

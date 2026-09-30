@@ -80,7 +80,7 @@ struct VoiceSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("Sound cues", isOn: $settings.voiceSounds)
                 Toggle("Ignore sound the Mac is playing", isOn: $settings.voiceEchoCancellation)
-                Text("Echo cancellation: videos, music and Navi's own answers coming out of the speakers are removed from what Navi hears, so only your voice becomes an instruction. Takes effect the next time listening starts.")
+                Text("Echo cancellation removes what the speakers play from the microphone, and Navi also listens to the Mac's own audio (with the Screen Recording permission) so anything a video says is never taken as an instruction. Takes effect the next time listening starts.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 4) {
