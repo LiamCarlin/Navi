@@ -476,7 +476,7 @@ final class UserKnowledge: @unchecked Sendable {
             var parts: [String] = []
             if !t.places.isEmpty { parts.append((t.type == "person" ? "talk in " : "in ") + t.places.map { "\($0.label) (\($0.sessions))" }.joined(separator: ", ")) }
             if t.workflow.count >= 2 { parts.append("usually " + t.workflow.joined(separator: " → ")) }
-            if let u = t.url { parts.append("[open](\(u))") }
+            if t.type != "person", let u = t.url { parts.append("[open](\(u))") }   // a person has no page of their own
             if !t.related.isEmpty { parts.append((t.type == "person" ? "on " : "with ") + t.related.map { "[[\($0)]]" }.joined(separator: ", ")) }
             return "- [[\(t.name)]] — " + (parts.isEmpty ? "seen \(t.sessions)×" : parts.joined(separator: "; "))
         }
