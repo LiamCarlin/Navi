@@ -5,7 +5,8 @@ import Foundation
 // Dry run by default: prints what would change (kinds and counts, never values).
 //   build/memscrub                     # dry run on ~/Library/Application Support/Navi + the vault
 //   build/memscrub --apply             # redact (quit Navi first)
-//   build/memscrub --db DIR --vault DIR [--apply]
+//   build/memscrub --db DIR --vault DIR [--apply] [--strict]
+// Honors Settings → Memory → Personal information (what Navi may keep); --strict redacts every category.
 
 var args = Array(CommandLine.arguments.dropFirst())
 func option(_ name: String) -> String? {
@@ -16,7 +17,10 @@ let apply = args.contains("--apply")
 let home = FileManager.default.homeDirectoryForCurrentUser
 let dbDir = option("--db").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
     ?? home.appendingPathComponent("Library/Application Support/Navi", isDirectory: true)
-let savedVault = UserDefaults(suiteName: "com.liamcarlin.navi")?.string(forKey: "memoryVaultPath").flatMap { $0.isEmpty ? nil : $0 }
+let defaults = UserDefaults(suiteName: "com.liamcarlin.navi")
+let savedVault = defaults?.string(forKey: "memoryVaultPath").flatMap { $0.isEmpty ? nil : $0 }
+let policy: PersonalData.Policy = args.contains("--strict") ? .strict
+    : defaults?.stringArray(forKey: "memoryAllowedPersonalData").map { PersonalData.Policy(allowedRawValues: $0) } ?? .default
 let vaultDir = URL(fileURLWithPath: ((option("--vault") ?? savedVault ?? "~/Navi Vault") as NSString).expandingTildeInPath, isDirectory: true)
 
 guard FileManager.default.fileExists(atPath: dbDir.appendingPathComponent("memory.sqlite").path) else {
@@ -29,11 +33,12 @@ if apply, !NSRunningApplication.runningApplications(withBundleIdentifier: "com.l
 
 do {
     let store = try MemoryStore(directory: dbDir)
-    let cleanup = PersonalDataCleanup(store: store, vaultRoot: vaultDir)
+    let cleanup = PersonalDataCleanup(store: store, vaultRoot: vaultDir, policy: policy)
     let plan = try cleanup.plan()
     let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"
     print("database: \(dbDir.path)/memory.sqlite")
     print("vault:    \(vaultDir.path)")
+    print("allowed:  \(policy.allowed.isEmpty ? "nothing (strict)" : PersonalData.Category.allCases.filter(policy.allowed.contains).map(\.title).joined(separator: "; "))")
     print("frames:   \(plan.frameIDs.count) of \(plan.framesScanned) with text would be reduced to app + time stubs")
     print("sessions: \(plan.sessions.count) of \(plan.sessionsScanned) hold identifiers")
     for fix in plan.sessions {

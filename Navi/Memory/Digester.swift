@@ -90,6 +90,7 @@ final class Digester: @unchecked Sendable {
 
         let setting = await MainActor.run { NaviSettings.shared.digestProvider }
         let keep = await MainActor.run { NaviSettings.shared.memoryKeepScreenshots }
+        let policy = await MainActor.run { NaviSettings.shared.personalDataPolicy }
         let provider = Self.selectProvider(setting: setting, hasGemini: gemini.isConfigured, hasClaude: claude.isConfigured)
 
         let frames = try store.undigestedFrames()
@@ -111,7 +112,7 @@ final class Digester: @unchecked Sendable {
             }
             let (result, usedProvider): (DigestResult, Provider)
             do {
-                let d = try await summarize(session, provider: provider)
+                let d = try await summarize(session, provider: provider, policy: policy)
                 result = d; usedProvider = provider
             } catch {
                 let oldest = session.first?.timestamp ?? now
@@ -127,7 +128,7 @@ final class Digester: @unchecked Sendable {
 
             // Whatever the model (or the local digest's raw OCR) let through is scrubbed;
             // a session that needed it gets no screenshot either — the form is in it.
-            let (clean, removed) = PersonalData.scrub(result)
+            let (clean, removed) = PersonalData.scrub(result, policy: policy)
             if removed > 0 { Log.memory.info("Digest scrubbed \(removed) personal identifiers") }
 
             var record = Self.sessionRecord(for: session, digest: clean)
@@ -183,7 +184,23 @@ final class Digester: @unchecked Sendable {
 
     // MARK: Prompt
 
-    static let systemPrompt = """
+    static let systemPrompt = systemPrompt(policy: .strict)
+
+    /// The digest prompt plus a privacy rule naming what the user keeps out of
+    /// memory (Settings → Memory → Personal information).
+    static func systemPrompt(policy: PersonalData.Policy) -> String {
+        let blocked = PersonalData.Category.allCases.filter { policy.blocks($0) }
+        guard !blocked.isEmpty else { return basePrompt }
+        return basePrompt + "\n" + """
+        Privacy (strict — applies to title, summary, key_facts, entities, topics and links): never copy \
+        these personal identifiers from the screen: \(blocked.map(\.instruction).joined(separator: "; ")). \
+        Describe the activity instead ("created an account on a lab's patient portal"), not the details \
+        typed into it. Such values are never entities, topics or key facts. Text already replaced with \
+        [redacted] stays out entirely.
+        """
+    }
+
+    static let basePrompt = """
     You are the memory digester for Navi, a macOS assistant. You receive on-screen text (OCR) and \
     optionally screenshots from one stretch of the user's computer activity, and you write a concise \
     memory note so the user can later ask "what was I doing?".
@@ -199,19 +216,12 @@ final class Digester: @unchecked Sendable {
     contact or sender name, not an email address), a document or file by its exact title, a project or \
     course by its code or name ("MTH3199", "Baja SAE"); never list the user themself (the owner of this \
     Mac, whose own name appears on their account) as a person.
-    Privacy (strict — applies to title, summary, key_facts, entities, topics and links): never copy \
-    personal identifiers from the screen: dates of birth or ages, home/street addresses, home town, \
-    city + ZIP, phone numbers, email addresses typed into forms, SSNs or other government/ID numbers, \
-    card/bank/account/routing numbers, insurance member/policy/group IDs, and medical details \
-    (conditions, test results, prescriptions). Describe the activity instead: "created an account on \
-    a lab's patient portal" — not the details typed into it. Such values are never entities, topics or \
-    key facts. Text already replaced with [redacted] stays out entirely.
     """
 
     /// Compact, structured prompt for one session. Returns the text plus the
     /// thumbnails worth attaching (highest-importance frames with a file on disk).
     static func buildPrompt(for frames: [FrameRecord], maxChars: Int = maxPromptChars,
-                            calendar: Calendar = .current) -> (text: String, thumbnailPaths: [String]) {
+                            calendar: Calendar = .current, policy: PersonalData.Policy = .strict) -> (text: String, thumbnailPaths: [String]) {
         guard let first = frames.first, let last = frames.last else { return ("", []) }
         let time = DateFormatter()
         time.calendar = calendar; time.timeZone = calendar.timeZone; time.dateFormat = "HH:mm"
@@ -224,10 +234,10 @@ final class Digester: @unchecked Sendable {
         lines.append("[APP] " + apps.prefix(3).joined(separator: "; "))
         lines.append("[TIME] \(day.string(from: first.timestamp)) \(time.string(from: first.timestamp))–\(time.string(from: last.timestamp)) (\(minutes) min, \(frames.count) frames)")
         lines.append("[ACTIVITY] " + uniqueOrdered(frames.map(\.activity)).joined(separator: ", "))
-        // Identifiers never reach the digest model (`PersonalData.redact`).
-        let titles = uniqueOrdered(frames.compactMap { $0.windowTitle }.filter { !$0.isEmpty }.map { PersonalData.redact($0).text })
+        // Blocked identifiers never reach the digest model (`PersonalData.redact`).
+        let titles = uniqueOrdered(frames.compactMap { $0.windowTitle }.filter { !$0.isEmpty }.map { PersonalData.redact($0, policy: policy).text })
         if !titles.isEmpty { lines.append("[TITLES]\n" + titles.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
-        let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty }.map { PersonalData.redact($0).text })
+        let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty }.map { PersonalData.redact($0, policy: policy).text })
         if !urls.isEmpty { lines.append("[URLS]\n" + urls.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
 
         var used = lines.joined(separator: "\n").count
@@ -247,7 +257,7 @@ final class Digester: @unchecked Sendable {
             let remaining = max(0, maxChars - used - 40 * (ordered.count - n))
             let budget = remaining / (ordered.count - n)
             guard budget > 200 else { break }
-            let text = String(PersonalData.redact(f.ocrText).text.prefix(budget))
+            let text = String(PersonalData.redact(f.ocrText, policy: policy).text.prefix(budget))
             let block = "[SCREEN_TEXT \(n + 1) @ \(time.string(from: f.timestamp))]\n\(text)"
             lines.append(block)
             used += block.count + 1
@@ -269,31 +279,32 @@ final class Digester: @unchecked Sendable {
 
     // MARK: LLM calls
 
-    func summarize(_ frames: [FrameRecord], provider: Provider) async throws -> DigestResult {
+    func summarize(_ frames: [FrameRecord], provider: Provider, policy: PersonalData.Policy = .strict) async throws -> DigestResult {
         guard provider != .local else { return Self.localDigest(frames) }
         // One cloud run per digested session (`X-Navi-Run`), routed to `/v1/digest` under `recall_digest`.
         return try await CloudRun.$current.withValue(CloudRun(feature: .recallDigest)) {
-            try await summarizeWithModel(frames, provider: provider)
+            try await summarizeWithModel(frames, provider: provider, policy: policy)
         }
     }
 
-    private func summarizeWithModel(_ frames: [FrameRecord], provider: Provider) async throws -> DigestResult {
-        let (prompt, thumbs) = Self.buildPrompt(for: frames)
+    private func summarizeWithModel(_ frames: [FrameRecord], provider: Provider, policy: PersonalData.Policy) async throws -> DigestResult {
+        let (prompt, thumbs) = Self.buildPrompt(for: frames, policy: policy)
+        let system = Self.systemPrompt(policy: policy)
         let images: [Data] = thumbs.compactMap { FileManager.default.contents(atPath: $0) }
-        var text = try await complete(prompt: prompt, images: images, provider: provider)
+        var text = try await complete(prompt: prompt, system: system, images: images, provider: provider)
         do {
             return try Self.parse(text)
         } catch {
             Log.memory.warning("Digest JSON parse failed, retrying once: \(error.localizedDescription)")
-            text = try await complete(prompt: prompt + "\n\nReturn only JSON.", images: images, provider: provider)
+            text = try await complete(prompt: prompt + "\n\nReturn only JSON.", system: system, images: images, provider: provider)
             return try Self.parse(text)
         }
     }
 
-    private func complete(prompt: String, images: [Data], provider: Provider) async throws -> String {
+    private func complete(prompt: String, system: String, images: [Data], provider: Provider) async throws -> String {
         switch provider {
         case .gemini(let model):
-            let reply = try await gemini.generate(model: model, system: Self.systemPrompt, prompt: prompt,
+            let reply = try await gemini.generate(model: model, system: system, prompt: prompt,
                                                   images: images.map { GeminiClient.ImagePart(data: $0) },
                                                   jsonMode: true, maxOutputTokens: 1024)
             Log.memory.debug("Gemini digest: \(reply.usage.promptTokens) in / \(reply.usage.outputTokens) out")
@@ -303,7 +314,7 @@ final class Digester: @unchecked Sendable {
                 ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": $0.base64EncodedString()]]
             }
             content.append(["type": "text", "text": prompt])
-            let m = try await claude.create(model: model, system: Self.systemPrompt,
+            let m = try await claude.create(model: model, system: system,
                                             messages: [["role": "user", "content": content]],
                                             maxTokens: 1024, effort: "low", thinking: nil)
             return m.text

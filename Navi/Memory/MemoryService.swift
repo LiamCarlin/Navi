@@ -100,6 +100,27 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         return await stack.recall.context(for: query, limit: limit)
     }
 
+    /// Settings → Recall → "Remove blocked details already saved": what the
+    /// current personal-data choices would redact in the store and the vault.
+    func planPersonalDataCleanup() async throws -> PersonalDataCleanup.Plan {
+        let cleanup = try await personalDataCleanup()
+        return try await Task.detached(priority: .utility) { try cleanup.plan() }.value
+    }
+
+    func applyPersonalDataCleanup(_ plan: PersonalDataCleanup.Plan) async throws -> PersonalDataCleanup.Report {
+        let cleanup = try await personalDataCleanup()
+        let report = try await Task.detached(priority: .utility) { try cleanup.apply(plan) }.value
+        Log.memory.info("Personal-data cleanup: \(report.framesRedacted) frames, \(report.sessionsRedacted) sessions redacted")
+        await MainActor.run { refreshCounts() }
+        return report
+    }
+
+    private func personalDataCleanup() async throws -> PersonalDataCleanup {
+        let (stack, policy) = await MainActor.run { (ensureStack(), NaviSettings.shared.personalDataPolicy) }
+        guard let stack else { throw NaviError.other("Screen memory isn't available.") }
+        return PersonalDataCleanup(store: stack.store, vaultRoot: stack.vault.root, policy: policy)
+    }
+
     /// Vault root (for "Open in Obsidian" / "Reveal vault" buttons).
     @MainActor var vaultURL: URL? { stack?.vault.root }
 

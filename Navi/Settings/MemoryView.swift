@@ -8,6 +8,9 @@ struct MemoryView: View {
     @State private var status = MemoryStatus()
     @State private var digesting = false
     @State private var newBundleID = ""
+    @State private var cleanupPlan: PersonalDataCleanup.Plan?
+    @State private var cleanupBusy = false
+    @State private var cleanupMessage: String?
 
     private var memory: MemoryServicing? { AppDelegate.shared?.services.memory }
     /// Recall gate (account workstream): the toggle is replaced by the upsell without the entitlement.
@@ -102,12 +105,14 @@ struct MemoryView: View {
             } header: {
                 Text("Never capture these apps")
             } footer: {
-                Text("Frames from excluded apps are dropped before any text is read. Navi also drops any frame it judges sensitive (passwords, banking, private messages), and password fields are never stored.")
+                Text("Frames from excluded apps are dropped before any text is read. Navi also drops any frame it judges sensitive (passwords, one-time codes, and the personal information you block below), and password fields are never stored.")
             }
+
+            personalDataSection
 
             Section {
                 Label {
-                    Text("Everything stays on this Mac. Raw frames and their text live in ~/Library/Application Support/Navi; only the moments Navi judges important are summarised, and only the summary is written to your journal.")
+                    Text("Everything is stored on this Mac: raw frames and their text in ~/Library/Application Support/Navi, summaries in your vault. To triage and summarise, screen text is sent to Jev and the summary model you chose; only the moments Navi judges important are summarised, and only the summary is written to your journal.")
                         .font(.callout).foregroundStyle(.secondary)
                 } icon: {
                     Image(systemName: "lock.fill").foregroundStyle(.secondary)
@@ -123,6 +128,81 @@ struct MemoryView: View {
     }
 
     // MARK: Pieces
+
+    /// Settings → Recall → Personal information: one switch per category (on = Navi may keep it).
+    @ViewBuilder private var personalDataSection: some View {
+        Section {
+            ForEach(PersonalData.Category.allCases) { c in
+                Toggle(isOn: Binding(get: { settings.allowsPersonalData(c) },
+                                     set: { settings.setPersonalData(c, allowed: $0) })) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: c.symbol).foregroundStyle(.secondary).frame(width: 18)
+                        ExplainedRow(title: c.title, explanation: c.detail) { EmptyView() }
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+            HStack(spacing: 8) {
+                Button("Allow all") { for c in PersonalData.Category.allCases { settings.setPersonalData(c, allowed: true) } }
+                Button("Block all") { for c in PersonalData.Category.allCases { settings.setPersonalData(c, allowed: false) } }
+                Button("Defaults") {
+                    for c in PersonalData.Category.allCases { settings.setPersonalData(c, allowed: PersonalData.Category.allowedByDefault.contains(c)) }
+                }
+                Spacer()
+                if cleanupBusy { ProgressView().controlSize(.small) }
+                Button("Remove blocked details already saved…") { Task { await planCleanup() } }
+                    .disabled(cleanupBusy || settings.personalDataPolicy.blocked.isEmpty || memory as? MemoryService == nil)
+            }
+            .controlSize(.small)
+            if let cleanupMessage {
+                Text(cleanupMessage).font(.caption).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Personal information Navi may remember")
+        } footer: {
+            Text("On = kept in your journal. Off = the screen is kept as an app-and-time stub and the detail is redacted from summaries and notes. Passwords and one-time codes are never kept. Blocked details Navi recognises are dropped on this Mac before anything is sent to Jev or the summary model; allowed ones are stored locally and travel with the screen text to Jev and the summary model (Gemini or Claude) when a moment is triaged and summarised.")
+        }
+        .confirmationDialog(cleanupTitle, isPresented: Binding(get: { cleanupPlan != nil }, set: { if !$0 { cleanupPlan = nil } })) {
+            Button("Redact", role: .destructive) { Task { await applyCleanup() } }
+            Button("Cancel", role: .cancel) { cleanupPlan = nil }
+        } message: {
+            Text("Matching snapshots keep only the app and time; summaries, key facts, links and screenshots in your vault are rewritten. This can't be undone.")
+        }
+    }
+
+    private var cleanupTitle: String {
+        guard let p = cleanupPlan else { return "" }
+        return "Redact \(p.sessions.count) of \(p.sessionsScanned) summaries and \(p.frameIDs.count) snapshots?"
+    }
+
+    private func planCleanup() async {
+        guard let service = memory as? MemoryService else { return }
+        cleanupBusy = true; cleanupMessage = nil
+        defer { cleanupBusy = false }
+        do {
+            let plan = try await service.planPersonalDataCleanup()
+            if plan.sessions.isEmpty && plan.frameIDs.isEmpty {
+                cleanupMessage = "Nothing saved contains the details you block."
+            } else {
+                cleanupPlan = plan
+            }
+        } catch {
+            cleanupMessage = error.localizedDescription
+        }
+    }
+
+    private func applyCleanup() async {
+        guard let service = memory as? MemoryService, let plan = cleanupPlan else { return }
+        cleanupPlan = nil
+        cleanupBusy = true
+        defer { cleanupBusy = false }
+        do {
+            let r = try await service.applyPersonalDataCleanup(plan)
+            cleanupMessage = "Redacted \(r.sessionsRedacted) summaries and \(r.framesRedacted) snapshots; removed \(r.attachmentsDeleted) screenshots."
+        } catch {
+            cleanupMessage = "Cleanup failed: \(error.localizedDescription)"
+        }
+    }
 
     @ViewBuilder private var pauseRow: some View {
         HStack(spacing: 8) {

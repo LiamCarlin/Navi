@@ -328,3 +328,74 @@ struct PersonalDataCleanupTests {
         #expect(PersonalDataCleanup.keyFacts(in: "# T\n") == [])
     }
 }
+
+// MARK: - User choices (Settings → Recall → Personal information)
+
+struct PersonalDataPolicyTests {
+    private let contactsAllowed = PersonalData.Policy(allowed: [.phoneNumbers, .addresses])
+
+    @Test func policyConstruction() {
+        #expect(PersonalData.Policy.strict.allowed.isEmpty)
+        #expect(PersonalData.Policy.default.allowed == [.phoneNumbers, .addresses])
+        #expect(PersonalData.Policy(allowedRawValues: ["phoneNumbers", "bogus"]).allowed == [.phoneNumbers])
+        #expect(contactsAllowed.blocks(.birthDate) && !contactsAllowed.blocks(.phone) && !contactsAllowed.blocks(.postalCode))
+    }
+
+    @Test func allowedKindsAreNeitherSignalsNorRedacted() {
+        let r = PersonalData.redact("DOB 03/14/2001, phone (617) 555-0142, ZIP code 02139", policy: contactsAllowed)
+        #expect(r.text == "DOB [redacted], phone (617) 555-0142, ZIP code 02139")
+        #expect(PersonalData.redact("anything 03/14/2001", policy: PersonalData.Policy(allowed: Set(PersonalData.Category.allCases))).changed == false)
+
+        // A checkout with only a phone and an address is fine once contacts are allowed…
+        let checkout = PersonalData.signals(text: "Shipping\n12 Farnsworth Street\n(617) 555-0142", title: "Checkout",
+                                            url: "https://shop.example/checkout", policy: contactsAllowed)
+        #expect(checkout.kinds.isEmpty && !checkout.isSensitive)
+        #expect(!checkout.stateLine.contains("identifier_values"))
+        // …but the sign-up form still has a date of birth.
+        let form = PersonalData.signals(text: signUpForm, title: "Create account", url: "https://example.com/signup", policy: contactsAllowed)
+        #expect(form.kinds == [.birthDate] && form.isSensitive)
+        // Patient portals follow the health switch.
+        let portal = PersonalData.Policy(allowed: [.health])
+        #expect(!PersonalData.signals(text: "Welcome back", title: "MyQuest", url: nil, policy: portal).isSensitive)
+        #expect(!PersonalData.signals(text: "Welcome back", title: "MyQuest", url: nil, policy: portal).stateLine.contains("medical"))
+    }
+
+    @Test func keywordMarkersFollowTheirCategory() {
+        let cards = PersonalData.Policy(allowed: [.cardNumbers])
+        #expect(!FrameTriage.containsHardSensitive("CVV: 123", policy: cards))
+        #expect(FrameTriage.containsHardSensitive("Your verification code is 482911", policy: PersonalData.Policy(allowed: Set(PersonalData.Category.allCases))))
+        #expect(!FrameTriage.containsSoftSensitive("Prescription refill ready", policy: PersonalData.Policy(allowed: [.health])))
+        #expect(FrameTriage.containsSoftSensitive("Password: ••••", policy: PersonalData.Policy(allowed: Set(PersonalData.Category.allCases))))
+    }
+
+    @Test func jevAndDigestWordingFollowThePolicy() throws {
+        let everything = PersonalData.Policy(allowed: Set(PersonalData.Category.allCases))
+        let open = FrameTriage.sensitiveInstructions(for: everything)
+        #expect((open["sensitive_when"] as? [String])?.count == 1)          // passwords / codes only
+        #expect((open["not_sensitive_when"] as? [String])?.last?.contains("phone numbers") == true)
+        let contacts = try #require(FrameTriage.sensitiveInstructions(for: contactsAllowed)["sensitive_when"] as? [String])
+        #expect(contacts.contains { $0.contains("date of birth") && !$0.contains("phone number") })
+
+        #expect(!Digester.systemPrompt(policy: everything).contains("Privacy"))
+        let p = Digester.systemPrompt(policy: contactsAllowed)
+        #expect(p.contains("dates of birth") && !p.contains("phone numbers"))
+
+        let d = DigestResult(title: "Call", summary: "Called (617) 555-0142 about the order.", topics: [], entities: [],
+                             keyFacts: ["Phone number on file"], links: [])
+        #expect(PersonalData.scrub(d, policy: contactsAllowed).removed == 0)
+        #expect(PersonalData.scrub(d).removed == 2)
+    }
+
+    @Test func cleanupLeavesAllowedDetailsAlone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("navi-pii-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try MemoryStore(directory: dir)
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = try store.insertSession(SessionRecord(start: start, end: start.addingTimeInterval(60), bundleID: "com.apple.MobileSMS",
+                                                  appName: "Messages", url: nil, title: "Texted Sam",
+                                                  summary: "Texted Sam at (617) 555-0142.", topics: [], entities: []))
+        let lenient = PersonalDataCleanup(store: store, vaultRoot: dir, policy: contactsAllowed)
+        #expect(try lenient.plan().sessions.isEmpty)
+        #expect(try PersonalDataCleanup(store: store, vaultRoot: dir).plan().sessions.count == 1)
+    }
+}

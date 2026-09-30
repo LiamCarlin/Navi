@@ -15,6 +15,10 @@ import Foundation
 /// separators or a label (a 10-digit unix timestamp is not a phone), card
 /// numbers pass Luhn, street names must be capitalised ("3 files in the way" is
 /// not an address), and informal birthday mentions only count for redaction.
+///
+/// What counts is the user's choice (`Policy`, Settings → Memory → Personal
+/// information): a category they allow is neither blocked, redacted nor scrubbed.
+/// Passwords and one-time codes are always blocked (`FrameTriage.hardSensitiveMarkers`).
 enum PersonalData {
     enum Kind: String, CaseIterable, Sendable, Comparable {
         case cardNumber = "card_number", ssn, birthDate = "birth_date", idNumber = "id_number"
@@ -26,6 +30,95 @@ enum PersonalData {
         static func < (a: Kind, b: Kind) -> Bool {
             allCases.firstIndex(of: a)! < allCases.firstIndex(of: b)!
         }
+
+        var category: Category {
+            switch self {
+            case .birthDate: return .birthDates
+            case .phone: return .phoneNumbers
+            case .address, .postalCode: return .addresses
+            case .cardNumber: return .cardNumbers
+            case .ssn: return .ssns
+            case .idNumber: return .idNumbers
+            }
+        }
+    }
+
+    // MARK: Policy
+
+    /// What the user can allow Navi to remember (Settings → Memory).
+    enum Category: String, CaseIterable, Sendable, Identifiable {
+        case birthDates, phoneNumbers, addresses, cardNumbers, ssns, idNumbers, health
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .birthDates: return "Dates of birth"
+            case .phoneNumbers: return "Phone numbers"
+            case .addresses: return "Home & street addresses, ZIP codes"
+            case .cardNumbers: return "Credit & debit card numbers"
+            case .ssns: return "Social Security numbers"
+            case .idNumbers: return "Account, member, policy & ID numbers"
+            case .health: return "Health portals & medical details"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .birthDates: return "“Date of birth 03/14/2001” on a form or profile."
+            case .phoneNumbers: return "Numbers in chats, emails, signatures and forms."
+            case .addresses: return "Shipping and billing addresses, “Cambridge, MA 02139”, event venues."
+            case .cardNumbers: return "Card numbers, CVV and expiry fields at checkout."
+            case .ssns: return "SSNs and the forms that ask for them."
+            case .idNumbers: return "Bank, routing, insurance member/policy, passport, licence, patient IDs."
+            case .health: return "MyChart, Quest, Labcorp and other patient portals; results, diagnoses, prescriptions."
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .birthDates: return "gift"
+            case .phoneNumbers: return "phone"
+            case .addresses: return "house"
+            case .cardNumbers: return "creditcard"
+            case .ssns: return "person.text.rectangle"
+            case .idNumbers: return "number"
+            case .health: return "cross.case"
+            }
+        }
+
+        /// Prompt / Jev wording for "never keep this".
+        var instruction: String {
+            switch self {
+            case .birthDates: return "dates of birth or ages"
+            case .phoneNumbers: return "phone numbers"
+            case .addresses: return "home/street addresses, home town, city + ZIP"
+            case .cardNumbers: return "card numbers, CVV and expiry"
+            case .ssns: return "Social Security numbers"
+            case .idNumbers: return "bank/account/routing numbers, insurance member/policy/group IDs, passport/licence/patient numbers"
+            case .health: return "medical details (conditions, test results, prescriptions) and patient-portal pages"
+            }
+        }
+
+        /// Allowed out of the box: contact details live in every email and event.
+        static let allowedByDefault: Set<Category> = [.phoneNumbers, .addresses]
+    }
+
+    /// Which categories Navi must keep out of memory.
+    struct Policy: Sendable, Equatable {
+        var blocked: Set<Category>
+
+        /// Everything blocked — tests, and the cleanup when no settings exist.
+        static let strict = Policy(blocked: Set(Category.allCases))
+        static let `default` = Policy(allowed: Category.allowedByDefault)
+
+        init(blocked: Set<Category>) { self.blocked = blocked }
+        init(allowed: Set<Category>) { self.blocked = Set(Category.allCases).subtracting(allowed) }
+        /// From the settings' raw values (unknown names ignored).
+        init(allowedRawValues: [String]) { self.init(allowed: Set(allowedRawValues.compactMap(Category.init(rawValue:)))) }
+
+        func blocks(_ kind: Kind) -> Bool { blocked.contains(kind.category) }
+        func blocks(_ category: Category) -> Bool { blocked.contains(category) }
+        var allowed: Set<Category> { Set(Category.allCases).subtracting(blocked) }
     }
 
     struct Finding: Sendable, Equatable {
@@ -139,12 +232,12 @@ enum PersonalData {
 
     /// Every identifier in `text`, in order. `includeRedactOnly` adds the looser
     /// prose patterns (birthdays, "lives in …").
-    static func findings(in text: String, includeRedactOnly: Bool = false) -> [Finding] {
-        guard !text.isEmpty else { return [] }
+    static func findings(in text: String, includeRedactOnly: Bool = false, policy: Policy = .strict) -> [Finding] {
+        guard !text.isEmpty, !policy.blocked.isEmpty else { return [] }
         let ns = text as NSString
         let whole = NSRange(location: 0, length: ns.length)
         var out: [Finding] = []
-        for p in patterns where includeRedactOnly || !p.redactOnly {
+        for p in patterns where (includeRedactOnly || !p.redactOnly) && policy.blocks(p.kind) {
             for m in p.regex.matches(in: text, range: whole) {
                 let r = m.range(at: p.group)
                 guard r.location != NSNotFound, r.length > 0 else { continue }
@@ -156,8 +249,8 @@ enum PersonalData {
         return out.sorted { $0.range.location < $1.range.location }
     }
 
-    static func kinds(in text: String) -> Set<Kind> {
-        Set(findings(in: text).map(\.kind))
+    static func kinds(in text: String, policy: Policy = .strict) -> Set<Kind> {
+        Set(findings(in: text, policy: policy).map(\.kind))
     }
 
     struct Redaction: Sendable, Equatable {
@@ -168,9 +261,9 @@ enum PersonalData {
         var changed: Bool { !values.isEmpty }
     }
 
-    /// Replaces every identifier (prose patterns included) with `[redacted]`.
-    static func redact(_ text: String) -> Redaction {
-        let found = findings(in: text, includeRedactOnly: true)
+    /// Replaces every blocked identifier (prose patterns included) with `[redacted]`.
+    static func redact(_ text: String, policy: Policy = .strict) -> Redaction {
+        let found = findings(in: text, includeRedactOnly: true, policy: policy)
         guard !found.isEmpty else { return Redaction(text: text, values: [], kinds: []) }
         // Merge overlapping spans, then replace back to front.
         var spans: [NSRange] = []
@@ -236,17 +329,19 @@ enum PersonalData {
         return nil
     }
 
-    /// Local evidence about one frame; also rendered into Jev's state.
+    /// Local evidence about one frame; also rendered into Jev's state. `kinds`
+    /// holds only what the policy blocks — an allowed phone number is no signal.
     struct FrameSignals: Sendable, Equatable {
         var kinds: Set<Kind>
         var formMarkers: [String]
         var page: PageKind?
+        var policy: Policy = .strict
 
-        /// Never store: a hard identifier (DOB, card, SSN, ID number), any patient
-        /// portal, or a soft one (phone, address, ZIP) typed into a personal form
-        /// or shown on a sign-up / checkout / identity page.
+        /// Never store: a blocked hard identifier (DOB, card, SSN, ID number), a
+        /// patient portal (unless health is allowed), or a blocked soft one (phone,
+        /// address, ZIP) typed into a personal form or on a sign-up / checkout / identity page.
         var isSensitive: Bool {
-            if kinds.contains(where: \.isHard) || page == .medical { return true }
+            if kinds.contains(where: \.isHard) || (page == .medical && policy.blocks(.health)) { return true }
             let soft = kinds.contains(.phone) || kinds.contains(.address) || kinds.contains(.postalCode)
             return soft && (formMarkers.count >= 2 || page != nil)
         }
@@ -254,46 +349,53 @@ enum PersonalData {
         /// One labelled line for Jev (`[FORM_SIGNALS]`). Kinds only, never values.
         var stateLine: String {
             var parts: [String] = []
-            if let page { parts.append("page: \(page.rawValue)") }
+            if let page, page != .medical || policy.blocks(.health) { parts.append("page: \(page.rawValue)") }
             if !formMarkers.isEmpty { parts.append("personal_fields: " + formMarkers.prefix(8).joined(separator: ", ")) }
             if !kinds.isEmpty { parts.append("identifier_values: " + kinds.sorted().map(\.rawValue).joined(separator: ", ")) }
             return parts.isEmpty ? "none" : parts.joined(separator: " · ")
         }
     }
 
-    static func signals(text: String, title: String?, url: String?) -> FrameSignals {
+    static func signals(text: String, title: String?, url: String?, policy: Policy = .strict) -> FrameSignals {
         let joined = [title ?? "", text].joined(separator: "\n")
-        return FrameSignals(kinds: kinds(in: joined), formMarkers: formMarkers(in: joined),
-                            page: pageKind(url: url, title: title))
+        return FrameSignals(kinds: kinds(in: joined, policy: policy), formMarkers: formMarkers(in: joined),
+                            page: pageKind(url: url, title: title), policy: policy)
     }
 
     // MARK: Digest scrub
 
-    /// Key facts about these are dropped whole: a redacted fact says nothing.
-    static let personalFactMarkers: [String] = [
-        "date of birth", "birthday", "birth date", "phone number", "mobile number", "home address", "street address",
-        "hometown", "home town", "zip code", "postal code", "social security", "ssn", "insurance id", "member id",
-        "policy number", "account number", "card number", "routing number", "diagnosed with", "prescription",
-        "lab result", "medical record",
+    /// Key facts about these are dropped whole (when blocked): a redacted fact says nothing.
+    static let personalFactMarkers: [Category: [String]] = [
+        .birthDates: ["date of birth", "birthday", "birth date"],
+        .phoneNumbers: ["phone number", "mobile number"],
+        .addresses: ["home address", "street address", "hometown", "home town", "zip code", "postal code"],
+        .cardNumbers: ["card number"],
+        .ssns: ["social security", "ssn"],
+        .idNumbers: ["insurance id", "member id", "policy number", "account number", "routing number"],
+        .health: ["diagnosed with", "prescription", "lab result", "medical record"],
     ]
+
+    static func mentionsPersonalFact(_ text: String, policy: Policy = .strict) -> Bool {
+        let lower = text.lowercased()
+        return personalFactMarkers.contains { cat, markers in policy.blocks(cat) && markers.contains { lower.contains($0) } }
+    }
 
     /// Redacts identifiers from a parsed digest: title and summary are
     /// redacted in place; key facts, entities, topics and links that carry an
     /// identifier (or repeat a redacted value, e.g. a hometown entity) are dropped.
     /// Returns the clean digest and how many things were removed.
-    static func scrub(_ d: DigestResult) -> (DigestResult, removed: Int) {
+    static func scrub(_ d: DigestResult, policy: Policy = .strict) -> (DigestResult, removed: Int) {
         var removed = 0
         var values: [String] = []
         var out = d
         for keyPath in [\DigestResult.title, \DigestResult.summary] {
-            let r = redact(d[keyPath: keyPath])
+            let r = redact(d[keyPath: keyPath], policy: policy)
             if r.changed { out[keyPath: keyPath] = r.text; removed += r.values.count; values += r.values }
         }
         out.keyFacts = d.keyFacts.filter { fact in
-            let r = redact(fact)
+            let r = redact(fact, policy: policy)
             values += r.values
-            let lower = fact.lowercased()
-            let keep = !r.changed && !personalFactMarkers.contains { lower.contains($0) }
+            let keep = !r.changed && !mentionsPersonalFact(fact, policy: policy)
             if !keep { removed += 1 }
             return keep
         }
@@ -303,17 +405,17 @@ enum PersonalData {
             return values.contains { v in let v = v.lowercased(); return v.contains(n) || n.contains(v) }
         }
         out.entities = d.entities.filter { e in
-            let keep = redact(e.name).values.isEmpty && !repeatsValue(e.name)
+            let keep = redact(e.name, policy: policy).values.isEmpty && !repeatsValue(e.name)
             if !keep { removed += 1 }
             return keep
         }
         out.topics = d.topics.filter { t in
-            let keep = redact(t).values.isEmpty && !repeatsValue(t)
+            let keep = redact(t, policy: policy).values.isEmpty && !repeatsValue(t)
             if !keep { removed += 1 }
             return keep
         }
         out.links = d.links.filter { l in
-            let keep = findings(in: l.removingPercentEncoding ?? l).isEmpty
+            let keep = findings(in: l.removingPercentEncoding ?? l, policy: policy).isEmpty
             if !keep { removed += 1 }
             return keep
         }

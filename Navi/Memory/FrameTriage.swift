@@ -49,40 +49,61 @@ struct FrameTriage: Sendable {
         "Key moment: decision, message sent, document created",
     ]
 
-    static let questions: [String: JevClient.Question] = [
-        "activity": .choice(instructions: "What kind of activity is shown on this screen?", criteria: activities),
-        "is_sensitive": .noulJSON(instructions: JevClient.JSONValue(any: sensitiveInstructions)),
-        "is_new_context": .noul(instructions: "The user has switched to a different task/topic than the previous frame."),
-        "importance": .score(instructions: "How important is this moment for later recall?", criteria: importanceLevels),
-    ]
+    static let questions = questions(for: .strict)
+
+    /// The four triage heads; `is_sensitive` only names what the user keeps out of memory.
+    static func questions(for policy: PersonalData.Policy) -> [String: JevClient.Question] {
+        [
+            "activity": .choice(instructions: "What kind of activity is shown on this screen?", criteria: activities),
+            "is_sensitive": .noulJSON(instructions: JevClient.JSONValue(any: sensitiveInstructions(for: policy))),
+            "is_new_context": .noul(instructions: "The user has switched to a different task/topic than the previous frame."),
+            "importance": .score(instructions: "How important is this moment for later recall?", criteria: importanceLevels),
+        ]
+    }
 
     /// Jev's `is_sensitive` probability at or above which a frame is stored as a
     /// stub. Below a coin flip on purpose: a missed sign-up form costs far more
     /// than a routine frame left out of memory.
     static let sensitiveThreshold = 0.4
 
-    /// Structured instructions for `is_sensitive` (docs.typesafe.ai/primitives/advanced).
-    static let sensitiveInstructions: [String: Any] = [
-        "question": "Would storing this screen keep private data the user would not want recorded?",
-        "sensitive_when": [
-            "a password, passcode or PIN field, or 2FA / verification / one-time codes",
-            "personal identifiers entered into or shown in a form: date of birth, home or street address, city + ZIP, phone number, SSN or other government ID, driver's licence or passport number",
-            "account sign-up / registration, checkout or payment forms that collect name, address, phone or card details",
-            "card, bank, routing or account numbers; balances and statements",
-            "patient portals and medical records: lab or test results, diagnoses, prescriptions, insurance member / policy / group IDs",
-            "identity verification (ID.me, login.gov, IRS, SSA, DMV, KYC selfie or ID upload)",
-        ],
-        "not_sensitive_when": [
+    /// Structured instructions for `is_sensitive` (docs.typesafe.ai/primitives/advanced),
+    /// built from the categories the user blocks (Settings → Memory → Personal information).
+    static func sensitiveInstructions(for policy: PersonalData.Policy) -> [String: Any] {
+        typealias C = PersonalData.Category
+        let identifiers: [(C, String)] = [
+            (.birthDates, "date of birth"), (.phoneNumbers, "phone number"), (.addresses, "home or street address, city + ZIP"),
+            (.cardNumbers, "card number"), (.ssns, "SSN"),
+            (.idNumbers, "bank, routing or account numbers, insurance member / policy / group IDs, passport or licence numbers"),
+        ]
+        let blockedIDs = identifiers.filter { policy.blocks($0.0) }.map(\.1)
+        var when = ["a password, passcode or PIN field, or 2FA / verification / one-time codes"]
+        if !blockedIDs.isEmpty {
+            when.append("personal identifiers entered into or shown in a form or profile: " + blockedIDs.joined(separator: ", "))
+            when.append("account sign-up / registration, checkout or payment forms where any of those are being typed")
+        }
+        if policy.blocks(.cardNumbers) || policy.blocks(.idNumbers) { when.append("card or bank details, balances and statements") }
+        if policy.blocks(.health) { when.append("patient portals and medical records: lab or test results, diagnoses, prescriptions") }
+        if policy.blocks(.ssns) || policy.blocks(.idNumbers) { when.append("identity verification (ID.me, login.gov, IRS, SSA, DMV, KYC selfie or ID upload)") }
+        var notWhen = [
             "an article, documentation, code or search results that only mention these topics",
             "a sign-in page showing just the email / username field",
             "a business's public address or phone number on a map, store or contact page",
-        ],
-        "signals": "FORM_SIGNALS is computed locally from the screen: page kind, personal-field labels present and kinds of identifier values found (values never shown). identifier_values on a sign-up, checkout, medical or identity page means sensitive.",
-    ]
+        ]
+        let allowed = C.allCases.filter { !policy.blocks($0) }
+        if !allowed.isEmpty {
+            notWhen.append("the user lets Navi remember these, so a screen showing only them is fine: " + allowed.map(\.instruction).joined(separator: "; "))
+        }
+        return [
+            "question": "Would storing this screen keep private data the user would not want recorded?",
+            "sensitive_when": when,
+            "not_sensitive_when": notWhen,
+            "signals": "FORM_SIGNALS is computed locally from the screen: page kind, personal-field labels present and kinds of blocked identifier values found (values never shown). identifier_values on a sign-up, checkout, medical or identity page means sensitive.",
+        ]
+    }
 
     /// Structured state block for Jev (labelled sections, not prose).
-    static func state(for i: Input, ocrLimit: Int = 3000) -> String {
-        state(for: i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url), ocrLimit: ocrLimit)
+    static func state(for i: Input, policy: PersonalData.Policy = .strict, ocrLimit: Int = 3000) -> String {
+        state(for: i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url, policy: policy), ocrLimit: ocrLimit)
     }
 
     static func state(for i: Input, signals: PersonalData.FrameSignals, ocrLimit: Int = 3000) -> String {
@@ -110,6 +131,21 @@ struct FrameTriage: Sendable {
         "account balance", "passcode",
     ]
 
+    /// Markers that belong to a category the user may allow; the rest (codes,
+    /// passcodes, passwords, keys) are always blocked.
+    static let markerCategories: [String: PersonalData.Category] = [
+        "cvv": .cardNumbers, "cvc": .cardNumbers, "card number": .cardNumbers, "security code": .cardNumbers,
+        "credit card": .cardNumbers, "debit card": .cardNumbers, "expiry": .cardNumbers, "expiration date": .cardNumbers,
+        "social security": .ssns, "ssn": .ssns,
+        "iban": .idNumbers, "routing number": .idNumbers, "account balance": .idNumbers, "bank account": .idNumbers,
+        "sort code": .idNumbers, "tax return": .idNumbers,
+        "medical record": .health, "diagnosis": .health, "prescription": .health,
+    ]
+
+    private static func applies(_ marker: String, _ policy: PersonalData.Policy) -> Bool {
+        markerCategories[marker].map(policy.blocks) ?? true
+    }
+
     /// Broader markers used only when Jev is unavailable.
     static let softSensitiveMarkers: [String] = [
         "password", "credit card", "debit card", "bank account", "sort code", "expiry", "expiration date",
@@ -117,9 +153,9 @@ struct FrameTriage: Sendable {
         "seed phrase", "private key",
     ]
 
-    static func containsHardSensitive(_ text: String) -> Bool {
+    static func containsHardSensitive(_ text: String, policy: PersonalData.Policy = .strict) -> Bool {
         let t = text.lowercased()
-        return hardSensitiveMarkers.contains { containsMarker(t, $0) }
+        return hardSensitiveMarkers.contains { applies($0, policy) && containsMarker(t, $0) }
     }
 
     /// Short markers ("ssn", "cvv", "iban") must be whole words: `className`
@@ -136,9 +172,9 @@ struct FrameTriage: Sendable {
         return false
     }
 
-    static func containsSoftSensitive(_ text: String) -> Bool {
+    static func containsSoftSensitive(_ text: String, policy: PersonalData.Policy = .strict) -> Bool {
         let t = text.lowercased()
-        return softSensitiveMarkers.contains { t.contains($0) } || containsHardSensitive(t)
+        return softSensitiveMarkers.contains { applies($0, policy) && t.contains($0) } || containsHardSensitive(t, policy: policy)
     }
 
     /// Bundle-ID / title based activity guess.
@@ -163,11 +199,12 @@ struct FrameTriage: Sendable {
     /// Deterministic guard, Jev or not: hard markers ("cvv", "one-time code"…)
     /// or personal identifiers in a form (`PersonalData.FrameSignals.isSensitive`).
     static func locallySensitive(_ i: Input, signals: PersonalData.FrameSignals) -> Bool {
-        signals.isSensitive || containsHardSensitive(i.ocrText) || containsHardSensitive(i.windowTitle ?? "")
+        signals.isSensitive || containsHardSensitive(i.ocrText, policy: signals.policy)
+            || containsHardSensitive(i.windowTitle ?? "", policy: signals.policy)
     }
 
-    static func heuristic(_ i: Input) -> TriageResult {
-        heuristic(i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url))
+    static func heuristic(_ i: Input, policy: PersonalData.Policy = .strict) -> TriageResult {
+        heuristic(i, signals: PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url, policy: policy))
     }
 
     static func heuristic(_ i: Input, signals: PersonalData.FrameSignals) -> TriageResult {
@@ -178,7 +215,8 @@ struct FrameTriage: Sendable {
         let trivial = i.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count < 40
         return TriageResult(activity: guessActivity(bundleID: i.bundleID, title: i.windowTitle, url: i.url),
                             isSensitive: locallySensitive(i, signals: signals)
-                                || containsSoftSensitive(i.ocrText) || containsSoftSensitive(i.windowTitle ?? ""),
+                                || containsSoftSensitive(i.ocrText, policy: signals.policy)
+                                || containsSoftSensitive(i.windowTitle ?? "", policy: signals.policy),
                             isNewContext: newContext,
                             importance: trivial ? 0 : 1,
                             source: .heuristic)
@@ -188,8 +226,8 @@ struct FrameTriage: Sendable {
 
     /// One Jev call per frame; falls back to heuristics on any error. A frame
     /// the local guard already calls sensitive never leaves the Mac.
-    static func triage(_ i: Input, jev: JevClient) async -> TriageResult {
-        let signals = PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url)
+    static func triage(_ i: Input, jev: JevClient, policy: PersonalData.Policy = .strict) async -> TriageResult {
+        let signals = PersonalData.signals(text: i.ocrText, title: i.windowTitle, url: i.url, policy: policy)
         let fallback = heuristic(i, signals: signals)
         if locallySensitive(i, signals: signals) {
             Log.memory.info("Personal data on screen (\(signals.stateLine, privacy: .public)); frame kept local")
@@ -197,13 +235,13 @@ struct FrameTriage: Sendable {
         }
         guard jev.isConfigured else { return fallback }
         do {
-            let r = try await jev.ask(state: state(for: i, signals: signals), questions: questions, cacheable: false)
+            let r = try await jev.ask(state: state(for: i, signals: signals), questions: questions(for: policy), cacheable: false)
             let activity = r["activity"]?.choice ?? fallback.activity
             let sensitive = (r["is_sensitive"]?.noul ?? 0) >= sensitiveThreshold
             let newCtx = (r["is_new_context"]?.noul ?? 0) > 0.5
             let importance = r["importance"]?.score ?? 1
             return TriageResult(activity: activities[activity] == nil ? "other" : activity,
-                                isSensitive: sensitive || containsHardSensitive(i.ocrText),
+                                isSensitive: sensitive || containsHardSensitive(i.ocrText, policy: policy),
                                 isNewContext: i.previousApp == nil ? false : newCtx,
                                 importance: max(0, min(3, importance)),
                                 source: .jev)

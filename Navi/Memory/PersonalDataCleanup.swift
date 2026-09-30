@@ -20,6 +20,8 @@ import Foundation
 struct PersonalDataCleanup {
     let store: MemoryStore
     let vaultRoot: URL
+    /// What the user lets memory keep; only blocked categories are redacted.
+    var policy: PersonalData.Policy = .strict
 
     struct SessionFix: Sendable, Equatable {
         var before: SessionRecord
@@ -71,21 +73,21 @@ struct PersonalDataCleanup {
             let facts = note.map(Self.keyFacts(in:))
             let digest = DigestResult(title: s.title, summary: s.summary, topics: s.topics, entities: s.entities,
                                       keyFacts: facts ?? [], links: [])
-            let (clean, removed) = PersonalData.scrub(digest)
+            let (clean, removed) = PersonalData.scrub(digest, policy: policy)
             // The note also carries the file name, links and the day's one-liner.
-            let noteHits = note.map { PersonalData.findings(in: $0, includeRedactOnly: true) } ?? []
+            let noteHits = note.map { PersonalData.findings(in: $0, includeRedactOnly: true, policy: policy) } ?? []
             guard removed > 0 || !noteHits.isEmpty else { continue }
             var after = s
             after.title = clean.title; after.summary = clean.summary
             after.topics = clean.topics; after.entities = clean.entities
-            let kinds = PersonalData.redact([s.title, s.summary, note ?? ""].joined(separator: "\n")).kinds
+            let kinds = PersonalData.redact([s.title, s.summary, note ?? ""].joined(separator: "\n"), policy: policy).kinds
             plan.sessions.append(SessionFix(before: s, after: after, keptKeyFacts: facts.map { _ in clean.keyFacts }, kinds: kinds))
 
             // Frames of a flagged session: any identifier at all is enough.
             for f in try store.frames(in: DateInterval(start: s.start, end: max(s.start, s.end)), limit: 5000)
             where !f.ocrText.isEmpty || f.windowTitle != nil {
                 let text = [f.windowTitle ?? "", f.url ?? "", f.ocrText].joined(separator: "\n")
-                if !PersonalData.findings(in: text).isEmpty { flagged.insert(f.id) }
+                if !PersonalData.findings(in: text, policy: policy).isEmpty { flagged.insert(f.id) }
             }
         }
 
@@ -98,7 +100,7 @@ struct PersonalDataCleanup {
             for f in page {
                 let input = FrameTriage.Input(bundleID: f.bundleID, appName: f.appName, windowTitle: f.windowTitle, url: f.url,
                                               timestamp: f.timestamp, ocrText: f.ocrText, previousApp: nil, previousTitle: nil)
-                let signals = PersonalData.signals(text: f.ocrText, title: f.windowTitle, url: f.url)
+                let signals = PersonalData.signals(text: f.ocrText, title: f.windowTitle, url: f.url, policy: policy)
                 if FrameTriage.locallySensitive(input, signals: signals) { flagged.insert(f.id) }
             }
         }
@@ -121,7 +123,7 @@ struct PersonalDataCleanup {
             if let rel = fix.before.notePath {
                 let url = vaultRoot.appendingPathComponent(rel)
                 if let text = try? String(contentsOf: url, encoding: .utf8) {
-                    let r = Self.scrubSessionNote(text, fix: fix)
+                    let r = Self.scrubSessionNote(text, fix: fix, policy: policy)
                     try Self.write(r.text, to: url)
                     report.notesRewritten += 1
                     if let a = r.attachment, fm.fileExists(atPath: vaultRoot.appendingPathComponent(a).path) {
@@ -130,7 +132,7 @@ struct PersonalDataCleanup {
                     }
                     // A file name that holds an identifier is renamed; links follow.
                     let oldStem = (rel as NSString).deletingPathExtension
-                    let newStem = PersonalData.redact(oldStem).text.replacingOccurrences(of: PersonalData.placeholder, with: "redacted")
+                    let newStem = PersonalData.redact(oldStem, policy: policy).text.replacingOccurrences(of: PersonalData.placeholder, with: "redacted")
                     var renames: [(String, String)] = []
                     if newStem != oldStem {
                         try fm.moveItem(at: url, to: vaultRoot.appendingPathComponent(newStem + ".md"))
@@ -162,7 +164,7 @@ struct PersonalDataCleanup {
         var lines = text.components(separatedBy: "\n").filter { line in
             !dropped.contains { line.trimmingCharacters(in: .whitespaces) == "- \($0)" }
         }
-        lines = lines.map { Self.rename(PersonalData.redact($0).text, renames) }
+        lines = lines.map { Self.rename(PersonalData.redact($0, policy: policy).text, renames) }
         let out = lines.joined(separator: "\n")
         guard out != text else { return 0 }
         try Self.write(out, to: url)
@@ -235,7 +237,7 @@ struct PersonalDataCleanup {
     /// The session note with the fix applied: title, topics and entities from
     /// `fix.after`, only the kept key facts, no screenshot section, every other
     /// line redacted. Returns the attachment the screenshot pointed to.
-    static func scrubSessionNote(_ text: String, fix: SessionFix) -> (text: String, attachment: String?) {
+    static func scrubSessionNote(_ text: String, fix: SessionFix, policy: PersonalData.Policy = .strict) -> (text: String, attachment: String?) {
         let appNote = VaultWriter.slug(fix.before.appName.isEmpty ? "Unknown" : fix.before.appName)
         let topics = fix.after.topics.map { VaultWriter.slug($0) }.filter { !$0.isEmpty }
         let entities = fix.after.entities.map { VaultWriter.slug($0.name) }.filter { !$0.isEmpty && $0 != appNote }
@@ -253,7 +255,7 @@ struct PersonalDataCleanup {
                 if line.hasPrefix("title:") { out.append("title: \(VaultWriter.yaml(fix.after.title))") }
                 else if line.hasPrefix("topics:") { out.append("topics: [\(topics.map(VaultWriter.yaml).joined(separator: ", "))]") }
                 else if line.hasPrefix("entities:") { out.append("entities: [\(entities.map(VaultWriter.yaml).joined(separator: ", "))]") }
-                else { out.append(PersonalData.redact(line).text) }
+                else { out.append(PersonalData.redact(line, policy: policy).text) }
                 continue
             }
             if line.hasPrefix("## ") || line.hasPrefix("# ") { current = line }
@@ -275,7 +277,7 @@ struct PersonalDataCleanup {
             default:
                 break
             }
-            out.append(PersonalData.redact(line).text)
+            out.append(PersonalData.redact(line, policy: policy).text)
         }
         // A key-facts heading with nothing left under it goes too.
         var cleaned: [String] = []
