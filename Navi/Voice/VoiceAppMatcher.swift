@@ -41,6 +41,18 @@ enum VoiceAppMatcher {
         return guess.isEmpty ? nil : guess
     }
 
+    /// Whether the last words of `text` are the start of a longer installed app
+    /// name ("open visual studio" with Visual Studio Code installed, "open google"
+    /// with Google Chrome): the user may not have finished naming the app.
+    static func mayContinueAppName(_ text: String, index: AppIndex) -> Bool {
+        let words = text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "'" })
+            .map(String.init)
+        guard let last = words.last, !stopWords.contains(last) || ambiguousNames.contains(last) else { return false }
+        let tails = (1...min(3, words.count)).map { words.suffix($0).joined(separator: " ") + " " }
+        return index.entries.contains { e in tails.contains { e.lowerName.hasPrefix($0) } }
+    }
+
     static func candidates(in text: String, index: AppIndex, running: Set<String> = []) -> [Candidate] {
         let words = text.lowercased()
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "'" })

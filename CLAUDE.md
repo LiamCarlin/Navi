@@ -168,13 +168,23 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `navi://voice`) and the island drops out of the notch. Apple's on-device
     `SpeechTranscriber` streams volatile words (~1 s windows; the session flushes it
     after ~350 ms of acoustic silence); `UtteranceSegmenter` splits the stream at
-    "and"/"then"/punctuation into HEAD + FOLLOWING; one Jev call per candidate
+    "and"/"then"/punctuation into HEAD + FOLLOWING — and proposes a *soft* split
+    before an imperative verb with no connector ("open chrome | search for cats";
+    not after "to"/"you"/"how", never inside dictated text; Jev must be ≥ 60 %
+    complete or it merges); one Jev call per candidate
     answers `boundary` (complete / continues / not_a_command) plus speculative heads
     `kind` (open_app, do_in_app, browse_or_search, answer, system_setting, control_navi),
     `app_target` (fuzzy matches from `VoiceAppMatcher`), `surface`, `start_from`,
     `is_risky`, `continues_previous`, `wants_memory`. `VoiceDecider.decide` is pure:
     following words or a sentence mark ⇒ act now; a boundary-less head waits ~650 ms
-    of real silence (400 ms when Jev ≥ 80 %); a bare "and" waits for a word. Commands
+    of real silence (400 ms when Jev ≥ 80 %, 250 ms for a clear "open <app>" that no
+    longer app name extends); a bare "and" waits for a word. Every wait retries: a head
+    still not an instruction after 6 s of silence is cleared with "Didn’t catch…"
+    (`Decision.giveUp`), never left hanging. A verdict that was complete-but-settling is
+    reused when the pause arrives (no second Jev trip); "stop" while busy and "yes"
+    while asking skip Jev (`instantDecision`). Pauses come from `SpeechActivity`: a
+    10th-percentile noise floor over 4 s, so music or a video becomes the floor in
+    seconds instead of reading as nonstop talking. Commands
     run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the
