@@ -84,6 +84,11 @@ Reliability adaptations (from failed runs, see git log):
      whole runs ("Text helper returned no valid field value"). The step is
      now recorded as a no-change failure, the field is no longer offered for
      TYPE_TEXT on that document, and Jev decides again from the same page.
+ 19. The user's own context rides in Jev's state: Navi's screen memory knows
+     who "bella" is (Bella Chen, texted in Messages), which Google Doc "the HCI
+     notes" are and who works on them. Those things (NAVI_USER_CONTEXT_JSON,
+     only the ones the goal names) are added to every request as
+     `user_context`, next to the playbook.
 """
 
 import argparse
@@ -657,11 +662,29 @@ class Playbook:
         skill = self.skill_for(url)
         return list(skill.get("field_hints", [])) if skill else []
 
+    @staticmethod
+    def user_context_from_env():
+        """The people, projects and documents the goal names, as the user's screen
+        memory knows them (NAVI_USER_CONTEXT_JSON from Navi's `UserKnowledge`)."""
+        raw = os.environ.get("NAVI_USER_CONTEXT_JSON")
+        if not raw:
+            return None
+        try:
+            ctx = json.loads(raw)
+        except ValueError:
+            return None
+        return ctx if isinstance(ctx, dict) and ctx.get("things") else None
+
     def install(self):
-        """Adds the page's playbook to every Jev request."""
+        """Adds the page's playbook (and the user's context) to every Jev request."""
         inner = jev_model.post_json
 
+        user_context = self.user_context_from_env()
+
         def post_json(url, key, body):
+            if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict) and user_context:
+                body = dict(body)
+                body["state"] = {**body["state"], "user_context": user_context}
             if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict):
                 page_url = (body["state"].get("page") or {}).get("url") or self.current_url
                 book = self.playbook_for(page_url)

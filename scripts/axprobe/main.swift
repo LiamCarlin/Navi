@@ -6,7 +6,6 @@ guard args.count >= 2 else { print("usage: axprobe <bundle-id> [goal ...]"); exi
 let bid = args[1]
 guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first else { print("not running: \(bid)"); exit(1) }
 let target = AgentTarget(pid: app.processIdentifier, bundleID: bid, appName: app.localizedName)
-let sem = DispatchSemaphore(value: 0)
 Task {
     let snapper = AXSnapshotter()
     let snap = await snapper.capture(near: nil, includeMenuBar: false, target: target)
@@ -15,8 +14,8 @@ Task {
         for e in snap.elements { print("[\(e.index)] \(e.role) “\(e.label.prefix(70))” v=\(e.value.map { String($0.prefix(30)) } ?? "") ops=\(e.operations) \(e.isWebContent ? "web" : "app") path=\(e.path.prefix(50))") }
         print("--- text ---\n\(snap.visibleText.prefix(800))")
     }
-    guard args.count > 2 else { sem.signal(); return }
-    guard Keychain.has(.typesafe) || Keychain.has(.vercelGateway) else { print("Set TYPESAFE_API_KEY (or AI_GATEWAY_API_KEY) to ask Jev."); sem.signal(); return }
+    guard args.count > 2 else { exit(0) }
+    guard Keychain.has(.typesafe) || Keychain.has(.vercelGateway) else { print("Set TYPESAFE_API_KEY (or AI_GATEWAY_API_KEY) to ask Jev."); exit(0) }
     let jev = JevClient()
     let driver = JevDriver(jev: jev)
     let skill = AppSkills.skill(bundleID: snap.bundleID, url: snap.url)
@@ -27,6 +26,9 @@ Task {
         input.keyCombos = AppSkills.keyCombos(for: skill)
         input.appCandidates = TextCandidates.extract(task: goal).filter { $0.source == "app" }.map(\.text)
         input.urlCandidates = TextCandidates.extract(task: goal).filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        // AXPROBE_CONTEXT='[{"name":"Bella Chen","type":"person",…}]' → `state.user_context` (UserKnowledge A/B).
+        if let raw = ProcessInfo.processInfo.environment["AXPROBE_CONTEXT"],
+           let ctx = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] { input.userContext = ctx }
         do {
             let (v, req) = try await driver.ask(input)
             let d = JevDriver.decide(v, request: req, threshold: 0.5, effectGoal: !AgentRun.isLookup(goal), actionsTaken: 0, typingGoal: JevDriver.goalAsksToType(goal))
@@ -39,6 +41,7 @@ Task {
             print("GOAL “\(goal)”\n  \(JevDriver.statusLine(v))\(targetDesc)\n  ops: \(top) · complete=\(Int(v.taskComplete * 100))% irreversible=\(Int(v.isIrreversible * 100))%\n  decision: \(d)")
         } catch { print("GOAL “\(goal)” error: \(error)") }
     }
-    sem.signal()
+    exit(0)
 }
-sem.wait()
+// The main queue must stay free: JevClient reads settings on the main actor.
+dispatchMain()
