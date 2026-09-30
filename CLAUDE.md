@@ -149,6 +149,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     which sends the invites. ↑↓ times, ⌘[ ⌘] day, ⌘- ⌘= length, esc back to results. Video
     toggle adds the user's own meeting link (`schedulerVideoLink`, pasted once in the card).
     `navi://run` never books by itself. Needs Calendar (full access) + Contacts; the card asks.
+    **Any calendar** (`Schedule/CalendarAccounts`, Settings → Calendars): no Google/Microsoft
+    sign-in in Navi — accounts added in System Settings › Internet Accounts (Google, Microsoft
+    Exchange for Outlook/M365/Outlook.com, iCloud) reach EventKit, and so the card. The page lists
+    them by account (`CalendarAccountKind.classify`), a "Busy" toggle per calendar
+    (`schedulerBusyCalendars`; default = own writable calendars, never subscriptions), "Book new
+    meetings in" (`schedulerBookingCalendar`, else Calendar's default; the card's calendar menu
+    overrides per meeting, and the account's domain picks guests' work emails), "Open Internet
+    Accounts", and "Subscribe" for a published ICS/webcal link (Outlook web › Publish, Google ›
+    Secret iCal address) — Calendar does the subscribing. Reminder lists show their account when
+    two share a name.
   - **Reminder card** (`Remind`, `Panel/Views/ReminderCardView`): "remind me to call mom tomorrow
     at 5", "todo: renew passport next week", "don't forget…", "set a reminder…" drop a card under
     the bar (`Mode.remind`; it wins over the scheduler). `ReminderParser` reuses

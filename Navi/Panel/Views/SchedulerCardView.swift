@@ -222,6 +222,7 @@ struct SchedulerCardView: View {
                     .contentTransition(.numericText())
                 RoundIconButton(symbol: "plus", help: "Longer (⌘=)", size: 36) { model.changeDuration(1) }
                     .disabled(model.duration >= 480)
+                if model.writableCalendars.count > 1 { calendarMenu }
                 Spacer()
                 BookButton(model: model)
             }
@@ -233,6 +234,45 @@ struct SchedulerCardView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.primary.opacity(0.025)))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+    }
+
+    /// Which calendar (and so which account — iCloud, Google, Outlook) the meeting goes in.
+    private var calendarMenu: some View {
+        Menu {
+            ForEach(model.writableCalendars) { cal in
+                Button {
+                    model.selectBookingCalendar(cal.id)
+                } label: {
+                    if cal.id == model.bookingCalendar?.id { Label(cal.menuTitle, systemImage: "checkmark") } else { Text(cal.menuTitle) }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.calendarColor.map { Color(nsColor: $0) } ?? .accentColor)
+                    .frame(width: 8, height: 8)
+                Text(Self.short(model.bookingCalendar?.title ?? "Calendar"))
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(Capsule().fill(Color.primary.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.bookingCalendar.map { "Books in \($0.menuTitle)" } ?? "Calendar to book in")
+    }
+
+    /// "liam.carlin@olin.edu" → "liam.carlin@olin…" so the controls row keeps its room.
+    static func short(_ title: String, max: Int = 18) -> String {
+        title.count <= max ? title : String(title.prefix(max - 1)) + "…"
     }
 
     private var videoHelp: String {
