@@ -36,7 +36,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (Claude `computer_toolset_20260801` loop + Jev safety gating), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
@@ -67,12 +67,19 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
   - **Agent gating** (`Agent`): after each Claude computer-use step, Jev answers
     `is_irreversible` (send/pay/delete), `task_complete`, `is_stuck` from the
     textual step log — cheap and fast, so the loop stays snappy.
-  - **Jev-first driver** (`Agent/JevDriver`): one call per step picks
-    `operation` + target from the AX element table (browser steps: vendored
-    jev-ultrafast on the DOM). Claude is System Two around it: `TaskPlanner`
-    splits a task into single-surface steps (prefetched while typing),
-    `JevCoach` diagnoses **once** when Jev flails and its guidance rides in
-    Jev's state/instructions — Claude never drives unless Jev says NEED_VISION.
+  - **Native computer use = typesafe-computer-use** (`Agent/TypesafeCU/`, source of truth
+    vendored in `vendor/typesafe-computer-use`, mapping in docs/TYPESAFE_CU.md; re-vendor with
+    `scripts/typesafe-cu/sync.sh` and port what changed). *The classifier picks, code decides
+    facts, the writer only writes free text.* Per step: the AX tree (controls + static text,
+    OCR where thin) → one numbered item list (`CUPerception`); code adds dates, rows, regions,
+    the focused field, "already tried on this screen" (`CUFacts`, `CURunState`); one Jev call
+    answers `kind` + speculative targets (`CUDecide`); `ActionExecutor` acts. Keep the action set
+    **mutually exclusive** (Return/Escape/Back are kinds, never also shortcuts). When Jev stops
+    (done, none, confidence < 0.4, 3 idle / 2 repeated actions, step limit) the writer
+    (`CUWriter`, Claude) reads the screen and answers or hands back one move (`focus`); it
+    never picks an action, and a third stall with no new page is final. Browser steps on
+    Chromium still go to vendored jev-ultrafast on the DOM. `TaskPlanner` splits a task into
+    single-surface steps (prefetched while typing). Run folders: `~/Library/Logs/Navi/runs/`.
     Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
   - **App playbooks** (`Agent/AppSkills` + `AppSkillLibrary`, 60+ native / 55+ web):
     Jev knows nothing about Notes, Messages, Calculator, Drive… so every step's state
@@ -101,11 +108,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     get a one-line `user_usually_uses`; voice app inference breaks ties by usage; deep
     links move to the user's own host (`personalize`: canvas.instructure.com →
     canvas.olin.edu, never across rival sites). Probe it on a copy of memory.sqlite.
-  - **Fewer Claude turns** (`JevDriver.decide`): below the confidence threshold Jev's
-    pick is still taken when it is cheap to undo (`actFloor` 0.22; never ⌘W/⌘↩/Delete);
-    a low-confidence step with `task_complete ≥ 0.5` after work was done is *done*;
-    validation tolerates untidy distributions; `FieldText.localGuess` types what the
-    goal spells out before any vision turn. Voice runs allow 2 Claude turns.
+  - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
+    screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
+    effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
+    field text is started speculatively on the obvious field while Jev decides. Voice runs allow
+    2 hand-backs (`maxClaudeFallbacks`). Claude drives only when Jev is unreachable.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
