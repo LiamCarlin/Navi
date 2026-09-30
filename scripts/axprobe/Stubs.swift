@@ -32,13 +32,16 @@ enum ScreenCapture {
     static var hasPermission: Bool { false }
     static func captureWindow(id: CGWindowID) async throws -> Frame { throw NaviError.permissionDenied("Screen Recording") }
 }
-/// The probe talks to Jev with a key from the environment, never through a Navi account.
-enum CloudFeature { case route }
-struct CloudRun { static func resolve(fallback: CloudFeature) -> CloudRun { CloudRun() } }
+// Navi's cloud (signed-in accounts) is never used by the probe: Jev is called with the env key.
+enum CloudFeature: String { case route, agent, voice, memory, answer }
+struct CloudRun: Sendable {
+    var feature: CloudFeature
+    static func resolve(fallback: CloudFeature) -> CloudRun { CloudRun(feature: fallback) }
+}
 final class CloudTransport: @unchecked Sendable {
     static let shared = CloudTransport()
     var isActive: Bool { false }
+    func request(path: String, body: Data, run: CloudRun) -> URLRequest { URLRequest(url: URL(string: "https://invalid.invalid")!) }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { throw NaviError.other("cloud unavailable in the probe") }
     func warm() {}
-    func request(path: String, body: Data, run: CloudRun) -> URLRequest { URLRequest(url: URL(string: "https://invalid.local")!) }
-    func send(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { throw NaviError.other("no Navi account in the probe") }
 }

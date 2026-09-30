@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import Speech
 import Testing
 @testable import Navi
 
@@ -180,6 +182,39 @@ import Testing
         s.update(finalized: "", volatile: "open notes and make the title hello")
         #expect(s.pending()?.head == "make the title hello")
     }
+
+    @Test func aNewVerbProposesASoftSplitWithoutAConnector() {
+        let c = try! #require(seg("", "open chrome search for cats").pending())
+        #expect(c.head == "open chrome")
+        #expect(c.following == "search for cats")
+        #expect(c.soft && c.hasBoundary && c.connector.isEmpty)
+        // The very next word is enough: the first instruction can run while the user keeps talking.
+        #expect(seg("", "open notes make").pending()?.head == "open notes")
+        // A spoken connector still wins.
+        let hard = try! #require(seg("", "open notes and make hello the title").pending())
+        #expect(hard.connector == "and" && !hard.soft)
+    }
+
+    @Test func softSplitsStayOutOfPhrasesAndDictatedText() {
+        // A verb after "to", "you", "I"… belongs to the phrase.
+        #expect(seg("", "search for how to open a file").pending()?.soft == false)
+        #expect(seg("", "can you open chrome").pending()?.head == "can you open chrome")
+        #expect(seg("", "I want to find my keys").pending()?.soft == false)
+        // Text to type or send is never split.
+        #expect(seg("", "text mom open the garage door").pending()?.head == "text mom open the garage door")
+        #expect(seg("", "type hello world then close").pending()?.connector == "then")
+        // A one-word head can't be split off ("open search" is one instruction).
+        #expect(seg("", "open search").pending()?.soft == false)
+    }
+
+    @Test func aMergedSoftSplitIsNeverProposedAgain() {
+        var s = seg("", "is the store open")
+        let c = try! #require(s.pending())
+        #expect(c.soft && c.head == "is the store")
+        s.acceptContinuation(c)
+        #expect(s.pending()?.head == "is the store open")
+        #expect(s.pending()?.soft == false)
+    }
 }
 
 // MARK: - Decider
@@ -212,6 +247,10 @@ import Testing
         var ctx = VoiceDecider.Context()
         ctx.appCandidates = apps
         return VoiceDecider.Input(clause: c, silenceMs: silence, context: ctx)
+    }
+
+    private var chrome: VoiceAppMatcher.Candidate {
+        .init(id: "a1", entry: AppEntry(name: "Google Chrome", path: "/Applications/Google Chrome.app", bundleID: "com.google.Chrome"), score: 1, phrase: "chrome")
     }
 
     private var notes: VoiceAppMatcher.Candidate {
@@ -296,8 +335,66 @@ import Testing
         guard case .wait = VoiceDecider.decide(v, input: input(c, silence: 2000)) else { Issue.record("expected wait"); return }
         guard case .commit = VoiceDecider.decide(v, input: input(c, silence: 3500)) else { Issue.record("expected commit"); return }
         v.boundary?.probabilities = ["complete": 0.05, "continues": 0.9, "not_a_command": 0.05]
+        // Not an instruction yet — but it is asked again, never left hanging…
         guard case .wait(_, let retry) = VoiceDecider.decide(v, input: input(c, silence: 3500)) else { Issue.record("expected wait"); return }
-        #expect(retry == nil)
+        #expect(retry == VoiceDecider.giveUpMs - 3500)
+        // …and once the user has clearly stopped, it is cleared out loud.
+        guard case .giveUp = VoiceDecider.decide(v, input: input(c, silence: VoiceDecider.giveUpMs)) else { Issue.record("expected give up"); return }
+    }
+
+    @Test func everyWaitRetries() {
+        // The old freeze: a `wait` with no retry and no new words sat there for good.
+        let c = clause("open the")
+        for pComplete in [0.0, 0.05, 0.1, 0.2, 0.35] {
+            for silence in [0, 400, 1000, 2000, 3000, 5000] {
+                var v = verdict(boundary: ("continues", 0.6))
+                v.boundary?.probabilities = ["complete": pComplete, "continues": 1 - pComplete, "not_a_command": 0]
+                if case .wait(_, let retry) = VoiceDecider.decide(v, input: input(c, silence: silence)) {
+                    #expect(retry != nil, "p=\(pComplete) silence=\(silence)")
+                }
+            }
+        }
+    }
+
+    @Test func softSplitsNeedASurerComplete() {
+        var c = clause("open chrome", following: "search for cats")
+        c.soft = true
+        var v = verdict(boundary: ("complete", 0.55), kind: "open_app", app: ("a1", 0.9))
+        v.boundary?.probabilities = ["complete": 0.55, "continues": 0.4, "not_a_command": 0.05]
+        #expect(VoiceDecider.decide(v, input: input(c)) == .merge)
+        let sure = VoiceDecider.decide(verdict(boundary: ("complete", 0.8), kind: "open_app", app: ("a1", 0.9)), input: input(c, apps: [chrome]))
+        guard case .commit(.openApp(let e, _)) = sure else { Issue.record("expected an immediate open, got \(sure)"); return }
+        #expect(e.name == "Google Chrome")
+        let state = VoiceDecider.stateJSON(input(c))
+        #expect(((state["transcript"] as? [String: Any])?["CONNECTOR"] as? String)?.contains("no connector") == true)
+    }
+
+    @Test func aClearAppOpenNeedsOnlyAShortPause() {
+        let c = clause("open chrome")
+        let v = verdict(boundary: ("complete", 0.7), kind: "open_app", app: ("a1", 0.9))
+        guard case .commit(.openApp) = VoiceDecider.decide(v, input: input(c, silence: VoiceDecider.openSettleMs, apps: [chrome])) else {
+            Issue.record("expected a quick open"); return
+        }
+        // "open visual studio" may still become "…code": wait for the full pause.
+        var inp = input(clause("open visual studio"), silence: VoiceDecider.openSettleMs, apps: [chrome])
+        inp.context.headMayContinueAppName = true
+        guard case .wait = VoiceDecider.decide(v, input: inp) else { Issue.record("expected wait"); return }
+        // Not an open at all: the usual pause.
+        guard case .wait = VoiceDecider.decide(verdict(boundary: ("complete", 0.7)), input: input(clause("compute 12"), silence: VoiceDecider.openSettleMs)) else {
+            Issue.record("expected wait"); return
+        }
+    }
+
+    @Test func stopAndYesNeedNoJevCall() {
+        var busy = input(clause("stop"), silence: 0)
+        #expect(VoiceDecider.instantDecision(busy) == nil)   // nothing to stop
+        busy.context.busyWith = "Opening Notes"
+        #expect(VoiceDecider.instantDecision(busy) == .commit(.control(.stop, text: "stop")))
+        busy.clause = clause("stop the music")
+        #expect(VoiceDecider.instantDecision(busy) == nil)
+        var asking = input(clause("go ahead"), silence: 0)
+        asking.context.awaitingApproval = "Send message"
+        #expect(VoiceDecider.instantDecision(asking) == .commit(.control(.confirm, text: "go ahead")))
     }
 
     @Test func noiseIsDroppedOnceStable() {
@@ -456,6 +553,17 @@ import Testing
         #expect(VoiceAppMatcher.candidates(in: "open x code", index: index).first?.entry.name == "Xcode")
     }
 
+    @Test func knowsWhenTheHeadMayStillBeNamingAnApp() {
+        let index = AppIndex(entries: RouterFakes.apps + [
+            AppEntry(name: "Visual Studio Code", path: "/Applications/Visual Studio Code.app", bundleID: "com.microsoft.VSCode"),
+        ])
+        #expect(VoiceAppMatcher.mayContinueAppName("open visual studio", index: index))
+        #expect(VoiceAppMatcher.mayContinueAppName("open google", index: index))
+        #expect(!VoiceAppMatcher.mayContinueAppName("open visual studio code", index: index))
+        #expect(!VoiceAppMatcher.mayContinueAppName("open slack", index: index))
+        #expect(!VoiceAppMatcher.mayContinueAppName("open the", index: index))
+    }
+
     @Test func dedupesPerAppAndCapsAtFive() {
         let c = VoiceAppMatcher.candidates(in: "open google chrome chrome chrome", index: index)
         #expect(c.filter { $0.entry.name == "Google Chrome" }.count == 1)
@@ -475,5 +583,72 @@ struct VoiceCurrentTabTests {
         #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: "com.apple.MobileSMS", continues: true, lastWasBrowser: true))
         #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: false))
         #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "close this tab", surface: .nativeApp, frontmostApp: chrome, continues: true, lastWasBrowser: true))
+    }
+}
+
+// MARK: - Speech activity
+
+@Suite struct SpeechActivityTests {
+    /// Feeds `levels` at 25 Hz from `start`; returns the speech flags.
+    private func feed(_ a: inout SpeechActivity, _ levels: [Float], start: TimeInterval) -> [Bool] {
+        levels.enumerated().map { i, l in a.isSpeech(l, at: start + Double(i) * 0.04) }
+    }
+
+    @Test func speechStandsOutOfAQuietRoom() {
+        var a = SpeechActivity()
+        _ = feed(&a, Array(repeating: 0.05, count: 50), start: 0)
+        let loud = a.isSpeech(0.7, at: 2.1)
+        let quiet = a.isSpeech(0.08, at: 2.2)
+        #expect(loud && !quiet)
+    }
+
+    @Test func steadyNoiseBecomesTheFloorWithinSeconds() {
+        // Music or a video at 0.5: the old floor took ~45 s to follow it, reading it as nonstop talking.
+        var a = SpeechActivity()
+        let flags = feed(&a, Array(repeating: 0.5, count: 125), start: 0)   // 5 s
+        #expect(flags.suffix(25).allSatisfy { !$0 })
+        // The user talking over it still counts.
+        let overIt = a.isSpeech(0.8, at: 5.1)
+        #expect(overIt)
+    }
+
+    @Test func continuousSpeechKeepsCountingAsSpeech() {
+        // Peaks between dips (words and the gaps between them), 6 s long.
+        var a = SpeechActivity()
+        _ = feed(&a, Array(repeating: 0.05, count: 25), start: 0)
+        let pattern: [Float] = [0.75, 0.8, 0.7, 0.6, 0.45, 0.3, 0.25, 0.4, 0.7, 0.78]
+        let flags = feed(&a, Array((0..<15).flatMap { _ in pattern }), start: 1)
+        // Every peak is still speech at the end of the stretch.
+        let lastPeaks = flags.suffix(pattern.count).enumerated().filter { pattern[$0.offset] >= 0.7 }.map(\.element)
+        #expect(lastPeaks.allSatisfy { $0 })
+        #expect(a.floor < 0.5)
+    }
+}
+
+// MARK: - Audio pipe (echo cancellation channels)
+
+@Suite struct AudioPipeTests {
+    /// Voice processing hands the tap 3 channels; only channel 0 is the cleaned-up
+    /// voice. Mixing the others in would put the video's audio right back.
+    @Test func voiceProcessingKeepsOnlyTheCleanedChannel() async throws {
+        let layout = try #require(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3))
+        let input = AVAudioFormat(standardFormatWithSampleRate: 48000, channelLayout: layout)
+        #expect(input.channelCount == 3)
+        let output = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false))
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        let pipe = AudioPipe(input: input, output: output, firstChannelOnly: true, continuation: continuation, onLevel: { _ in })
+        let buf = try #require(AVAudioPCMBuffer(pcmFormat: input, frameCapacity: 480))
+        buf.frameLength = 480
+        for (ch, v) in [Float(0.25), 0.9, -0.9].enumerated() {
+            for i in 0..<480 { buf.floatChannelData![ch][i] = v }
+        }
+        pipe.ingest(buf)
+        pipe.finish()
+        var got: [AVAudioPCMBuffer] = []
+        for await item in stream { got.append(item.buffer) }
+        let out = try #require(got.first)
+        #expect(out.format.channelCount == 1)
+        #expect(out.frameLength == 480)
+        #expect((0..<480).allSatisfy { out.floatChannelData![0][$0] == 0.25 })
     }
 }

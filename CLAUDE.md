@@ -36,7 +36,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
@@ -108,6 +108,21 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     get a one-line `user_usually_uses`; voice app inference breaks ties by usage; deep
     links move to the user's own host (`personalize`: canvas.instructure.com →
     canvas.olin.edu, never across rival sites). Probe it on a copy of memory.sqlite.
+  - **User knowledge** (`Agent/UserKnowledge`): the *content* of the user's life, built
+    from digested sessions' entities + each session's app/URL (never OCR or summaries):
+    people (first name folded into the only full name; the user themself dropped) with
+    the apps they talk in, projects/documents with their page (setup/checkout pages and
+    one-off places dropped), who works on them (co-occurring in ≥ 1/5 of the other's
+    sessions), and `usual_workflow` (places ordered by when they come up in a day).
+    `matches` finds what a task names ("mth 3199 assignment 2", "bella", "hci notes";
+    generic words alone never match). It rides into the planner
+    (`user_habits.things_in_this_task`), **every Jev step** (`state.user_context`, native
+    driver + runner via `NAVI_USER_CONTEXT_JSON`), `use_browser` sites, browser start URLs
+    (the doc itself; not for texting/new-thing tasks), the voice app inference ("text
+    dhvan" → WhatsApp) and the recipient picker's name boost. Live A/B: "open my
+    conversation with mikey" went to a group chat 3/3 without it, "Mikey Ku" 3/3 with.
+    After each digest `MemoryService` rewrites the vault's `Navi/How you work.md`.
+    `scripts/axprobe` takes `AXPROBE_CONTEXT='[…]'` for the per-step A/B.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
@@ -156,6 +171,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     which sends the invites. ↑↓ times, ⌘[ ⌘] day, ⌘- ⌘= length, esc back to results. Video
     toggle adds the user's own meeting link (`schedulerVideoLink`, pasted once in the card).
     `navi://run` never books by itself. Needs Calendar (full access) + Contacts; the card asks.
+    **Any calendar** (`Schedule/CalendarAccounts`, Settings → Calendars): no Google/Microsoft
+    sign-in in Navi — accounts added in System Settings › Internet Accounts (Google, Microsoft
+    Exchange for Outlook/M365/Outlook.com, iCloud) reach EventKit, and so the card. The page lists
+    them by account (`CalendarAccountKind.classify`), a "Busy" toggle per calendar
+    (`schedulerBusyCalendars`; default = own writable calendars, never subscriptions), "Book new
+    meetings in" (`schedulerBookingCalendar`, else Calendar's default; the card's calendar menu
+    overrides per meeting, and the account's domain picks guests' work emails), "Open Internet
+    Accounts", and "Subscribe" for a published ICS/webcal link (Outlook web › Publish, Google ›
+    Secret iCal address) — Calendar does the subscribing. Reminder lists show their account when
+    two share a name.
   - **Reminder card** (`Remind`, `Panel/Views/ReminderCardView`): "remind me to call mom tomorrow
     at 5", "todo: renew passport next week", "don't forget…", "set a reminder…" drop a card under
     the bar (`Mode.remind`; it wins over the scheduler). `ReminderParser` reuses
@@ -175,13 +200,28 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `navi://voice`) and the island drops out of the notch. Apple's on-device
     `SpeechTranscriber` streams volatile words (~1 s windows; the session flushes it
     after ~350 ms of acoustic silence); `UtteranceSegmenter` splits the stream at
-    "and"/"then"/punctuation into HEAD + FOLLOWING; one Jev call per candidate
+    "and"/"then"/punctuation into HEAD + FOLLOWING — and proposes a *soft* split
+    before an imperative verb with no connector ("open chrome | search for cats";
+    not after "to"/"you"/"how", never inside dictated text; Jev must be ≥ 60 %
+    complete or it merges); one Jev call per candidate
     answers `boundary` (complete / continues / not_a_command) plus speculative heads
     `kind` (open_app, do_in_app, browse_or_search, answer, system_setting, control_navi),
     `app_target` (fuzzy matches from `VoiceAppMatcher`), `surface`, `start_from`,
     `is_risky`, `continues_previous`, `wants_memory`. `VoiceDecider.decide` is pure:
     following words or a sentence mark ⇒ act now; a boundary-less head waits ~650 ms
-    of real silence (400 ms when Jev ≥ 80 %); a bare "and" waits for a word. Commands
+    of real silence (400 ms when Jev ≥ 80 %, 250 ms for a clear "open <app>" that no
+    longer app name extends); a bare "and" waits for a word. Every wait retries: a head
+    still not an instruction after 6 s of silence is cleared with "Didn’t catch…"
+    (`Decision.giveUp`), never left hanging. A verdict that was complete-but-settling is
+    reused when the pause arrives (no second Jev trip); "stop" while busy and "yes"
+    while asking skip Jev (`instantDecision`). Pauses come from `SpeechActivity`: a
+    10th-percentile noise floor over 4 s, so music or a video becomes the floor in
+    seconds instead of reading as nonstop talking. Echo cancellation
+    (`voiceEchoCancellation`, default on): `SpeechListener` turns on macOS voice
+    processing, so what the output device plays (a video, music, Navi's answers) is
+    subtracted from the mic; other audio is not ducked, only channel 0 of the 3-channel
+    VP input is used (`AudioPipe.firstChannelOnly`), and a device that refuses VP falls
+    back to the plain mic. Commands
     run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the

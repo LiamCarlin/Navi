@@ -351,6 +351,11 @@ enum UltrafastBridge {
         }
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
+        // The people/projects/documents the task names, as the user's screen memory knows them.
+        let things = UserKnowledge.context(for: task)
+        if !things.isEmpty, let data = try? JSONSerialization.data(withJSONObject: ["note": CUDecide.userContextNote, "things": things], options: [.sortedKeys]) {
+            env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
+        }
         let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy

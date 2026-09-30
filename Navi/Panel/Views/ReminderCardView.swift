@@ -70,7 +70,8 @@ struct ReminderCardView: View {
                 Button {
                     model.selectList(list.id)
                 } label: {
-                    if list.id == model.list?.id { Label(list.title, systemImage: "checkmark") } else { Text(list.title) }
+                    let name = menuName(list)
+                    if list.id == model.list?.id { Label(name, systemImage: "checkmark") } else { Text(name) }
                 }
             }
         } label: {
@@ -93,6 +94,12 @@ struct ReminderCardView: View {
         .fixedSize()
         .disabled(model.lists.count < 2)
         .help("Reminders list")
+    }
+
+    /// Lists with the same name in two accounts ("Tasks" in Outlook and iCloud) get the account.
+    private func menuName(_ list: ReminderList) -> String {
+        let sameName = model.lists.filter { $0.title == list.title }.count > 1
+        return sameName && !list.account.isEmpty ? "\(list.title) · \(list.account)" : list.title
     }
 
     // MARK: When

@@ -10,13 +10,13 @@ import AppKit
 /// only while `DeveloperMode.isEnabled`; `SettingsRootView` still renders it
 /// through `ProvidersView`, which now shows `DeveloperView`.
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
-    case home, account, general, providers, permissions, memory, agent, voice, usage, about, developer
+    case home, account, general, providers, permissions, memory, agent, calendars, voice, usage, about, developer
 
     var id: String { rawValue }
 
     /// Sidebar order. The Developer section appears last, and only in developer mode.
     static var allCases: [SettingsSection] {
-        var all: [SettingsSection] = [.home, .general, .permissions, .memory, .agent, .voice, .usage, .about]
+        var all: [SettingsSection] = [.home, .general, .permissions, .memory, .agent, .calendars, .voice, .usage, .about]
         if DeveloperMode.isEnabled { all.append(.providers) }
         return all
     }
@@ -30,6 +30,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .permissions: return "Permissions"
         case .memory: return "Screen Memory"
         case .agent: return "Agent"
+        case .calendars: return "Calendars"
         case .voice: return "Voice"
         case .usage: return "Usage"
         case .about: return "About"
@@ -46,6 +47,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .permissions: return "lock.shield"
         case .memory: return "brain"
         case .agent: return "cursorarrow.click.2"
+        case .calendars: return "calendar"
         case .voice: return "waveform"
         case .usage: return "chart.bar"
         case .about: return "info.circle"

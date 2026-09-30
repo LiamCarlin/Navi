@@ -29,8 +29,11 @@ struct UtteranceSegmenter: Equatable {
         var end: Int
         /// Index just past the connector — where `following` starts. Equals `end` without a connector.
         var resume: Int
+        /// The split is only a guess: no connector word, FOLLOWING starts with a
+        /// new imperative verb ("open chrome | search for cats").
+        var soft = false
         /// True when a boundary split head from following.
-        var hasBoundary: Bool { resume > end || !connector.isEmpty }
+        var hasBoundary: Bool { resume > end || !connector.isEmpty || soft }
         var headWordCount: Int { end - start }
     }
 
@@ -68,6 +71,34 @@ struct UtteranceSegmenter: Equatable {
     /// Dropped from the end of a head before it becomes a task.
     static let trailingFillers: Set<String> = wakeWords.union(["please", "now", "okay", "ok", "thanks", "thank"])
     static let sentenceEnders: Set<Character> = [".", "?", "!", ";"]
+
+    /// People chain instructions without "and": "open chrome search for cats",
+    /// "open notes make hello the title". A verb that usually starts an
+    /// instruction proposes a *soft* split before it, so the first instruction
+    /// can run while the user is still talking; Jev confirms or merges it.
+    static let imperativeVerbs: Set<String> = [
+        "open", "launch", "close", "quit", "search", "google", "go", "type", "write", "click", "press", "send", "play",
+        "scroll", "find", "look", "make", "create", "add", "delete", "remove", "reply", "text", "call", "message", "email",
+        "show", "switch", "navigate", "turn", "set", "select", "copy", "paste", "save", "rename", "move", "check", "read",
+        "put", "zoom", "pull", "bring", "start", "stop", "cancel", "undo", "mute", "unmute", "lock", "minimize",
+    ]
+    /// A verb right after one of these is part of the phrase, not a new
+    /// instruction ("how to open", "can you open", "I want to find").
+    static let softSplitBlockers: Set<String> = [
+        "to", "for", "how", "about", "that", "the", "a", "an", "and", "or", "of", "can", "could", "would", "will", "should",
+        "must", "i", "you", "we", "they", "he", "she", "it", "me", "please", "let", "lets", "let's", "not", "don't", "dont",
+        "can't", "cant", "won't", "didn't", "i'll", "we'll", "you'll", "gonna", "wanna", "want", "need", "never", "just",
+        "what", "where", "when", "why", "who", "which", "do", "does", "did", "is", "are", "was", "be", "going", "help",
+        "then", "also", "but", "if", "so", "until", "before", "after", "while", "doesn't", "isn't",
+    ]
+    /// Once a head carries text to type or send, a verb inside it is that
+    /// text ("text mom open the garage"), never a new instruction.
+    static let dictationVerbs: Set<String> = [
+        "type", "write", "say", "saying", "says", "text", "message", "tell", "reply", "email", "dictate", "note",
+        "titled", "called", "named", "caption", "comment", "post", "tweet", "ask",
+    ]
+    /// Words a head needs before a soft split may end it ("open chrome").
+    static let minSoftHeadWords = 2
 
     // MARK: Update
 
@@ -159,6 +190,7 @@ struct UtteranceSegmenter: Equatable {
         var end = words.count
         var resume = words.count
         var connector = ""
+        var soft = false
         var i = start
         scan: while i < words.count {
             // Sentence punctuation (or a comma) ends the clause after this word.
@@ -174,6 +206,9 @@ struct UtteranceSegmenter: Equatable {
             if i > start, !ignoredBoundaries.contains(i), let c = Self.connector(at: i, in: words) {
                 end = i; resume = i + c.count; connector = c.joined(separator: " "); break scan
             }
+            if !ignoredBoundaries.contains(i), Self.startsNewInstruction(at: i, headStart: start, in: words) {
+                end = i; resume = i; soft = true; break scan
+            }
             i += 1
         }
         // Trailing fillers ("please", "now") belong to nobody.
@@ -182,7 +217,16 @@ struct UtteranceSegmenter: Equatable {
         let head = Self.clean(words[start..<headEnd])
         guard !head.isEmpty else { return nil }
         let following = Self.clean(words[resume...])
-        return Clause(head: head, following: following, connector: connector, start: start, end: end, resume: resume)
+        return Clause(head: head, following: following, connector: connector, start: start, end: end, resume: resume, soft: soft)
+    }
+
+    /// Whether `words[index]` looks like the first word of a new instruction
+    /// after the head `words[headStart..<index]` (see `imperativeVerbs`).
+    static func startsNewInstruction(at index: Int, headStart: Int, in words: [String]) -> Bool {
+        guard index - headStart >= minSoftHeadWords, index < words.count else { return false }
+        guard imperativeVerbs.contains(core(words[index])) else { return false }
+        guard !softSplitBlockers.contains(core(words[index - 1])) else { return false }
+        return !words[headStart..<index].contains { dictationVerbs.contains(core($0)) }
     }
 
     /// Everything after the cursor, as one string (for the UI).

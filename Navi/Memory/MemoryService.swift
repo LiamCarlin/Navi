@@ -128,8 +128,10 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             let scheduler = CaptureScheduler(store: store, jev: jev, updateStatus: statusUpdater)
             let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler)
             stack = s
-            // Integration hook (Agent): the planner learns how this user does things from the same store.
+            // Integration hook (Agent): the planner learns how this user does things from the same store,
+            // and the agent learns their people, projects and documents (`UserKnowledge`).
             UserHabits.install(store: store)
+            UserKnowledge.install(store: store)
             return s
         } catch {
             Log.memory.error("Memory store unavailable: \(error.localizedDescription)")
@@ -149,11 +151,26 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         guard let stack = await MainActor.run(body: { ensureStack() }) else { return }
         do {
             let n = try await stack.digester.run(includeOpen: includeOpen)
-            if n > 0 { Log.memory.info("Digested \(n) sessions") }
+            if n > 0 {
+                Log.memory.info("Digested \(n) sessions")
+                refreshKnowledge(vault: stack.vault)
+            }
             await MainActor.run { refreshCounts() }
         } catch {
             Log.memory.error("Digest run failed: \(error.localizedDescription)")
             await MainActor.run { status.lastError = "Digest failed: \(error.localizedDescription)" }
+        }
+    }
+
+    /// Integration hook (Agent): new sessions → fresh `UserKnowledge`, and the
+    /// vault's `Navi/How you work.md` shows the user what the agent now knows.
+    private func refreshKnowledge(vault: VaultWriter) {
+        guard let k = UserKnowledge.current else { return }
+        k.invalidate()
+        let now = Date()
+        let md = UserKnowledge.markdown(k.things(now: now), now: now)
+        do { try vault.writeGenerated("Navi/How you work.md", md) } catch {
+            Log.memory.error("Could not write How you work: \(error.localizedDescription)")
         }
     }
 

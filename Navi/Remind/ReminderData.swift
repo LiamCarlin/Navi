@@ -7,6 +7,8 @@ struct ReminderList: Identifiable, Equatable {
     var id: String
     var title: String
     var color: NSColor?
+    /// The account it syncs with ("iCloud", "liam@outlook.com").
+    var account: String = ""
 }
 
 /// An open reminder already due the same day (the card shows a few for context).
@@ -58,7 +60,8 @@ final class ReminderStore: @unchecked Sendable {
         let defaultID = store.defaultCalendarForNewReminders()?.calendarIdentifier
         let all = store.calendars(for: .reminder)
             .filter(\.allowsContentModifications)
-            .map { ReminderList(id: $0.calendarIdentifier, title: $0.title, color: NSColor(cgColor: $0.cgColor)) }
+            .map { ReminderList(id: $0.calendarIdentifier, title: $0.title, color: NSColor(cgColor: $0.cgColor),
+                                account: $0.source?.title ?? "") }
             .sorted { ($0.id == defaultID ? 0 : 1, $0.title) < ($1.id == defaultID ? 0 : 1, $1.title) }
         return (all, defaultID)
     }

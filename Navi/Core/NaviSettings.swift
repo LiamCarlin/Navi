@@ -76,6 +76,9 @@ final class NaviSettings: ObservableObject {
     /// happen); off ⇒ the typed-task background mode.
     @Published var voiceBringsAppsForward: Bool { didSet { d.set(voiceBringsAppsForward, forKey: "voiceBringsAppsForward") } }
     @Published var voiceSounds: Bool { didSet { d.set(voiceSounds, forKey: "voiceSounds") } }
+    /// macOS voice processing on the microphone: what the Mac is playing (a video,
+    /// music, Navi's own answers) is cancelled out of what Navi hears.
+    @Published var voiceEchoCancellation: Bool { didSet { d.set(voiceEchoCancellation, forKey: "voiceEchoCancellation") } }
     /// Debounce after the last recognized word before Jev is asked whether the
     /// clause is complete. Lower = snappier, more false starts.
     @Published var voiceReactionMs: Int { didSet { d.set(voiceReactionMs, forKey: "voiceReactionMs") } }
@@ -134,6 +137,7 @@ final class NaviSettings: ObservableObject {
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
+            "voiceEchoCancellation": true,
             "voiceReactionMs": 150,
             "voiceHotKeyEnabled": true,
             "voiceHotKeyCode": 49,       // Space
@@ -177,6 +181,7 @@ final class NaviSettings: ObservableObject {
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
+        voiceEchoCancellation = d.bool(forKey: "voiceEchoCancellation")
         voiceReactionMs = d.integer(forKey: "voiceReactionMs")
         voiceHotKeyEnabled = d.bool(forKey: "voiceHotKeyEnabled")
         voiceHotKeyCode = UInt32(d.integer(forKey: "voiceHotKeyCode"))

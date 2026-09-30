@@ -344,6 +344,22 @@ os.environ["NAVI_PLAYBOOKS_JSON"] = "not json"
 assert nr.Playbook.from_env() == []
 print("web playbooks OK")
 
+# --- the user's own context rides in Jev's state (adaptation 19) ---
+ctx = {"note": "n", "things": [{"name": "Mikey Ku", "type": "person", "talks_with_them_in": ["Messages (55)"]}]}
+os.environ["NAVI_USER_CONTEXT_JSON"] = json.dumps(ctx)
+assert nr.Playbook.user_context_from_env() == ctx
+seen = {}
+jev_model.post_json = lambda url, key, body: seen.update(body=body) or {"answers": {}}
+nr.Playbook(skills=[], goal="message mikey").install()
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest",
+    "state": {"page": {"url": "https://example.com/"}}, "questions": {"operation": {"type": "choice", "criteria": {}, "instructions": {}}}})
+assert seen["body"]["state"]["user_context"] == ctx and "playbook" not in seen["body"]["state"]
+for bad in ("not json", json.dumps({"things": []}), json.dumps([1])):
+    os.environ["NAVI_USER_CONTEXT_JSON"] = bad
+    assert nr.Playbook.user_context_from_env() is None
+os.environ.pop("NAVI_USER_CONTEXT_JSON")
+print("user context OK")
+
 # --- the tab is the deliverable (adaptation 13) ---
 for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
     os.environ.pop(var, None)

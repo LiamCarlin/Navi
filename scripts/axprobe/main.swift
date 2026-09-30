@@ -6,7 +6,6 @@ guard args.count >= 2 else { print("usage: axprobe <bundle-id> [goal ...]"); exi
 let bid = args[1]
 guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first else { print("not running: \(bid)"); exit(1) }
 let target = AgentTarget(pid: app.processIdentifier, bundleID: bid, appName: app.localizedName)
-let sem = DispatchSemaphore(value: 0)
 Task {
     let snapper = AXSnapshotter()
     let snap = await snapper.capture(near: nil, includeMenuBar: false, target: target)
@@ -18,18 +17,21 @@ Task {
         for it in screen.items { print("[\(it.index)] \(it.source.rawValue) \(criteria["\(it.index)"] ?? it.text)") }
         for (k, o) in snap.offscreen.enumerated() { print("(off \(k)) \(o.role) “\(o.label.prefix(60))”") }
     }
-    guard args.count > 2 else { sem.signal(); return }
-    guard Keychain.has(.typesafe) || Keychain.has(.vercelGateway) else { print("Set TYPESAFE_API_KEY (or AI_GATEWAY_API_KEY) to ask Jev."); sem.signal(); return }
+    guard args.count > 2 else { exit(0) }
+    guard Keychain.has(.typesafe) || Keychain.has(.vercelGateway) else { print("Set TYPESAFE_API_KEY (or AI_GATEWAY_API_KEY) to ask Jev."); exit(0) }
     let jev = JevClient()
     let skill = AppSkills.skill(bundleID: snap.bundleID, url: snap.url)
     print("skill=\(skill?.name ?? "none")")
     for goal in args.dropFirst(2) {
         let candidates = TextCandidates.extract(task: goal)
-        let input = CUDecide.Input(goal: goal, screen: CUPerception.perceive(snap, ocr: nil, goal: goal), history: [],
+        var input = CUDecide.Input(goal: goal, screen: CUPerception.perceive(snap, ocr: nil, goal: goal), history: [],
                                    shortcuts: AppSkills.keyCombos(for: skill),
                                    apps: candidates.filter { $0.source == "app" }.map(\.text),
                                    sites: candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text),
                                    playbook: skill.map { AppSkills.playbook(for: $0, goal: goal) })
+        // AXPROBE_CONTEXT='[{"name":"Bella Chen","type":"person",…}]' → `state.user_context` (UserKnowledge A/B).
+        if let raw = ProcessInfo.processInfo.environment["AXPROBE_CONTEXT"],
+           let ctx = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] { input.userContext = ctx }
         do {
             let (v, req) = try await CUDecide.ask(jev, input)
             let d = CUDecide.decision(v, request: req)
@@ -45,6 +47,7 @@ Task {
             print(lines.joined(separator: "\n"))
         } catch { print("GOAL “\(goal)” error: \(error)") }
     }
-    sem.signal()
+    exit(0)
 }
-sem.wait()
+// The main queue must stay free: JevClient reads settings on the main actor.
+dispatchMain()

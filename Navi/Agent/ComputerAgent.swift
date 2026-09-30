@@ -394,6 +394,15 @@ final class AgentRun: @unchecked Sendable {
                                            isRunning: { running.contains($0) },
                                            usage: { s in profile.map { UserHabits.usage(of: s, in: $0).app?.screens ?? 0 } ?? 0 }) else { return nil }
         if let f = frontmost.bundleID, hit.skill.bundleIDs.contains(f) { return nil }
+        // "text dhvan …" goes where the user actually talks to Dhvan (WhatsApp), not the
+        // default texting app — unless the task names an app.
+        if AppSkills.mentioned(in: task) == nil, let chat = UserKnowledge.liveChatApp(for: task), chat != hit.bundleID,
+           let s = AppSkills.skill(bundleID: hit.bundleID), UserHabits.kinds.first(where: { $0.kind == "texting" })?.skills.contains(s.name) == true,
+           NSWorkspace.shared.urlForApplication(withBundleIdentifier: chat) != nil {
+            if let f = frontmost.bundleID, f == chat { return nil }
+            Log.agent.info("UserKnowledge: the person is reached in \(chat, privacy: .public)")
+            return chat
+        }
         return hit.bundleID
     }
 
@@ -696,7 +705,11 @@ final class AgentRun: @unchecked Sendable {
         let wantMenuBar = AXSnapshot.taskMentionsMenu(task) && target == nil
         let candidates = TextCandidates.extract(task: task)
         var appCandidates = candidates.filter { $0.source == "app" }.map(\.text)
-        let urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        var urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
+        // What the task names in the user's own life ("the HCI notes" → that Google Doc): in
+        // Jev's state every step (`user_context`), and its page as a `use_browser` site.
+        let userContext = UserKnowledge.context(for: task)
+        for u in UserKnowledge.liveURLCandidates(for: task) where !urlCandidates.contains(u) { urlCandidates.append(u) }
         let effectGoal = !Self.isLookup(task)
         /// The user wants something read back ("compute 57 × 23", "how many…"): the writer's answer is the deliverable.
         let wantsResult = Self.asksForResult(task)
@@ -859,7 +872,7 @@ final class AgentRun: @unchecked Sendable {
                                        goalSpellsText: obvious.map { !typedTexts.contains($0) } ?? false,
                                        playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
-                                       conversation: context.conversation)
+                                       conversation: context.conversation, userContext: userContext)
 
             // The writer starts on the one obvious field while Jev decides; used only if Jev picks it.
             var speculative: (elementID: String, task: Task<CUWriter.Fill?, Never>)?
@@ -1010,7 +1023,10 @@ final class AgentRun: @unchecked Sendable {
                     if let field = recipientField, let typed = text {
                         handle.emit(.status("Waiting for the contact suggestion for ‘\(typed)’"))
                         let pid = field.pid > 0 ? field.pid : screen.snapshot.pid
-                        let recent = screen.snapshot.visibleText + "\n" + screen.snapshot.elements.map(\.label).joined(separator: "\n")
+                        // The full names of people the task names ("mikey" → Mikey Ku, from screen memory)
+                        // count as recently seen: that suggestion wins over another Mikey or a group.
+                        let known = userContext.filter { $0["type"] as? String == "person" }.compactMap { $0["name"] as? String }
+                        let recent = ([screen.snapshot.visibleText] + screen.snapshot.elements.map(\.label) + known).joined(separator: "\n")
                         func resolve(_ name: String) async -> RecipientPicker.Outcome {
                             await RecipientPicker.resolve(typed: name, pid: pid, field: field.frame, baseline: recipientBaseline,
                                                           recent: recent, executor: executor) { [self] in !isCancelled }
