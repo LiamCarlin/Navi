@@ -63,6 +63,10 @@ final class PanelViewModel: ObservableObject {
     private var schedulerDismissed = false
     /// Jev opened the card (the parser alone wouldn't have): keep it while the query still parses.
     private var schedulerViaJev = false
+    // Reminder (mode == .remind): the card for "remind me to…" (`ReminderParser`, or Jev's `wants_reminder`).
+    @Published private(set) var reminder: ReminderModel?
+    private var reminderDismissed = false
+    private var reminderViaJev = false
     /// Footer diagnostics ("Jev · Open app 92% · 140 ms"); empty unless developer mode is on.
     @Published private(set) var statusLine: String = ""
     @Published private(set) var isRouting = false
@@ -79,7 +83,7 @@ final class PanelViewModel: ObservableObject {
     /// (after a clarification the refined task must win over an incidental app match).
     var submitPreferredKind: ResultKind?
 
-    enum Mode: Equatable { case results, answer, agent, clarify, schedule }
+    enum Mode: Equatable { case results, answer, agent, clarify, schedule, remind }
 
     let services: NaviServices
     var onDismiss: (() -> Void)?
@@ -116,7 +120,7 @@ final class PanelViewModel: ObservableObject {
         if let prefill { query = prefill } else if !query.isEmpty { query = "" }
         // Reopening while a task runs (or just finished) lands on the task, not an
         // empty search — typing anything switches back to results.
-        mode = prefill == nil && hasAgentToShow ? .agent : (scheduler != nil ? .schedule : .results)
+        mode = prefill == nil && hasAgentToShow ? .agent : (scheduler != nil ? .schedule : (reminder != nil ? .remind : .results))
         focusRequestID &+= 1
     }
 
@@ -217,6 +221,8 @@ final class PanelViewModel: ObservableObject {
         clearClarification()
         scheduler = nil
         schedulerDismissed = false
+        reminder = nil
+        reminderDismissed = false
         mode = .results
         statusLine = ""
         errorMessage = nil
@@ -230,16 +236,26 @@ final class PanelViewModel: ObservableObject {
     private func queryChanged() {
         routeTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        // A scheduling request drops the scheduler card down at once — no need to wait for Jev.
+        // A reminder or scheduling request drops its card down at once — no need to wait for Jev.
+        // "Remind me to…" wins over the scheduler ("remind me to book lunch with ana").
+        let remind = q.isEmpty ? nil : ReminderParser.parse(q)
         let schedule = q.isEmpty ? nil : ScheduleParser.parse(q)
-        if let schedule, !schedulerDismissed, schedule.isExplicit || (scheduler != nil && schedulerViaJev) {
-            if schedule.isExplicit { schedulerViaJev = false }
-            showScheduler(schedule)
-        } else {
-            if schedule?.isExplicit != true { schedulerDismissed = false }
+        if let remind, !reminderDismissed, remind.isExplicit || (reminder != nil && reminderViaJev) {
+            if remind.isExplicit { reminderViaJev = false }
             if scheduler != nil { hideScheduler() }
+            showReminder(remind)
+        } else {
+            if remind?.isExplicit != true { reminderDismissed = false }
+            if reminder != nil { hideReminder() }
+            if let schedule, !schedulerDismissed, schedule.isExplicit || (scheduler != nil && schedulerViaJev) {
+                if schedule.isExplicit { schedulerViaJev = false }
+                showScheduler(schedule)
+            } else {
+                if schedule?.isExplicit != true { schedulerDismissed = false }
+                if scheduler != nil { hideScheduler() }
+            }
         }
-        if mode != .results && mode != .schedule && !q.isEmpty { mode = .results }
+        if mode != .results && mode != .schedule && mode != .remind && !q.isEmpty { mode = .results }
         guard !q.isEmpty else {
             results = []; decision = nil; statusLine = ""; selectedIndex = 0
             return
@@ -264,11 +280,19 @@ final class PanelViewModel: ObservableObject {
             self.results = Self.merge(instant: self.services.router.instantResults(for: q, context: self.context), routed: full, decision: d)
             self.selectedIndex = min(self.selectedIndex, max(0, self.results.count - 1))
             self.isRouting = false
-            // Phrasings the parser can't call ("lunch w/ ana thursday?"): Jev decides.
-            if self.mode == .results, !self.schedulerDismissed, !self.submitAfterRouting,
-               let req = ScheduleParser.parse(q), (self.services.router.scheduleLikelihood(for: q) ?? 0) >= 0.7 {
-                self.schedulerViaJev = true
-                self.showScheduler(req)
+            // Phrasings the parsers can't call ("lunch w/ ana thursday?", "need to renew my
+            // passport next week"): Jev decides, and the likelier card wins.
+            if self.mode == .results, !self.submitAfterRouting {
+                let remindP = self.services.router.reminderLikelihood(for: q) ?? 0
+                let scheduleP = self.services.router.scheduleLikelihood(for: q) ?? 0
+                if remindP >= 0.7, remindP >= scheduleP, !self.reminderDismissed,
+                   let req = ReminderParser.parse(q), !req.title.isEmpty {
+                    self.reminderViaJev = true
+                    self.showReminder(req)
+                } else if scheduleP >= 0.7, !self.schedulerDismissed, let req = ScheduleParser.parse(q) {
+                    self.schedulerViaJev = true
+                    self.showScheduler(req)
+                }
             }
             if self.submitAfterRouting {
                 Log.panel.info("submitAfterRouting → \(d.intent.rawValue, privacy: .public), \(self.results.count) rows")
@@ -280,7 +304,7 @@ final class PanelViewModel: ObservableObject {
                 self.submitPreferredKind = nil
                 self.selectedIndex = preferred.flatMap { k in self.results.firstIndex { $0.kind == k } } ?? 0
                 // A scheduling request waits on the card: booking is the user's ⏎.
-                if self.mode != .schedule { self.performSelected() }
+                if self.mode != .schedule && self.mode != .remind { self.performSelected() }
             }
         }
     }
@@ -307,6 +331,7 @@ final class PanelViewModel: ObservableObject {
 
     func moveSelection(_ delta: Int) {
         if mode == .schedule { scheduler?.cycleSuggestion(delta); return }
+        if mode == .remind { reminder?.cycleOption(delta); return }
         if mode == .clarify {
             guard let c = clarification else { return }
             let n = c.options.count + 1   // options + the text box
@@ -323,6 +348,7 @@ final class PanelViewModel: ObservableObject {
             if s.editingVideoLink { s.saveVideoLink(); requestFocus() } else { s.book() }
             return
         }
+        if mode == .remind, let r = reminder { r.add(); return }
         guard !results.isEmpty, results.indices.contains(selectedIndex) else {
             // Nothing matched yet: treat ⏎ as "ask Navi".
             if !query.isEmpty { askNavi(query) }
@@ -454,10 +480,38 @@ final class PanelViewModel: ObservableObject {
         if mode == .schedule { mode = .results }
     }
 
-    /// Recognised names in the query, tinted in the search bar while the card is open.
+    // MARK: - Reminder
+
+    private func showReminder(_ request: ReminderRequest) {
+        if let r = reminder {
+            r.update(request)
+        } else {
+            let r = ReminderModel(request: request)
+            r.onAdded = { [weak self] text in
+                self?.showToast(text)
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(1400))
+                    self?.onDismiss?()
+                }
+            }
+            reminder = r
+            Log.panel.info("reminder card (due: \(request.hasWhen ? "yes" : "no", privacy: .public))")
+        }
+        if mode != .remind { mode = .remind }
+    }
+
+    private func hideReminder() {
+        reminder = nil
+        reminderViaJev = false
+        if mode == .remind { mode = .results }
+    }
+
+    /// What the open card recognised in the query, tinted in the search bar:
+    /// names for the scheduler; dates, times and repeats for a reminder.
     var queryHighlights: [ScheduleRequest.Token] {
-        guard mode == .schedule, let s = scheduler else { return [] }
-        return s.request.tokens.filter { $0.kind == .person }
+        if mode == .schedule, let s = scheduler { return s.request.tokens.filter { $0.kind == .person } }
+        if mode == .remind, let r = reminder { return r.request.tokens }
+        return []
     }
 
     // MARK: - Clarification
@@ -538,6 +592,11 @@ final class PanelViewModel: ObservableObject {
     }
 
     func escape() {
+        if mode == .remind {
+            reminderDismissed = true
+            hideReminder()
+            return
+        }
         if mode == .schedule {
             if let s = scheduler, s.editingVideoLink {
                 s.editingVideoLink = false
