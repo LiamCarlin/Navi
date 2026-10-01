@@ -7,7 +7,7 @@ export const metadata: Metadata = {
 };
 
 const UPDATED = "October 1, 2026";
-const CONTACT = "hello@navi.app";
+const CONTACT = "hello@buildnavi.com";
 
 function H({ children }: { children: React.ReactNode }) {
   return <h2 className="pt-6 text-lg font-semibold text-fg">{children}</h2>;
@@ -135,7 +135,7 @@ export default function Privacy() {
 
       <H>The website</H>
       <p>
-        navi.app uses no analytics, ads or tracking cookies. It remembers your light/dark choice and how you arrived
+        buildnavi.com uses no analytics, ads or tracking cookies. It remembers your light/dark choice and how you arrived
         (for example a referral link) in your browser’s storage.
       </p>
 

@@ -28,7 +28,7 @@ const columns = [
     links: [
       { href: "/#waitlist", label: "Waitlist" },
       { href: "/#faq", label: "FAQ" },
-      { href: "mailto:hello@navi.app", label: "Contact" },
+      { href: "mailto:hello@buildnavi.com", label: "Contact" },
     ],
   },
   {

@@ -62,7 +62,7 @@ describe("normalizeConfig", () => {
       downloadURL: "javascript:alert(1)",
       quotas: { free: { answersPerDay: 50, tasksPerDay: -1, tasksPerMonth: null }, nope: { answersPerDay: 1 } },
       models: { answer: "claude-sonnet-5", task: "rm -rf /", digest: "" },
-      notice: { message: "  Heads up  ", level: "loud", url: "https://navi.app/status" },
+      notice: { message: "  Heads up  ", level: "loud", url: "https://buildnavi.com/status" },
     });
     expect(c.features).toEqual({ answers: false, tasks: true, voice: true, recall: true });
     expect(c.minAppVersion).toBeNull();
@@ -70,7 +70,7 @@ describe("normalizeConfig", () => {
     expect(c.downloadURL).toBeNull();
     expect(c.quotas).toEqual({ free: { answersPerDay: 50, tasksPerMonth: null } });
     expect(c.models).toEqual({ answer: "claude-sonnet-5", task: null, digest: null });
-    expect(c.notice).toMatchObject({ message: "Heads up", level: "info", url: "https://navi.app/status" });
+    expect(c.notice).toMatchObject({ message: "Heads up", level: "info", url: "https://buildnavi.com/status" });
   });
 
   it("gives the notice a content id that changes with the content", () => {
@@ -92,10 +92,10 @@ describe("config cache", () => {
     expect((await getConfig(db, 31_000)).features.voice).toBe(true); // expired
     expect(spy).toHaveBeenCalledTimes(2);
 
-    await saveConfig(db, { ...defaultConfig(), features: { ...defaultConfig().features, answers: false } }, "liam@navi.app");
+    await saveConfig(db, { ...defaultConfig(), features: { ...defaultConfig().features, answers: false } }, "liam@buildnavi.com");
     const now = await getConfig(db, 31_500);
     expect(now.features.answers).toBe(false);
-    expect(now.updatedBy).toBe("liam@navi.app");
+    expect(now.updatedBy).toBe("liam@buildnavi.com");
   });
 
   it("keeps serving the last known config when the read fails", async () => {
@@ -144,9 +144,9 @@ describe("app version gate → 426 upgrade_required", () => {
 
   it("426s older apps with minAppVersion + downloadURL", async () => {
     await freeUser();
-    const config = cfg({ minAppVersion: "1.2.0", downloadURL: "https://navi.app/download" });
+    const config = cfg({ minAppVersion: "1.2.0", downloadURL: "https://buildnavi.com/download" });
     const e = await expectHttp(authorize(db, user, "answer", "r1", T, { config, appVersion: "1.1.9" }), 426, "upgrade_required");
-    expect(e.body).toMatchObject({ minAppVersion: "1.2.0", downloadURL: "https://navi.app/download" });
+    expect(e.body).toMatchObject({ minAppVersion: "1.2.0", downloadURL: "https://buildnavi.com/download" });
     await authorize(db, user, "answer", "r2", T, { config, appVersion: "1.2.0" });
     await authorize(db, user, "answer", "r3", T, { config, appVersion: "2.0" });
   });
@@ -160,15 +160,15 @@ describe("app version gate → 426 upgrade_required", () => {
 
   it("/v1/me never 426s and carries the config block", async () => {
     await freeUser();
-    const notice = makeNotice("New version out", "info", "https://navi.app/download")!;
-    const config = cfg({ minAppVersion: "9.0.0", latestVersion: "9.1.0", downloadURL: "https://navi.app/download", notice });
+    const notice = makeNotice("New version out", "info", "https://buildnavi.com/download")!;
+    const config = cfg({ minAppVersion: "9.0.0", latestVersion: "9.1.0", downloadURL: "https://buildnavi.com/download", notice });
     const body = await meBody(db, user, T, config);
     expect(body.config).toEqual({
       features: { answers: true, tasks: true, voice: true, recall: true },
-      notice: { id: notice.id, message: "New version out", level: "info", url: "https://navi.app/download" },
+      notice: { id: notice.id, message: "New version out", level: "info", url: "https://buildnavi.com/download" },
       minAppVersion: "9.0.0",
       latestVersion: "9.1.0",
-      downloadURL: "https://navi.app/download",
+      downloadURL: "https://buildnavi.com/download",
     });
     expect((await meBody(db, user, T, defaultConfig())).config).toEqual({ features: { answers: true, tasks: true, voice: true, recall: true } });
   });
@@ -220,7 +220,7 @@ describe("quota overrides, tier override, quota reset", () => {
     await freeUser();
     for (let i = 0; i < 5; i++) await authorize(db, user, "task", `t${i}`, T);
     await expectHttp(authorize(db, user, "task", "t5", T), 402, "quota_exceeded");
-    await resetQuota(db, "liam@navi.app", user.id, "day", T);
+    await resetQuota(db, "liam@buildnavi.com", user.id, "day", T);
     expect(((await meBody(db, user, T)).usage as { tasksToday: number }).tasksToday).toBe(0);
     await authorize(db, user, "task", "t5", T);
     expect(((await meBody(db, user, T)).usage as { tasksToday: number }).tasksToday).toBe(1);

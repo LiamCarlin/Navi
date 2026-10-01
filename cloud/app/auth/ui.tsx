@@ -48,7 +48,7 @@ export function Foot() {
           <a href={`${site}/privacy`}>Privacy</a> · <a href={`${site}/terms`}>Terms</a> ·{" "}
         </>
       ) : null}
-      <a href="mailto:hello@navi.app">Help</a>
+      <a href="mailto:hello@buildnavi.com">Help</a>
     </p>
   );
 }

@@ -100,7 +100,7 @@ export default async function Config({ searchParams }: { searchParams: Promise<R
               <input className={s.input} name="latestVersion" defaultValue={cfg.latestVersion ?? ""} placeholder="e.g. 1.3.0" />
             </label>
             <label className={s.label}>Download URL
-              <input className={s.input} name="downloadURL" defaultValue={cfg.downloadURL ?? ""} placeholder="https://navi.app/download" />
+              <input className={s.input} name="downloadURL" defaultValue={cfg.downloadURL ?? ""} placeholder="https://buildnavi.com/download" />
             </label>
             <div><button className={s.btnPrimary}>Save versions</button></div>
           </form>

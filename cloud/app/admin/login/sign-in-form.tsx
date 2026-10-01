@@ -49,7 +49,7 @@ export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, providers }
 
   return (
     <form onSubmit={sendLink} style={{ display: "grid", gap: 10 }}>
-      <input className={s.input} type="email" autoComplete="email" required autoFocus placeholder="you@navi.app" value={email} onChange={(e) => setEmail(e.target.value)} disabled={state === "busy"} />
+      <input className={s.input} type="email" autoComplete="email" required autoFocus placeholder="you@buildnavi.com" value={email} onChange={(e) => setEmail(e.target.value)} disabled={state === "busy"} />
       <button className={s.btnPrimary} type="submit" disabled={state === "busy" || !email}>{state === "busy" ? "Sending…" : "Email me a link"}</button>
       {providers.includes("google") && (
         <button className={s.btn} type="button" onClick={() => oauth("google")} disabled={state === "busy"}>Continue with Google</button>

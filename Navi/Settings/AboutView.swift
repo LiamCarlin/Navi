@@ -6,9 +6,9 @@ struct AboutView: View {
     @ObservedObject private var updater = Updater.shared
     @State private var developerCaption: String?
 
-    static let privacyURL = "https://navi.app/privacy"
-    static let termsURL = "https://navi.app/terms"
-    static let supportEmail = "support@navi.app"
+    static let privacyURL = "https://buildnavi.com/privacy"
+    static let termsURL = "https://buildnavi.com/terms"
+    static let supportEmail = "support@buildnavi.com"
 
     private var version: String {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"

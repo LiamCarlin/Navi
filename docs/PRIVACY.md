@@ -41,7 +41,7 @@ manager web vaults; needs the URL, i.e. Automation consent), a **focused passwor
 ## 2. What leaves the Mac
 
 Default transport for signed-in users is **Navi Cloud** (`CloudTransport`, `useCloud = true`,
-`https://api.navi.app`): the app sends exact vendor request bodies to `/v1/jev`, `/v1/claude`,
+`https://api.buildnavi.com`): the app sends exact vendor request bodies to `/v1/jev`, `/v1/claude`,
 `/v1/digest`; the cloud forwards them byte-for-byte and stores none of them. Developer mode
 with own keys talks to the vendors directly.
 

@@ -7,7 +7,7 @@ import { createMemoryDb, type MemoryDb, type Profile } from "@/lib/db";
 import { invalidateKeyCache } from "@/lib/keys";
 import { authorize } from "@/lib/metering";
 
-const ADMIN = "liam@navi.app";
+const ADMIN = "liam@buildnavi.com";
 const T = new Date("2026-10-01T15:00:00Z");
 const KEY = "sk-ant-api03-SECRET-SECRET-SECRET-9xyz";
 const saved = { ...process.env };
@@ -77,10 +77,10 @@ describe("every admin action writes the audit log", () => {
   it("config, waitlist and admin changes", async () => {
     await ops.updateConfig(db, ADMIN, defaultConfig(), { features: { ...defaultConfig().features, voice: false } });
     await db.addToWaitlist("w@example.com", "site", null);
-    await ops.inviteFromWaitlist(db, ADMIN, "W@example.com", "https://navi.app/download");
-    await ops.addAdmin(db, ADMIN, "friend@navi.app");
+    await ops.inviteFromWaitlist(db, ADMIN, "W@example.com", "https://buildnavi.com/download");
+    await ops.addAdmin(db, ADMIN, "friend@buildnavi.com");
     await expect(ops.removeAdmin(db, ADMIN, ADMIN)).rejects.toThrow(/yourself/);
-    await ops.removeAdmin(db, ADMIN, "friend@navi.app");
+    await ops.removeAdmin(db, ADMIN, "friend@buildnavi.com");
     const entries = await log();
     expect(entries.map((e) => e.action).reverse()).toEqual(["config.update", "waitlist.invite", "admin.add", "admin.remove"]);
     expect(entries.find((e) => e.action === "config.update")!.details).toMatchObject({ changed: ["features"] });

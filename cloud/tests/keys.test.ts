@@ -58,7 +58,7 @@ describe("encryption at rest", () => {
     expect(() => encryptKey(KEY, "anthropic", "short")).toThrow(KeysSecretError);
     delete process.env.NAVI_KEYS_SECRET;
     expect(() => encryptKey(KEY, "anthropic")).toThrow(KeysSecretError);
-    await expect(storeVendorKey(db, "anthropic", KEY, "admin@navi.app")).rejects.toBeInstanceOf(KeysSecretError);
+    await expect(storeVendorKey(db, "anthropic", KEY, "admin@buildnavi.com")).rejects.toBeInstanceOf(KeysSecretError);
     expect(await db.adminGetVendorKey("anthropic")).toBeNull();
   });
 });
@@ -78,13 +78,13 @@ describe("masking", () => {
 
   it("keyStatuses never exposes a full key", async () => {
     process.env.TYPESAFE_API_KEY = "ts-env-key-0000-wxyz";
-    await storeVendorKey(db, "anthropic", KEY, "admin@navi.app");
+    await storeVendorKey(db, "anthropic", KEY, "admin@buildnavi.com");
     const statuses = await keyStatuses(db);
     const json = JSON.stringify(statuses);
     expect(json).not.toContain(KEY);
     expect(json).not.toContain("ts-env-key-0000-wxyz");
     const a = statuses.find((s) => s.provider === "anthropic")!;
-    expect(a).toMatchObject({ source: "database", masked: "••••abcd", rotatedBy: "admin@navi.app" });
+    expect(a).toMatchObject({ source: "database", masked: "••••abcd", rotatedBy: "admin@buildnavi.com" });
     expect(statuses.find((s) => s.provider === "typesafe")).toMatchObject({ source: "env", masked: "••••wxyz" });
     expect(statuses.find((s) => s.provider === "gemini")).toMatchObject({ source: "none" });
   });
@@ -95,7 +95,7 @@ describe("getVendorKey: database first, then env, cached", () => {
     process.env.ANTHROPIC_API_KEY = "env-anthropic-key-1234";
     expect(await resolveVendorKey("anthropic", db, { nowMs: 0 })).toEqual({ key: "env-anthropic-key-1234", source: "env" });
 
-    await storeVendorKey(db, "anthropic", KEY, "admin@navi.app"); // invalidates the cache
+    await storeVendorKey(db, "anthropic", KEY, "admin@buildnavi.com"); // invalidates the cache
     expect(await resolveVendorKey("anthropic", db, { nowMs: 1_000 })).toEqual({ key: KEY, source: "database" });
 
     // Changed underneath without invalidation: still the cached value inside 60 s…

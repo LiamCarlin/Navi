@@ -35,7 +35,7 @@ export interface Authorization {
 }
 
 /** Shown with 403 `account_disabled` (the admin's internal reason is never sent). */
-export const ACCOUNT_DISABLED_MESSAGE = "This Navi account has been disabled. Contact hello@navi.app if you think this is a mistake.";
+export const ACCOUNT_DISABLED_MESSAGE = "This Navi account has been disabled. Contact hello@buildnavi.com if you think this is a mistake.";
 
 export async function loadAccount(db: Db, user: AuthUser, now: Date): Promise<{ profile: Profile; tier: Tier; entitlements: Entitlements }> {
   const profile = await db.ensureProfile(user.id, user.email, now);

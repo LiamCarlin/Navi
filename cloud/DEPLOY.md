@@ -70,10 +70,10 @@ cascades to its rows.
 
 **Authentication → URL Configuration**
 
-- **Site URL:** the cloud's public URL — `https://api.navi.app` once the domain exists (§9), the
+- **Site URL:** the cloud's public URL — `https://api.buildnavi.com` once the domain exists (§9), the
   `*.vercel.app` production URL until then. (Redirects to the Site URL's host are always allowed.)
 - **Redirect URLs** (add all):
-  - `https://api.navi.app/**`
+  - `https://api.buildnavi.com/**`
   - `https://navi-cloud-*-liam-carlins-projects.vercel.app/**` (preview deployments)
   - `http://localhost:3100/**` (local dev against the real project)
 
@@ -92,10 +92,10 @@ requests / min, so this is only a global ceiling.
 Supabase's built-in mailer only delivers to the project's team members, a few per hour. Real users
 need custom SMTP:
 
-1. Create an SMTP sender (Resend, Postmark or SES), verify the sending domain (`navi.app`: the
+1. Create an SMTP sender (Resend, Postmark or SES), verify the sending domain (`buildnavi.com`: the
    SPF/DKIM records they give you, plus a DMARC record).
 2. Supabase → **Authentication → Emails → SMTP Settings**: enable custom SMTP, sender
-   `hello@navi.app`, sender name `Navi`, host/port/user/password from the provider.
+   `hello@buildnavi.com`, sender name `Navi`, host/port/user/password from the provider.
 
 **Templates** (Authentication → Emails → Templates). One email carries both a link and a 6-digit
 code. The link uses `token_hash`, so it works in *any* browser — the default `{{ .ConfirmationURL }}`
@@ -136,7 +136,7 @@ from `/auth/v1/settings`, cached 5 min). `AUTH_PROVIDERS=google,apple` (or empty
 
 **Google**
 1. Google Cloud console → APIs & Services → OAuth consent screen: app name **Navi**, support email,
-   logo, `navi.app` as authorized domain, scopes `openid email profile`. Publish (External).
+   logo, `buildnavi.com` as authorized domain, scopes `openid email profile`. Publish (External).
 2. Credentials → Create OAuth client ID → Web application. Authorized redirect URI:
    `https://oqvuejmxkkfaogelwraz.supabase.co/auth/v1/callback`.
 3. Supabase → Authentication → Providers → Google: enable, paste client ID + secret.
@@ -189,7 +189,7 @@ for tax records.
 
 | Variable | Prod | Preview | Where it comes from |
 |---|---|---|---|
-| `NAVI_CLOUD_BASE_URL` | ✓ | – | The public URL, e.g. `https://api.navi.app`. Previews fall back to `VERCEL_URL`. |
+| `NAVI_CLOUD_BASE_URL` | ✓ | – | The public URL, e.g. `https://api.buildnavi.com`. Previews fall back to `VERCEL_URL`. |
 | `SUPABASE_URL` | ✓ | ✓ | §2 |
 | `SUPABASE_ANON_KEY` | ✓ | ✓ | §2 |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ | ✓ | §2 — secret |
@@ -200,7 +200,7 @@ for tax records.
 | `STRIPE_PRICE_PRO_MONTH`, `…_PRO_YEAR`, `…_PRO_RECALL_MONTH`, `…_PRO_RECALL_YEAR` | ✓ live | ✓ test | §5 |
 | `CRON_SECRET` | ✓ | – | `openssl rand -hex 32`. Vercel Cron sends it to `/auth/purge`. |
 | `NAVI_DOWNLOAD_URL` | ✓ | ✓ | The latest notarized DMG (`scripts/release.sh` output). Unset → "download opens soon". |
-| `NAVI_SITE_URL` | ✓ | ✓ | `https://navi.app` (Privacy/Terms links on the hosted pages). |
+| `NAVI_SITE_URL` | ✓ | ✓ | `https://buildnavi.com` (Privacy/Terms links on the hosted pages). |
 | `AUTH_PROVIDERS` | optional | optional | `google,apple` to force the buttons; unset = whatever Supabase has enabled. |
 | `MOCK_UPSTREAM`, `DEV_LOGIN_SECRET` | **never** | for smoke only | Preview-only, to run `scripts/smoke.sh` without vendor cost (§8). Dev login is refused on production deployments regardless. |
 | `DB_DRIVER`, `DEV_JWT_SECRET` | **never** | **never** | Local development only. |
@@ -244,8 +244,8 @@ Nothing is left behind except Supabase's auth audit-log lines.
 
 **On production** (no dev login there), by hand:
 
-1. `curl -sI https://api.navi.app/auth/start | grep -iE 'content-security|strict-transport|x-frame'`.
-2. Open `https://api.navi.app/auth/start?redirect=account`, sign in with your email: once with
+1. `curl -sI https://api.buildnavi.com/auth/start | grep -iE 'content-security|strict-transport|x-frame'`.
+2. Open `https://api.buildnavi.com/auth/start?redirect=account`, sign in with your email: once with
    the link, once with the typed code (sign out between). Land on `/account`.
 3. In Navi on the Mac: Settings → Account → Sign in → the browser → "Open Navi" → signed in.
 4. Stripe **test** mode: Upgrade → card `4242 4242 4242 4242` → back on `/account?billing=success`,
@@ -257,12 +257,12 @@ Nothing is left behind except Supabase's auth audit-log lines.
 
 ## 9. Custom domain
 
-1. Vercel → `navi-cloud` → Settings → Domains → add `api.navi.app` → at the DNS host:
+1. Vercel → `navi-cloud` → Settings → Domains → add `api.buildnavi.com` → at the DNS host:
    `CNAME api → cname.vercel-dns.com`.
 2. Then update, in this order: `NAVI_CLOUD_BASE_URL`; Supabase Site URL (+ Redirect URLs); the
    Stripe webhook endpoint URL; the app's default `cloudBaseURL`; `web/`'s
    `NEXT_PUBLIC_NAVI_CLOUD_URL`. Redeploy `cloud/` and `web/`.
-3. `web/` launch switches (Vercel project `navi-site`): `NEXT_PUBLIC_NAVI_CLOUD_URL=https://api.navi.app`
+3. `web/` launch switches (Vercel project `navi-site`): `NEXT_PUBLIC_NAVI_CLOUD_URL=https://api.buildnavi.com`
    adds "Sign in" and "Account" links; `NEXT_PUBLIC_SIGNUPS_OPEN=1` turns the waitlist buttons into
    "Get Navi" / "Start free trial" and adds "Download".
 

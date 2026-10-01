@@ -47,17 +47,17 @@ struct MeConfigDecodingTests {
     @Test func fullConfig() throws {
         let me = try AccountInfo.decode(Data(meJSON(config: """
         {"features":{"answers":true,"tasks":false,"voice":true,"recall":false},
-         "notice":{"id":"n-42","message":"Tasks are paused while we fix a bug.","level":"critical","url":"https://navi.app/status"},
-         "minAppVersion":"0.4.0","latestVersion":"0.5.1","downloadURL":"https://navi.app/download"}
+         "notice":{"id":"n-42","message":"Tasks are paused while we fix a bug.","level":"critical","url":"https://buildnavi.com/status"},
+         "minAppVersion":"0.4.0","latestVersion":"0.5.1","downloadURL":"https://buildnavi.com/download"}
         """).utf8))
         let c = try #require(me.config)
         #expect(c.features.answers && !c.features.tasks && c.features.voice && !c.features.recall)
         #expect(c.features.disabled == ["tasks", "recall"])
         #expect(!c.features.allows(.task) && !c.features.allows(.recallDigest) && c.features.allows(.answer) && c.features.allows(.route))
         #expect(c.notice == CloudConfig.Notice(id: "n-42", message: "Tasks are paused while we fix a bug.", level: .critical,
-                                               url: URL(string: "https://navi.app/status")))
+                                               url: URL(string: "https://buildnavi.com/status")))
         #expect(c.minAppVersion == "0.4.0" && c.latestVersion == "0.5.1")
-        #expect(c.downloadURL == URL(string: "https://navi.app/download"))
+        #expect(c.downloadURL == URL(string: "https://buildnavi.com/download"))
         #expect(c.requiresUpdate(currentVersion: "0.3.9") && !c.requiresUpdate(currentVersion: "0.4.0"))
         #expect(c.updateAvailable(currentVersion: "0.5.0") && !c.updateAvailable(currentVersion: "0.5.1"))
         // The cached snapshot keeps the config.
@@ -123,15 +123,15 @@ struct NewCloudErrorTests {
         let meAllowed = Flag()
         StubProtocol.install(host: host) { req in
             if req.url!.path == "/v1/me", meAllowed.value { return reply(200, meJSON()) }
-            return reply(426, #"{"error":"upgrade_required","minAppVersion":"9.0.0","downloadURL":"https://navi.app/download"}"#)
+            return reply(426, #"{"error":"upgrade_required","minAppVersion":"9.0.0","downloadURL":"https://buildnavi.com/download"}"#)
         }
         let cloud = stubTransport(host)
         let claude = try cloud.request(path: "/v1/claude", json: [:], run: CloudRun(feature: .answer))
         do { _ = try await cloud.send(claude); Issue.record("expected upgradeRequired") }
         catch NaviError.upgradeRequired(let min, let url) {
-            #expect(min == "9.0.0" && url == URL(string: "https://navi.app/download"))
+            #expect(min == "9.0.0" && url == URL(string: "https://buildnavi.com/download"))
         }
-        #expect(cloud.block == .upgradeRequired(minAppVersion: "9.0.0", downloadURL: URL(string: "https://navi.app/download")))
+        #expect(cloud.block == .upgradeRequired(minAppVersion: "9.0.0", downloadURL: URL(string: "https://buildnavi.com/download")))
 
         // Next proxy call fails fast, no request.
         let before = StubProtocol.requests(host: host).count
@@ -148,10 +148,10 @@ struct NewCloudErrorTests {
 
     @Test func configMinimumVersionBlocksWithoutA426() async throws {
         let host = "minversion.test"
-        StubProtocol.install(host: host) { _ in reply(200, meJSON(config: #"{"minAppVersion":"999.0","downloadURL":"https://navi.app/dl"}"#)) }
+        StubProtocol.install(host: host) { _ in reply(200, meJSON(config: #"{"minAppVersion":"999.0","downloadURL":"https://buildnavi.com/dl"}"#)) }
         let cloud = stubTransport(host)
         _ = try await cloud.me()
-        #expect(cloud.block == .upgradeRequired(minAppVersion: "999.0", downloadURL: URL(string: "https://navi.app/dl")))
+        #expect(cloud.block == .upgradeRequired(minAppVersion: "999.0", downloadURL: URL(string: "https://buildnavi.com/dl")))
         do { try cloud.preflight(cloud.request(path: "/v1/jev", json: [:], run: CloudRun(feature: .route))); Issue.record("expected a refusal") }
         catch NaviError.upgradeRequired {}
     }
@@ -350,8 +350,8 @@ struct AccountLifecycleTests {
 
     @Test func infoNoticesStayOutOfThePanel() throws {
         let d = scratchDefaults("acct-info")
-        let account = try signedInAccount("acct-info.test", config: #"{"notice":{"id":"i1","message":"New: voice in any app.","url":"https://navi.app/changelog"}}"#, defaults: d)
-        #expect(account.homeNotice?.kind == .config(url: URL(string: "https://navi.app/changelog")))
+        let account = try signedInAccount("acct-info.test", config: #"{"notice":{"id":"i1","message":"New: voice in any app.","url":"https://buildnavi.com/changelog"}}"#, defaults: d)
+        #expect(account.homeNotice?.kind == .config(url: URL(string: "https://buildnavi.com/changelog")))
         #expect(account.homeNotice?.actionTitle == "Learn more")
         #expect(account.panelNotice == nil)
     }
@@ -502,7 +502,7 @@ struct AccountLifecycleTests {
     @Test func supportMailCarriesTheAccount() {
         let url = NaviLinks.supportMail(subject: "My Navi account is disabled", account: "liam@example.com")
         #expect(url.scheme == "mailto")
-        #expect(url.absoluteString.hasPrefix("mailto:support@navi.app?subject=My%20Navi%20account%20is%20disabled"))
+        #expect(url.absoluteString.hasPrefix("mailto:support@buildnavi.com?subject=My%20Navi%20account%20is%20disabled"))
         #expect(url.absoluteString.contains("liam@example.com"))
     }
 }

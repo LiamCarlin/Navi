@@ -40,7 +40,7 @@ tokens for spoken/short answers and route long ones to Sonnet.
 ## 3. Launch architecture
 
 ```
-Navi.app ──(Bearer <navi session>)──▶ api.navi.app  (Next.js on Vercel)
+Navi.app ──(Bearer <navi session>)──▶ api.buildnavi.com  (Next.js on Vercel)
    │                                     ├─ /v1/jev       → api.typesafe.ai (server key), metered
    │                                     ├─ /v1/claude    → api.anthropic.com (server key), metered, SSE passthrough
    │                                     ├─ /v1/digest    → Gemini or Haiku, requires `recall`
@@ -49,7 +49,7 @@ Navi.app ──(Bearer <navi session>)──▶ api.navi.app  (Next.js on Vercel
    │                                     └─ /billing/*    → Stripe Checkout, Portal, webhooks → entitlements
    └─ navi://auth/callback?code=…  (app already owns the navi:// scheme)
 
-navi.app  (Next.js on Vercel) — marketing site, waitlist (Supabase table), pricing, download
+buildnavi.com  (Next.js on Vercel) — marketing site, waitlist (Supabase table), pricing, download
 ```
 
 Stack (chosen for zero-ops and because the Vercel AI Gateway path already exists):
@@ -136,7 +136,7 @@ strict so PRs don't collide.
 
 ### D. Account + entitlements in the app — `claude/launch-account` — owns `Navi/Core/{NaviAccount,CloudTransport,Entitlements}.swift` (new), `Navi/Settings/{AccountView,HomeView,MemoryView,OnboardingView,SettingsRootView}.swift`, `Navi/Core/Keychain.swift` (add keys), `Navi/Providers/*` (transport hook only), `Navi/Memory/MemoryService.swift` (gate only), `Navi/Router/QueryRouter.swift` (memory-intent gate only)
 - `CloudTransport`: `JevClient`/`ClaudeClient`/`GeminiClient` gain a `.navi` transport — base URL
-  from `NaviSettings.cloudBaseURL` (default `https://api.navi.app`), bearer = account token, adds
+  from `NaviSettings.cloudBaseURL` (default `https://api.buildnavi.com`), bearer = account token, adds
   `X-Navi-Feature` / `X-Navi-Run`. BYOK transports stay for Developer mode. 402/403 map to
   `NaviError.quotaExceeded` / `.notEntitled`.
 - Sign-in: `navi://auth/callback` handled in `AppDelegate`; tokens in Keychain; `NaviAccount`
@@ -187,7 +187,7 @@ week 4  Stripe live mode · pricing page live · open the download
 
 ## 6. Things only Liam can do (do these in parallel with the agents)
 
-1. **Domain** — register or pick one (`navi.app`? check availability). Set `NEXT_PUBLIC_SITE_URL` / `cloudBaseURL`.
+1. **Domain** — `buildnavi.com` (GoDaddy, registered 2026-10-01; site attached to Vercel `navi-site`). Set `NEXT_PUBLIC_SITE_URL` / `cloudBaseURL`.
 2. **Supabase project** — create it, paste `SUPABASE_URL`, anon key, service key into Vercel env for both apps.
 3. **Stripe account** — create the four prices in §4-C, set the webhook secret, enable Customer Portal.
 4. **Apple Developer ID** — the team `M8ZP994J4T` exists; create a *Developer ID Application*

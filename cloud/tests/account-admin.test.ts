@@ -19,7 +19,7 @@ import { req, useMemoryEnv } from "./helpers";
 
 let n = 0;
 const freshEmail = () => `adm${++n}.${Date.now()}@example.com`;
-const ADMIN = "liam@navi.app";
+const ADMIN = "liam@buildnavi.com";
 
 beforeEach(() => {
   useMemoryEnv({ MOCK_UPSTREAM: undefined });

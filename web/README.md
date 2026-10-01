@@ -1,4 +1,4 @@
-# navi.app — marketing site + waitlist
+# buildnavi.com — marketing site + waitlist
 
 Next.js 15 (App Router) · TypeScript · Tailwind 4 · framer-motion. No CMS, no auth.
 
@@ -37,7 +37,7 @@ Copy `.env.example` to `.env.local`:
 
 | Var | Purpose |
 |---|---|
-| `NEXT_PUBLIC_SITE_URL` | Canonical URL for metadata / OG (`https://navi.app`) |
+| `NEXT_PUBLIC_SITE_URL` | Canonical URL for metadata / OG (`https://buildnavi.com`) |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_KEY` | Supabase **service role** key — server-only, never exposed to the client |
 

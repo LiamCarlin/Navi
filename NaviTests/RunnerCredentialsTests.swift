@@ -14,10 +14,10 @@ struct RunnerCredentialsTests {
     ]
 
     @Test func cloudCredentialsCarryNoVendorKey() {
-        let env = UltrafastBridge.applying(.cloud(baseURL: URL(string: "https://api.navi.app/")!, token: "acc-1",
+        let env = UltrafastBridge.applying(.cloud(baseURL: URL(string: "https://api.buildnavi.com/")!, token: "acc-1",
                                                   feature: .voice, runID: Self.run), to: Self.shell)
         #expect(env["NAVI_JEV_TRANSPORT"] == "navi")
-        #expect(env["NAVI_CLOUD_URL"] == "https://api.navi.app")          // no trailing slash
+        #expect(env["NAVI_CLOUD_URL"] == "https://api.buildnavi.com")          // no trailing slash
         #expect(env["NAVI_CLOUD_TOKEN"] == "acc-1")
         #expect(env["NAVI_CLOUD_FEATURE"] == "voice")
         #expect(env["NAVI_CLOUD_RUN"] == "6f9619ff-8b86-d011-b42d-00c04fc964ff")   // as CloudTransport sends X-Navi-Run
@@ -34,7 +34,7 @@ struct RunnerCredentialsTests {
 
     @Test func typesafeKeysClearAStaleCloudSession() {
         var base = Self.shell
-        base["NAVI_CLOUD_TOKEN"] = "stale"; base["NAVI_CLOUD_URL"] = "https://api.navi.app"
+        base["NAVI_CLOUD_TOKEN"] = "stale"; base["NAVI_CLOUD_URL"] = "https://api.buildnavi.com"
         let env = UltrafastBridge.applying(.typesafe(key: "ts-key", anthropicKey: "sk-key"), to: base)
         #expect(env["TYPESAFE_API_KEY"] == "ts-key")
         #expect(env["ANTHROPIC_API_KEY"] == "sk-key")

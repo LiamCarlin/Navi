@@ -50,19 +50,19 @@ struct UpdaterTests {
 
     @Test func appcastDecodes() throws {
         let json = """
-        {"version":"0.2.0","build":"7","url":"https://navi.app/downloads/Navi-0.2.0.dmg",
+        {"version":"0.2.0","build":"7","url":"https://buildnavi.com/downloads/Navi-0.2.0.dmg",
          "sha256":"ABCDEF","ed25519":"c2ln","notes":"- Faster answers\\n- Bug fixes","minOS":"26.0","published":"2026-09-22T00:00:00Z"}
         """
         let a = try JSONDecoder().decode(Appcast.self, from: Data(json.utf8))
         #expect(a.version == "0.2.0")
         #expect(a.build == "7")
-        #expect(a.url.host == "navi.app")
+        #expect(a.url.host == "buildnavi.com")
         #expect(a.notes?.contains("Faster") == true)
         #expect(a.minOS == "26.0")
 
         // Optional fields may be absent.
         let minimal = """
-        {"version":"0.2.0","build":"7","url":"https://navi.app/x.dmg","sha256":"00","ed25519":""}
+        {"version":"0.2.0","build":"7","url":"https://buildnavi.com/x.dmg","sha256":"00","ed25519":""}
         """
         let m = try JSONDecoder().decode(Appcast.self, from: Data(minimal.utf8))
         #expect(m.notes == nil && m.minOS == nil)
@@ -141,8 +141,8 @@ struct UpdaterTests {
         #expect(NaviSettings.resolveUpdateFeedURL(override: "", infoPlist: "  ") == def)
         #expect(NaviSettings.resolveUpdateFeedURL(override: "not a url", infoPlist: nil) == def)
         #expect(NaviSettings.resolveUpdateFeedURL(override: "ftp://x/appcast.json", infoPlist: nil) == def)
-        #expect(NaviSettings.resolveUpdateFeedURL(override: nil, infoPlist: "https://navi.app/appcast.json").host == "navi.app")
+        #expect(NaviSettings.resolveUpdateFeedURL(override: nil, infoPlist: "https://buildnavi.com/appcast.json").host == "buildnavi.com")
         #expect(NaviSettings.resolveUpdateFeedURL(override: "http://localhost:8000/appcast.json",
-                                                  infoPlist: "https://navi.app/appcast.json").port == 8000)
+                                                  infoPlist: "https://buildnavi.com/appcast.json").port == 8000)
     }
 }

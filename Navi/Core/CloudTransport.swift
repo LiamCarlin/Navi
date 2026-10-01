@@ -101,7 +101,7 @@ final class MemoryTokenStore: CloudTokenStore, @unchecked Sendable {
 ///
 /// `JevClient`, `ClaudeClient` and `GeminiClient` route through here when the
 /// user is signed in (`isActive`): same request bodies as the vendors, sent to
-/// `https://api.navi.app/v1/{jev,claude,digest}` with the account's bearer
+/// `https://api.buildnavi.com/v1/{jev,claude,digest}` with the account's bearer
 /// token plus `X-Navi-Feature` / `X-Navi-Run`. Otherwise they keep talking to
 /// the vendors with the developer's own keys.
 ///
@@ -126,7 +126,7 @@ final class CloudTransport: @unchecked Sendable {
     }()
 
     /// The production API when the build names none (project.yml `NaviCloudBaseURL`).
-    static let fallbackBaseURL = "https://api.navi.app"
+    static let fallbackBaseURL = "https://api.buildnavi.com"
     /// The build's `NaviCloudBaseURL` Info.plist key (set in project.yml, like the update
     /// feed), else `fallbackBaseURL`. The `cloudBaseURL` default still overrides it.
     static let defaultBaseURL: String = resolveDefaultBaseURL(
