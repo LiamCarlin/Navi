@@ -156,7 +156,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     (cached 5 min) marks the items this user clicks here / clicks next, adds their shortcuts,
     and puts `how_this_user_works` (matching procedures, habits, most-clicked controls) in every
     native Jev step; the planner (`how_they_did_it_before`) and the browser runner
-    (`NAVI_USER_CONTEXT_JSON.how_this_user_works`) get the procedures. "How you work.md" adds
+    (`NAVI_USER_CONTEXT_JSON.how_this_user_works`) get the procedures, and the runner marks page
+    elements the user clicks on that site (`NAVI_USER_MOVES_JSON`, adaptation 21: `this_user` on
+    elements + target criteria; a tiebreaker — ambiguous Canvas goals flipped to the user's Modules
+    6/6, "homework" still went to Assignments). "How you work.md" adds
     routines, what you click, and "Faster ways" (menu items clicked ≥ 3× that have a shortcut).
     The personal-data cleanup also redacts actions and procedures. `ProcedureBackfill` (once, after
     the first digest of a launch; resumable cursor `memoryProcedureBackfillCursor`, then

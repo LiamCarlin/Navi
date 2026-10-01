@@ -49,6 +49,8 @@ final class UserMoves: @unchecked Sendable {
         /// Normalised label → the labels clicked right after it, with counts.
         var next: [String: [String: Int]] = [:]
         var actions = 0
+        /// A site (keyed by its page), not an app.
+        var isWeb = false
     }
 
     struct Procedure: Sendable, Equatable {
@@ -141,7 +143,7 @@ final class UserMoves: @unchecked Sendable {
         var previous: [String: (label: String, at: Date)] = [:]
         for a in actions.sorted(by: { $0.timestamp < $1.timestamp }) where !a.bundleID.isEmpty {
             let key = placeKey(bundleID: a.bundleID, url: a.url)
-            var place = p.places[key] ?? Place(key: key, name: key == a.bundleID ? a.appName : key)
+            var place = p.places[key] ?? Place(key: key, name: key == a.bundleID ? a.appName : key, isWeb: key != a.bundleID)
             place.actions += 1
             if a.kind == .key, let combo = a.shortcut {
                 var s = place.shortcuts[combo] ?? Shortcut(combo: combo, count: 0)
@@ -343,6 +345,42 @@ final class UserMoves: @unchecked Sendable {
         var out: [String: Any] = ["note": note, "did_before": done.map(line)]
         if !habits.isEmpty { out["habits"] = Array(habits.prefix(maxHabits)) }
         return out
+    }
+
+    // MARK: Browser runner (`NAVI_USER_MOVES_JSON`, runner adaptation 21)
+
+    static let runnerMaxSites = 25
+    static let runnerMaxControls = 120
+
+    /// What this user clicks on each site, for the browser runner to mark page elements with:
+    /// `{"sites": {site: {"clicks": [{label, role, count}], "next": {label: {label: count}}}}}`.
+    /// The busiest sites (plus `prefer`, the start page's) only; nil when nothing qualifies.
+    static func runnerJSON(_ profile: Profile, prefer: String? = nil) -> String? {
+        let preferred = prefer.flatMap(UserHabits.siteKey(of:))
+        let web = profile.places.values.filter(\.isWeb).sorted {
+            ($0.key == preferred) != ($1.key == preferred) ? $0.key == preferred : $0.actions > $1.actions
+        }
+        var sites: [String: Any] = [:]
+        for place in web where sites.count < runnerMaxSites {
+            let controls = place.controls.filter { $0.value.count >= minCount }
+                .sorted { $0.value.count > $1.value.count }.prefix(runnerMaxControls)
+            guard !controls.isEmpty else { continue }
+            let kept = Set(controls.map(\.key))
+            var next: [String: [String: Int]] = [:]
+            for (from, tos) in place.next where kept.contains(from) {
+                let strong = tos.filter { $0.value >= minCount && kept.contains($0.key) }
+                if !strong.isEmpty { next[from] = strong }
+            }
+            sites[place.key] = ["clicks": controls.map { ["label": $0.value.label, "role": $0.value.role, "count": $0.value.count] },
+                                "next": next]
+        }
+        guard !sites.isEmpty, let data = try? JSONSerialization.data(withJSONObject: ["sites": sites], options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func liveRunnerJSON(startURL: String?) -> String? {
+        guard let m = current else { return nil }
+        return runnerJSON(m.profile(), prefer: startURL)
     }
 
     // MARK: Vault ("How you work")

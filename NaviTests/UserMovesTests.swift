@@ -351,3 +351,27 @@ import Testing
         #expect(UserDefaults.navi.object(forKey: ProcedureBackfill.doneKey) == nil)       // the local digest names no goal: try again with a model
     }
 }
+
+@Suite struct RunnerMarksTests {
+    @Test func runnerGetsSitesNotApps() throws {
+        let json = try #require(UserMoves.runnerJSON(UserMovesTests.profile))
+        let obj = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let sites = try #require(obj["sites"] as? [String: Any])
+        #expect(Set(sites.keys) == ["canvas.olin.edu"])                               // Outlook is an app: the native driver's
+        let canvas = try #require(sites["canvas.olin.edu"] as? [String: Any])
+        let clicks = try #require(canvas["clicks"] as? [[String: Any]])
+        #expect(clicks.first?["label"] as? String == "Assignments" && clicks.first?["count"] as? Int == 3)
+        #expect(UserMoves.runnerJSON(.empty) == nil)
+    }
+
+    @Test func theStartPagesSiteComesFirst() throws {
+        var acts: [ActionRecord] = []
+        for i in 0..<30 { acts.append(UserMovesTests.act(.click, "Big", role: "link", bundle: "com.google.Chrome", app: "Chrome", url: "https://big.test/", at: Double(i))) }
+        acts.append(UserMovesTests.act(.click, "Small", role: "link", bundle: "com.google.Chrome", app: "Chrome", url: "https://small.test/", at: 100))
+        acts.append(UserMovesTests.act(.click, "Small", role: "link", bundle: "com.google.Chrome", app: "Chrome", url: "https://small.test/", at: 101))
+        let profile = UserMoves.build(actions: acts, procedures: [])
+        #expect(profile.places["small.test"]?.isWeb == true)
+        let json = try #require(UserMoves.runnerJSON(profile, prefer: "https://small.test/page"))
+        #expect(json.contains("small.test") && json.contains("big.test"))
+    }
+}
