@@ -263,7 +263,10 @@ Nothing is left behind except Supabase's auth audit-log lines.
   frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'`, HSTS (2 years,
   subdomains), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP, a
   Permissions-Policy that denies camera/mic/location. The sign-in page never talks to Supabase from
-  the browser — every auth call is server-side — so `connect-src 'self'` holds.
+  the browser — every auth call is server-side — so `connect-src 'self'` holds. `/admin/*` gets
+  the same policy plus `connect-src` to the project's Supabase origin (the console's login uses the
+  Supabase browser client); that origin is read from `SUPABASE_URL` at **build** time, which Vercel
+  provides as long as the variable is set for the environment being built.
 - **Rate limits** (shared across instances through Postgres, fail-open to per-instance memory if
   the database blips): 120 req/min per user on `/v1/*` and account routes, 30/min per IP on
   `/auth/*`, 10/min per IP on `/waitlist`, 5 sign-in emails and 10 code attempts per address per
@@ -297,14 +300,20 @@ which are passed through, not kept.
 | Waitlist | `public.waitlist` | email, signup source, optional note | until deleted | ✓ |
 | Sign-in codes | `public.auth_codes` | session tokens for ≤ 5 min until the app swaps them | single use; expired rows purged daily | ✓ |
 | Rate limits | `public.rate_limits` | user id or IP + a counter per minute | purged daily after 1 day | expires |
+| Admin fields | `public.profiles` (0002) | tier override, disabled at + internal reason, quota resets | until deleted | ✓ (with the profile) |
+| Admin audit | `public.admin_audit` | admin actions on the account (actor, action, target email, metadata) | indefinitely | pseudonymized: the email becomes `deleted-user:<id prefix>`; an admin-initiated delete keeps its own record of whom it deleted |
+| Admin role | `public.admins` | email of a database-granted admin | until removed | ✓ (`ADMIN_EMAILS` env untouched) |
 | Auth audit log | Supabase `auth.audit_log_entries` | sign-in / sign-out events (email, IP) | Supabase's retention | ✗ — purge by hand if asked |
 | Billing | Stripe | customer email, card (at Stripe), invoices | Stripe / tax law | customer deleted; invoices kept |
 | Request logs | Vercel | method, path, status, IP, timing (no bodies) | plan's log retention (1–30 days) | expires |
 | Emails | SMTP provider | recipient + delivery status of sign-in mails | provider retention | expires |
 
-Users get all of the above that belongs to them from **Export my data** (`GET /v1/account/export`),
-and remove it with **Delete account** (`DELETE /v1/account`: Stripe first — if cancelling fails
-nothing is deleted — then the rows, then the auth user).
+Users get all of the above that belongs to them from **Export my data** (`GET /v1/account/export`;
+the admin's internal "disabled" note is not included), and remove it with **Delete account**
+(`DELETE /v1/account`: Stripe first — if cancelling fails nothing is deleted — then the rows, then
+the auth user). Both keep working for a **disabled** account and for an app below
+`minAppVersion` (the 403 `account_disabled` / 426 gates don't apply to them). The admin console's
+"Delete user" runs exactly the same path.
 
 ## 12. Day two
 
