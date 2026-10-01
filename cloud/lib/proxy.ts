@@ -63,7 +63,7 @@ function withNaviHeaders(res: Response, ctx: Ctx): Response {
 
 export async function handleMeteredProxy(req: Request, upstream: Upstream): Promise<Response> {
   const user = await requireUser(req);
-  const rl = perUserLimiter.hit(user.id);
+  const rl = await perUserLimiter.hit(user.id);
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
 
   const feature = resolveFeature(req.headers.get("x-navi-feature"), upstream);

@@ -81,6 +81,24 @@ export const env = {
   get aiGatewayEvalUrl() { return str("AI_GATEWAY_EVAL_URL") ?? "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"; },
 
   get isProduction() { return process.env.NODE_ENV === "production" && Boolean(str("VERCEL_ENV") === "production"); },
+
+  // MARK: account — sign-in, /account portal, cron
+  /** Latest Navi DMG, shown as "Download Navi" on /account. Unset → "coming soon". */
+  get downloadUrl() { return str("NAVI_DOWNLOAD_URL"); },
+  /** Vercel Cron sends `Authorization: Bearer $CRON_SECRET` to /auth/purge. Unset → the route is off. */
+  get cronSecret() { return str("CRON_SECRET"); },
+  /**
+   * Which "Continue with …" buttons /auth/start shows: comma list of `google`, `apple`.
+   * Unset → asked from Supabase's public `/auth/v1/settings` (what is enabled there).
+   */
+  get authProviders(): string[] | undefined {
+    const v = str("AUTH_PROVIDERS");
+    return v === undefined ? undefined : v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  },
+  /** The marketing site (web/), for Privacy / Terms links on the hosted pages. */
+  get siteUrl() { return str("NAVI_SITE_URL"); },
+  /** Cookies are `Secure` whenever the public URL is https. */
+  get secureCookies() { return env.baseUrl.startsWith("https://"); },
 };
 
 export type Env = typeof env;

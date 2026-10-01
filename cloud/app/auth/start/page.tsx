@@ -1,36 +1,58 @@
+import { getAuthBackend, isSignInErrorKind, SIGN_IN_ERRORS, type OAuthProvider } from "@/lib/auth-backend";
 import { env } from "@/lib/env";
+import { normalizeEmail, parseFlow } from "@/lib/signin";
+import { Foot, Shell } from "../ui";
 import { SignInForm } from "./sign-in-form";
 
 export const dynamic = "force-dynamic";
 
+type Search = Record<string, string | string[] | undefined>;
+const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+
 /**
- * GET /auth/start?redirect=navi — the hosted sign-in page the app opens in the
- * user's browser. Magic link, plus Google when configured in Supabase. After
- * Supabase redirects back to /auth/callback we hand off to navi://auth/callback.
+ * GET /auth/start?redirect=navi|account[&error=<kind>][&email=]
+ * The hosted sign-in page. Email (one message with a magic link and a 6-digit code), plus
+ * "Continue with Google / Apple" when those providers are switched on. `redirect=navi` (the
+ * default, §3.1) ends in navi://auth/callback?code=…; `redirect=account` ends on /account.
  */
-export default async function AuthStart({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+export default async function AuthStart({ searchParams }: { searchParams: Promise<Search> }) {
   const params = await searchParams;
-  const redirect = typeof params.redirect === "string" ? params.redirect : "navi";
-  const callbackUrl = `${env.baseUrl}/auth/callback?redirect=${encodeURIComponent(redirect)}`;
-  const configured = env.dbDriver === "supabase" && Boolean(env.supabaseUrl && env.supabaseAnonKey);
+  const flow = parseFlow(one(params.redirect));
+  const errorKind = one(params.error);
+  const error = isSignInErrorKind(errorKind) ? { kind: errorKind, ...SIGN_IN_ERRORS[errorKind] } : null;
+
+  const backend = getAuthBackend();
+  let providers: OAuthProvider[] = [];
+  try {
+    providers = backend ? await backend.providers() : [];
+  } catch {
+    providers = [];
+  }
+  const devLogin = Boolean(env.devLoginSecret) && !env.isProduction;
+
+  const title = flow === "account" ? "Sign in to your account" : "Sign in to Navi";
+  const lede =
+    flow === "account"
+      ? "Manage your plan, download Navi, export or delete your data."
+      : "Enter your email. We’ll send a link and a code — no password to remember.";
 
   return (
-    <main style={{ maxWidth: 400, margin: "16vh auto 0", padding: "0 24px" }}>
-      <div style={{ fontSize: 13, letterSpacing: 2, textTransform: "uppercase", color: "#7c7c86" }}>✦ Navi</div>
-      <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: -0.5, margin: "10px 0 6px" }}>Sign in to Navi</h1>
-      <p style={{ color: "#9a9aa3", margin: "0 0 28px", lineHeight: 1.5 }}>
-        Enter your email and we&apos;ll send a link. Nothing else to remember.
-      </p>
-      {configured ? (
-        <SignInForm supabaseUrl={env.supabaseUrl!} anonKey={env.supabaseAnonKey!} callbackUrl={callbackUrl} googleEnabled={env.googleConfigured} />
-      ) : (
-        <p style={{ color: "#e0a458", background: "#1a160f", border: "1px solid #3b2f16", padding: "12px 14px", borderRadius: 10, lineHeight: 1.5 }}>
-          Sign-in isn&apos;t configured on this instance (no Supabase project). In development use <code>POST /auth/dev-login</code>.
-        </p>
-      )}
-      <p style={{ color: "#5c5c66", fontSize: 12, marginTop: 40 }}>
-        You&apos;ll be sent back to the Navi app when you&apos;re done.
-      </p>
-    </main>
+    <Shell>
+      <main className="nv-narrow">
+        <h1 className="nv-h1">{title}</h1>
+        <p className="nv-lede">{lede}</p>
+        <SignInForm
+          flow={flow}
+          enabled={backend !== null}
+          memoryMode={backend?.kind === "memory"}
+          providers={providers}
+          devLogin={devLogin}
+          initialEmail={normalizeEmail(one(params.email)) ?? ""}
+          initialError={error ? { kind: error.kind, title: error.title, message: error.message } : null}
+          signedOut={one(params.signed_out) === "1"}
+        />
+        <Foot />
+      </main>
+    </Shell>
   );
 }

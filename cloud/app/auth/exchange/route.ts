@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 /** POST /auth/exchange { code } → { accessToken, refreshToken, expiresAt }. Single use, 5-minute TTL. */
 export const POST = handle(async (req) => {
-  const rl = authIpLimiter.hit(clientIp(req));
+  const rl = await authIpLimiter.hit(clientIp(req));
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
 
   const body = await readJson<{ code?: unknown }>(req);
