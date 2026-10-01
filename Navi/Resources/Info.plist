@@ -38,30 +38,36 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAccessibilityUsageDescription</key>
-	<string>Navi needs Accessibility access to click, type and navigate apps on your behalf.</string>
+	<string>Navi clicks, types and moves between apps for you when you ask it to do a task.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Navi uses Apple Events to control apps (Chrome, Safari, Finder) when you ask it to perform tasks.</string>
+	<string>Navi controls other apps, like Chrome, Safari and Finder, only when you ask it to do something in them.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Navi reads your calendar to find times when everyone is free and books the meetings you ask for.</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Navi adds the reminders you ask for and shows what else is due that day.</string>
+	<string>Navi checks your calendar to find times when everyone is free and adds the meetings you ask for.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>Navi looks up the people you schedule with to find their email and photo.</string>
+	<string>Navi looks up the people you mention to find their email address and photo.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Navi finds and opens files on your Desktop when you ask for them.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Navi finds and opens files in your Documents folder when you ask for them.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Navi finds and opens files in your Downloads folder when you ask for them.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Liam Carlin. All rights reserved.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Navi uses your location for Maps and weather queries.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Navi can listen for voice queries when you enable voice input.</string>
+	<string>Navi listens only while voice control is on, so you can tell it what to do.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Navi adds the reminders you ask for and shows what else is due that day.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Navi captures your screen so it can see what you're working on and act on your instructions.</string>
+	<string>Navi looks at your screen to carry out what you ask and, if you turn on Recall, to remember what you worked on. Screenshots are read on your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Navi transcribes voice queries on-device.</string>
+	<string>Navi turns what you say into text, on your Mac, while voice control is on.</string>
 	<key>NSUserNotificationsUsageDescription</key>
-	<string>Navi notifies you when a background task completes.</string>
+	<string>Navi lets you know when a task it was doing in the background is finished.</string>
+	<key>NaviUpdateFeedURL</key>
+	<string>https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json</string>
 </dict>
 </plist>
