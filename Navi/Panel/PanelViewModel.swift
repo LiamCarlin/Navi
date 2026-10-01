@@ -358,7 +358,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     func perform(_ result: SearchResult) {
-        Log.panel.info("perform \(result.kind.rawValue, privacy: .public): \(result.title, privacy: .public)")
+        Log.panel.info("perform \(result.kind.rawValue, privacy: .public): \(result.title, privacy: .private)")
         #if DEBUG
         DebugTrace.log("perform \(result.kind.rawValue): \(result.title)")
         #endif
@@ -469,7 +469,7 @@ final class PanelViewModel: ObservableObject {
                 }
             }
             scheduler = s
-            Log.panel.info("scheduler card for “\(request.activity, privacy: .public)” (\(request.people.count) people)")
+            Log.panel.info("scheduler card for “\(request.activity, privacy: .private)” (\(request.people.count) people)")
         }
         if mode != .schedule { mode = .schedule }
     }
@@ -558,7 +558,7 @@ final class PanelViewModel: ObservableObject {
         }
         guard let refined else { return }
         let intent = decision?.intent ?? .computerTask
-        Log.panel.info("clarified (\(intent.rawValue, privacy: .public)) → \(refined, privacy: .public)")
+        Log.panel.info("clarified (\(intent.rawValue, privacy: .public)) → \(refined, privacy: .private)")
         services.router.didClarify(query: refined, intent: intent)
         clearClarification()
         mode = .results

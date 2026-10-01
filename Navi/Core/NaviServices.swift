@@ -122,6 +122,7 @@ final class NaviServices: @unchecked Sendable {
     @MainActor
     func startBackgroundServices() {
         if NaviSettings.shared.memoryCaptureEnabled { memory.start() }
+        PrivacyMaintenance.start(memory: memory)   // privacy workstream: daily retention (Core/PrivacyData.swift)
         // Settings toggles and account changes (sign-in, upgrade, sign-out) both
         // re-evaluate capture: `MemoryService.start()` refuses without `recall`.
         for name in [Notification.Name.naviSettingsChanged, .naviAccountChanged] {

@@ -304,7 +304,7 @@ final class VoiceCommandExecutor {
                 guard !Task.isCancelled, let self else { return }
                 let idle = Int(Date().timeIntervalSince(self.lastRunEventAt) * 1000)
                 guard idle >= Self.taskIdleMs else { continue }
-                Log.voice.warning("voice task silent for \(idle) ms — cancelling: \(task.prefix(80), privacy: .public)")
+                Log.voice.warning("voice task silent for \(idle) ms — cancelling: \(task.prefix(80), privacy: .private)")
                 self.timedOutRun = handle.id
                 handle.cancel()
                 return

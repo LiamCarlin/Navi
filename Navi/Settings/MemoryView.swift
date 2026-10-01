@@ -7,7 +7,6 @@ struct MemoryView: View {
     @ObservedObject private var account = NaviAccount.shared
     @State private var status = MemoryStatus()
     @State private var digesting = false
-    @State private var newBundleID = ""
     @State private var cleanupPlan: PersonalDataCleanup.Plan?
     @State private var cleanupBusy = false
     @State private var cleanupMessage: String?
@@ -61,9 +60,6 @@ struct MemoryView: View {
                     Picker("Summarize every", selection: $settings.memoryDigestIntervalMinutes) {
                         Text("5 min").tag(5); Text("10 min").tag(10); Text("30 min").tag(30)
                     }
-                    Picker("Keep snapshots for", selection: $settings.memoryRetentionDays) {
-                        Text("7 days").tag(7); Text("14 days").tag(14); Text("30 days").tag(30); Text("90 days").tag(90)
-                    }
                     Toggle("Keep screenshots, not just their text", isOn: $settings.memoryKeepScreenshots)
                 }
 
@@ -86,38 +82,17 @@ struct MemoryView: View {
                 }
 
                 Section {
-                    ForEach(settings.memoryExcludedBundleIDs, id: \.self) { bid in
-                        HStack {
-                            AppIconView(bundleID: bid)
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(appName(for: bid))
-                                Text(bid).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button {
-                                settings.memoryExcludedBundleIDs.removeAll { $0 == bid }
-                            } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless).foregroundStyle(.secondary)
-                        }
+                    ExplainedRow(title: "Privacy & Data",
+                                 explanation: "How long memories are kept, apps and sites Recall never captures, what leaves this Mac, and deleting everything.") {
+                        Button("Open") { SettingsNavigator.shared.go(.privacy) }
                     }
-                    HStack(spacing: 8) {
-                        Button("Add App…", action: chooseApp)
-                        TextField("or a bundle ID, e.g. com.apple.Passwords", text: $newBundleID)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit(addTypedBundleID)
-                        Button("Add", action: addTypedBundleID).disabled(newBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                } header: {
-                    Text("Never capture these apps")
-                } footer: {
-                    Text("Navi never looks at these apps. It also skips any screen it judges sensitive — passwords, one-time codes and the personal information you block below.")
                 }
 
                 personalDataSection
 
                 Section {
                     Label {
-                        Text("Snapshots and their text stay on this Mac (in ~/Library/Application Support/Navi); summaries go to your journal folder. To decide what matters and to write summaries, screen text — and for summaries, the screenshot — is sent to Navi's AI models. Only the summary is kept in your journal.")
+                        Text("Snapshots and their text stay on this Mac (in ~/Library/Application Support/Navi); summaries go to your journal folder. To decide what matters, each snapshot's screen text goes to Navi's AI services; the important ones are summarized from their text and up to two small screenshots, and only the summary is kept in your journal.")
                             .font(.callout).foregroundStyle(.secondary)
                     } icon: {
                         Image(systemName: "lock.fill").foregroundStyle(.secondary)
@@ -166,7 +141,7 @@ struct MemoryView: View {
         } header: {
             Text("Personal information Navi may remember")
         } footer: {
-            Text("On: Navi may keep it in your journal. Off: Navi keeps only the app and the time of that screen and leaves the detail out of summaries — it is removed on this Mac before anything is sent for summarizing. Passwords and one-time codes are never kept.")
+            Text("On: Navi may keep it in your journal. Off: Navi keeps only the app and the time of that screen and leaves the detail out of summaries. Blocked details are removed on this Mac before anything is sent; allowed ones are stored locally and travel with the screen text to Navi's AI services when a moment is checked and summarized. Passwords and one-time codes are never kept.")
         }
         .confirmationDialog(cleanupTitle, isPresented: Binding(get: { cleanupPlan != nil }, set: { if !$0 { cleanupPlan = nil } })) {
             Button("Redact", role: .destructive) { Task { await applyCleanup() } }
@@ -294,37 +269,9 @@ struct MemoryView: View {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    private func addTypedBundleID() {
-        let id = newBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { return }
-        if !settings.memoryExcludedBundleIDs.contains(id) { settings.memoryExcludedBundleIDs.append(id) }
-        newBundleID = ""
-    }
-
-    private func chooseApp() {
-        let p = NSOpenPanel()
-        p.canChooseDirectories = false; p.canChooseFiles = true; p.allowsMultipleSelection = true
-        p.allowedContentTypes = [.applicationBundle]
-        p.directoryURL = URL(fileURLWithPath: "/Applications")
-        p.prompt = "Never Capture"
-        guard p.runModal() == .OK else { return }
-        for url in p.urls {
-            if let bid = Bundle(url: url)?.bundleIdentifier, !settings.memoryExcludedBundleIDs.contains(bid) {
-                settings.memoryExcludedBundleIDs.append(bid)
-            }
-        }
-    }
-
     private func displayPath(_ p: String) -> String {
         let home = NSHomeDirectory()
         return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
-    }
-
-    private func appName(for bundleID: String) -> String {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
-        }
-        return bundleID.split(separator: ".").last.map(String.init)?.capitalized ?? bundleID
     }
 }
 
