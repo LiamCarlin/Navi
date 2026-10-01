@@ -147,4 +147,38 @@ echo "$C1 then $C2"
 [ "$C1" = "201" ] && [ "$C2" = "200" ] || fail "waitlist codes"
 ok "waitlist"
 
+ACCESS2=$(echo "$NEW" | jsonget accessToken)
+REFRESH2=$(echo "$NEW" | jsonget refreshToken)
+AUTH2=(-H "authorization: Bearer $ACCESS2")
+
+bold "GET /v1/account/export  (everything the cloud holds about this user)"
+EXPORT=$(curl -sS "$BASE/v1/account/export" "${AUTH2[@]}")
+echo "${EXPORT:0:400}…"
+[ "$(echo "$EXPORT" | jsonget user.id)" = "$USER_ID" ] || fail "export is for the wrong user"
+[ "$(echo "$EXPORT" | jsonget format)" = "navi-account-export/1" ] || fail "export format"
+USAGE_ROWS=$(echo "$EXPORT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).usage.length))')
+[ "$USAGE_ROWS" -gt 0 ] || fail "export has no usage rows"
+[ "$(echo "$EXPORT" | jsonget waitlist.email)" = "$EMAIL" ] || fail "export is missing the waitlist row"
+echo "$EXPORT" | grep -q "$ACCESS2" && fail "export leaked a token"
+ok "export: $USAGE_ROWS usage rows, profile, waitlist row, no tokens"
+
+bold "DELETE /v1/account without a token → 401"
+CODE=$(status -X DELETE "$BASE/v1/account")
+[ "$CODE" = "401" ] || fail "expected 401, got $CODE"
+ok "401"
+
+bold "DELETE /v1/account → 204"
+CODE=$(status -X DELETE "$BASE/v1/account" "${AUTH2[@]}")
+[ "$CODE" = "204" ] || fail "expected 204, got $CODE"
+ok "deleted"
+
+bold "After delete: export → 401, refresh token revoked → 401"
+CODE=$(status "$BASE/v1/account/export" "${AUTH2[@]}")
+[ "$CODE" = "401" ] || fail "export after delete: expected 401, got $CODE"
+CODE=$(status -X POST "$BASE/auth/refresh" -H 'content-type: application/json' -d "{\"refreshToken\":\"$REFRESH2\"}")
+[ "$CODE" = "401" ] || fail "refresh after delete: expected 401, got $CODE"
+C3=$(status -X POST "$BASE/waitlist" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"source\":\"smoke\"}")
+[ "$C3" = "201" ] || fail "waitlist row should be gone after delete (re-adding gave $C3)"
+ok "account, sessions and waitlist row are gone"
+
 printf '\n\033[1;32mSmoke passed against %s\033[0m\n' "$BASE"

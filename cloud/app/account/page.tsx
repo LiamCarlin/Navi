@@ -170,7 +170,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
           />
         </section>
 
-        <section className="nv-card" aria-labelledby="dl-h">
+        <section className="nv-card" id="download" aria-labelledby="dl-h">
           <div className="nv-card-head">
             <h2 className="nv-h2" id="dl-h">
               Download Navi

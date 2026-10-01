@@ -41,12 +41,12 @@ export const SIGN_IN_ERRORS: Record<SignInErrorKind, { status: number; title: st
   expired: {
     status: 400,
     title: "That link has expired",
-    message: "Sign-in links work once and expire after an hour. Send a new one, or type the 6-digit code from the latest email.",
+    message: "Sign-in links work once and expire after an hour. Send yourself a new one below — or, if you have the latest email, choose “I have a code”.",
   },
   other_browser: {
     status: 400,
     title: "Opened in a different browser",
-    message: "This link was opened in a different browser than the one you started in. Type the 6-digit code from the email here instead.",
+    message: "This link was opened in a different browser than the one you started in. Enter your email below, choose “I have a code”, and type the 6-digit code from the same email.",
   },
   invalid_code: {
     status: 400,

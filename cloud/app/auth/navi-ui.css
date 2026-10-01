@@ -35,7 +35,7 @@
   line-height: 1.5;
 }
 .nv-page *, .nv-page *::before, .nv-page *::after { box-sizing: border-box; }
-.nv-page a { color: inherit; }
+.nv-page a:not(.nv-btn) { color: inherit; }
 
 .nv-top {
   max-width: 960px;

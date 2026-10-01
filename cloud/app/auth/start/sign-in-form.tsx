@@ -211,6 +211,26 @@ export function SignInForm({ flow, enabled, memoryMode, providers, devLogin, ini
               {busy === "send" ? <span className="nv-spinner" aria-hidden="true" /> : null}
               {busy === "send" ? "Sending…" : "Continue with email"}
             </button>
+            <p className="nv-dim" style={{ textAlign: "center", margin: 0 }}>
+              <button
+                type="button"
+                className="nv-link"
+                disabled={busy !== null}
+                onClick={() => {
+                  const target = email.trim();
+                  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(target)) {
+                    setNotice({ kind: "invalid_email", title: "Enter your email first", message: "Type the address the code was sent to, then choose “I have a code”." });
+                    return;
+                  }
+                  setNotice(null);
+                  setInfo(null);
+                  setCode("");
+                  setStep({ name: "code", email: target });
+                }}
+              >
+                I have a code
+              </button>
+            </p>
           </form>
 
           {providers.length > 0 && (
