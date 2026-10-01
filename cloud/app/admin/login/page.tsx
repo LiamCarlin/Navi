@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentAdmin } from "@/lib/admin/guard";
+import { getAuthBackend, type OAuthProvider } from "@/lib/auth-backend";
 import { env } from "@/lib/env";
 import s from "../admin.module.css";
 import { AdminSignInForm } from "./sign-in-form";
@@ -17,6 +18,13 @@ export default async function AdminLogin({ searchParams }: { searchParams: Promi
   const error = typeof params.error === "string" ? params.error : null;
   const supabase = env.dbDriver === "supabase" && Boolean(env.supabaseUrl && env.supabaseAnonKey);
   const dev = Boolean(env.devLoginSecret);
+  // Same switch as /auth/start: whichever providers are on in Supabase (Apple stays app-only here).
+  let providers: Exclude<OAuthProvider, "apple">[] = [];
+  try {
+    providers = supabase ? ((await getAuthBackend()?.providers()) ?? []).filter((p): p is Exclude<OAuthProvider, "apple"> => p !== "apple") : [];
+  } catch {
+    providers = [];
+  }
 
   return (
     <main className={s.login}>
@@ -29,7 +37,7 @@ export default async function AdminLogin({ searchParams }: { searchParams: Promi
           supabaseUrl={env.supabaseUrl!}
           anonKey={env.supabaseAnonKey!}
           callbackUrl={`${env.baseUrl}/admin/auth/callback`}
-          googleEnabled={env.googleConfigured}
+          providers={providers}
         />
       )}
       {dev && (

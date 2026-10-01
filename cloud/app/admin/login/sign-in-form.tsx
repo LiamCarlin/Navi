@@ -8,11 +8,12 @@ interface Props {
   supabaseUrl: string;
   anonKey: string;
   callbackUrl: string;
-  googleEnabled: boolean;
+  /** "Continue with …" buttons: the providers switched on in Supabase. */
+  providers: ("google" | "github")[];
 }
 
 /** Magic link (sent by the server, any browser) or Google (PKCE, same browser) for the console; both land on /admin/auth/callback. */
-export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, googleEnabled }: Props) {
+export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, providers }: Props) {
   const supabase = useMemo(() => createBrowserClient(supabaseUrl, anonKey), [supabaseUrl, anonKey]);
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "busy" | "sent" | { error: string }>("idle");
@@ -35,9 +36,10 @@ export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, googleEnabl
     }
   }
 
-  async function google() {
+  /** OAuth (PKCE) starts and finishes in this browser, so the verifier cookie is always there. */
+  async function oauth(provider: "google" | "github") {
     setState("busy");
-    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: callbackUrl } });
+    const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: callbackUrl } });
     if (error) setState({ error: error.message });
   }
 
@@ -49,8 +51,11 @@ export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, googleEnabl
     <form onSubmit={sendLink} style={{ display: "grid", gap: 10 }}>
       <input className={s.input} type="email" autoComplete="email" required autoFocus placeholder="you@navi.app" value={email} onChange={(e) => setEmail(e.target.value)} disabled={state === "busy"} />
       <button className={s.btnPrimary} type="submit" disabled={state === "busy" || !email}>{state === "busy" ? "Sending…" : "Email me a link"}</button>
-      {googleEnabled && (
-        <button className={s.btn} type="button" onClick={google} disabled={state === "busy"}>Continue with Google</button>
+      {providers.includes("google") && (
+        <button className={s.btn} type="button" onClick={() => oauth("google")} disabled={state === "busy"}>Continue with Google</button>
+      )}
+      {providers.includes("github") && (
+        <button className={s.btn} type="button" onClick={() => oauth("github")} disabled={state === "busy"}>Continue with GitHub</button>
       )}
       {typeof state === "object" && <div className={s.flashErr}>{state.error}</div>}
     </form>

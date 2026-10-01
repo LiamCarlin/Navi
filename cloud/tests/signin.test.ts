@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as callback, POST as callbackPost } from "@/app/auth/callback/route";
+import { GET as oauthStart } from "@/app/auth/oauth/route";
 import { POST as devLogin } from "@/app/auth/dev-login/route";
 import { POST as exchange } from "@/app/auth/exchange/route";
 import { POST as sendOtp } from "@/app/auth/otp/route";
@@ -281,6 +282,33 @@ describe("default-template link: session in the #fragment, any browser", () => {
     expect((await form("/auth/callback?redirect=account", fields, { origin: null })).status).toBe(403);
     const missing = await form("/auth/callback?redirect=account", { access_token: tokens.accessToken });
     expect(missing.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=account&error=expired");
+  });
+});
+
+describe("GET /auth/oauth — Google, GitHub, Apple when switched on", () => {
+  it("sends GitHub to its consent page when enabled, and refuses providers that are off", async () => {
+    const tokens = await getSessionProvider().issue(memoryUserForEmail(freshEmail()));
+    const asked: string[] = [];
+    setAuthBackendForTests({
+      kind: "supabase",
+      sendEmailOtp: async () => undefined,
+      verifyEmailOtp: async () => tokens,
+      verifyTokenHash: async () => tokens,
+      sessionFromFragment: async () => tokens,
+      exchangeCode: async () => tokens,
+      oauthUrl: async (provider, redirectTo) => {
+        asked.push(`${provider} ${redirectTo}`);
+        return `https://consent.example/${provider}`;
+      },
+      providers: async () => ["google", "github"],
+    });
+    const gh = await oauthStart(req("/auth/oauth?provider=github&redirect=account"));
+    expect(gh.headers.get("location")).toBe("https://consent.example/github");
+    expect(asked).toEqual(["github http://localhost:3100/auth/callback?redirect=account"]);
+    const apple = await oauthStart(req("/auth/oauth?provider=apple&redirect=navi"));
+    expect(apple.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=navi&error=provider");
+    const junk = await oauthStart(req("/auth/oauth?provider=myspace&redirect=navi"));
+    expect(junk.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=navi&error=provider");
   });
 });
 

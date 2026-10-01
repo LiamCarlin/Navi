@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 type Flow = "navi" | "account";
-type Provider = "google" | "apple";
+type Provider = "google" | "github" | "apple";
 interface Notice { kind: string; title: string; message: string }
 
 interface Props {
@@ -246,6 +246,11 @@ export function SignInForm({ flow, enabled, memoryMode, providers, devLogin, ini
                   <GoogleIcon /> Continue with Google
                 </a>
               )}
+              {providers.includes("github") && (
+                <a className="nv-btn nv-btn-secondary nv-btn-block" href={`/auth/oauth?provider=github&redirect=${flow}`}>
+                  <GitHubIcon /> Continue with GitHub
+                </a>
+              )}
             </>
           )}
         </>
@@ -364,6 +369,14 @@ function AppleIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
       <path d="M16.37 12.73c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.71-3.18-1.73-1.35-.14-2.64.8-3.33.8-.69 0-1.74-.78-2.86-.76-1.47.02-2.83.86-3.59 2.17-1.53 2.66-.39 6.59 1.1 8.75.73 1.05 1.6 2.24 2.73 2.2 1.1-.04 1.51-.71 2.84-.71 1.32 0 1.7.71 2.86.69 1.18-.02 1.93-1.07 2.65-2.13.84-1.22 1.18-2.4 1.2-2.46-.03-.01-2.3-.88-2.3-3.51zM14.2 6.27c.6-.73 1.01-1.75.9-2.77-.87.04-1.92.58-2.54 1.31-.56.65-1.05 1.69-.92 2.69.97.08 1.96-.49 2.56-1.23z" />
+    </svg>
+  );
+}
+
+function GitHubIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+      <path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.53.1.72-.23.72-.5v-1.86c-2.92.64-3.54-1.24-3.54-1.24-.48-1.21-1.17-1.54-1.17-1.54-.95-.65.08-.64.08-.64 1.05.07 1.6 1.08 1.6 1.08.94 1.6 2.46 1.14 3.06.87.1-.68.37-1.14.66-1.4-2.33-.27-4.78-1.17-4.78-5.18 0-1.15.41-2.08 1.08-2.82-.11-.26-.47-1.33.1-2.77 0 0 .88-.28 2.89 1.08a10 10 0 0 1 5.26 0c2-1.36 2.88-1.08 2.88-1.08.58 1.44.22 2.51.11 2.77.67.74 1.08 1.67 1.08 2.82 0 4.02-2.46 4.9-4.8 5.16.38.33.71.97.71 1.96v2.9c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5z" />
     </svg>
   );
 }
