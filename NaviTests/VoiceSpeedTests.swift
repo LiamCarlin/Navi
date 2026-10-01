@@ -93,6 +93,14 @@ struct VoiceSpeedTests {
         }
     }
 
+    @Test func aTailOfNumbersIsNeverATask() {
+        var v = verdict(kind: "do_in_app")
+        v.kind = .init(choice: "do_in_app", probabilities: ["do_in_app": 0.7], confidence: 0.7)
+        guard case .drop = VoiceDecider.act(v, input: input("+34")) else { Issue.record("expected a drop"); return }
+        guard case .drop = VoiceDecider.act(v, input: input("22.")) else { Issue.record("expected a drop"); return }
+        guard case .commit = VoiceDecider.act(v, input: input("open 2048")) else { Issue.record("expected a commit"); return }
+    }
+
     // MARK: Local math
 
     @Test func mathIsAnsweredLocally() {
@@ -177,6 +185,14 @@ struct VoiceSpeedTests {
         let twoRows = [Self.item(0, "Buy", y: 300), Self.item(1, "Buy", y: 400)]
         #expect(CUFacts.literalItem("buy", in: twoRows) == nil)
         #expect(CUFacts.literalItem("cloud", in: s) == nil)
+        // System Settings spells it with a non-breaking hyphen; speech gives "wi-fi" or "wifi".
+        let wifi = [Self.item(0, "Wi\u{2011}Fi", y: 100, role: "row", source: .ax)]
+        #expect(CUFacts.literalItem(CUFacts.literalTarget("click on Wi-Fi")!, in: wifi)?.index == 0)
+        #expect(CUFacts.literalItem("wifi", in: wifi)?.index == 0)
+        var sel = AXSnapshot(elements: [TypesafeCUTests.el("e1", "AXCell", "Battery", x: 0, y: 0)])
+        #expect(!CUFacts.literalSelected("battery", in: sel))
+        sel.elements[0].isSelected = true
+        #expect(CUFacts.literalSelected("battery", in: sel))
     }
 
     // MARK: Copies of one target
@@ -232,6 +248,10 @@ struct VoiceSpeedTests {
         #expect(CUReplay.key(for: "Can you start a new Claude code chat, please?") == "start new claude code chat")
         #expect(CUReplay.key(for: "start a new claude code chat") == "start new claude code chat")
         #expect(CUReplay.key(for: "select local") != CUReplay.key(for: "select cloud"))
+        #expect(CUReplay.key(for: "In System Settings: click on Displays") == CUReplay.key(for: "click on displays"))
+        #expect(!VoiceCommandExecutor.isUserApp(bundleID: "com.apple.loginwindow", regular: true))
+        #expect(!VoiceCommandExecutor.isUserApp(bundleID: "com.apple.Safari", regular: false))
+        #expect(VoiceCommandExecutor.isUserApp(bundleID: "com.apple.Safari", regular: true))
     }
 
     @Test func replayRecordsLooksUpAndForgets() {
@@ -268,6 +288,11 @@ struct VoiceSpeedTests {
         let twinScreen = CUPerception.perceive(twin, ocr: nil, goal: "x")
         #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXButton", label: "code"), on: twinScreen) == nil)
         #expect(CUReplay.resolve(CUReplayStep(kind: .key, key: "cmd+n"), on: s) == .key("cmd+n"))
+        // Scrolled out of the sidebar: still exposed, so pressed.
+        var scrolled = Self.snapshot
+        scrolled.offscreen = [AXElement(id: "o1", role: "AXCell", label: "Displays", frame: CGRect(x: 0, y: 9000, width: 200, height: 20), actions: ["AXPress"], pid: 42)]
+        let sc = CUPerception.perceive(scrolled, ocr: nil, goal: "x")
+        #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXCell", label: "displays", path: "Sidebar"), on: sc) == .press(elementID: "o1"))
     }
 
     @Test func irreversibleStepsAreNeverReplayed() {

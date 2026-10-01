@@ -767,6 +767,24 @@ final class AgentRun: @unchecked Sendable {
 
         let t0 = Date()
         var screen = await observe()
+
+        /// Some apps answer late (System Settings loads a pane after its row is selected): while the
+        /// screen still reads as before, look again for up to ~0.75 s. True once it changed or the
+        /// control named `label` became the selected one — not one that was selected already: live, a
+        /// leftover search kept "Displays" highlighted while the pane showed General, and that read as done.
+        func awaitAnswer(before: CUScreen, label: String?) async -> Bool {
+            let wasSelected = label.map { CUFacts.literalSelected($0, in: before.snapshot) } ?? true
+            func answered() -> Bool {
+                !screen.signature.same(as: before.signature) || (!wasSelected && CUFacts.literalSelected(label!, in: screen.snapshot))
+            }
+            var polls = 0
+            while !answered(), polls < 3, !isCancelled {
+                polls += 1
+                try? await Task.sleep(for: .milliseconds(250))
+                screen = await observe()
+            }
+            return answered()
+        }
         let controls = screen.items.filter(\.fromAX).count
         handle.emit(.status("Jev-driven · \(screen.items.count) items on screen (\(controls) controls\(screen.usedOCR ? ", OCR" : "")) · \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
 
@@ -943,7 +961,7 @@ final class AgentRun: @unchecked Sendable {
                 let acted = screen
                 _ = run.screenMoved(acted.signature)
                 screen = await observe()
-                let moved = !screen.signature.same(as: acted.signature)
+                let moved = await awaitAnswer(before: acted, label: st.kind == .click || st.kind == .press ? st.label : nil)
                 _ = run.recordAction(st.human + " (replayed)", waiting: false)
                 humanLog.append(human)
                 redactedLog.append(human)
@@ -1047,14 +1065,23 @@ final class AgentRun: @unchecked Sendable {
             // Jev stopping short of it — unsure, or finding "nothing" — is overruled, and the click is
             // made (the gate still reads this call's nouls). A sure "done" stands.
             if let literal, let stopped = stop, !(stopped == .done && (decision?.confidence ?? 0) >= 0.5),
-               !literalTried, let it = CUFacts.literalItem(literal, in: screen.items) {
-                let d = CUDecide.Decision(kind: .clickItem, kindHead: .init(choice: CUDecide.Kind.clickItem.rawValue, probabilities: [:], confidence: 1),
-                                          target: .init(choice: "\(it.index)", probabilities: [:], confidence: 1))
-                if let m = CUDecide.move(d, request: request, screen: screen, browserName: browserName) {
-                    handle.emit(.status("The goal names ‘\(it.text)’ and it is on screen — clicking it (Jev: \(stopped.rawValue))"))
-                    decision = d
-                    move = m
-                    stop = nil
+               !literalTried {
+                // On screen once, or — scrolled out of a sidebar or list — one control the app still exposes.
+                var target: (kind: CUDecide.Kind, id: String, text: String)?
+                if let it = CUFacts.literalItem(literal, in: screen.items) { target = (.clickItem, "\(it.index)", it.text) }
+                else {
+                    let off = screen.offscreen.enumerated().filter { CUFacts.matchesLiteral($0.element.label, literal) }
+                    if off.count == 1 { target = (.pressOffscreen, "\(off[0].offset)", off[0].element.label) }
+                }
+                if let target {
+                    let d = CUDecide.Decision(kind: target.kind, kindHead: .init(choice: target.kind.rawValue, probabilities: [:], confidence: 1),
+                                              target: .init(choice: target.id, probabilities: [:], confidence: 1))
+                    if let m = CUDecide.move(d, request: request, screen: screen, browserName: browserName) {
+                        handle.emit(.status("The goal names ‘\(target.text)’ and the app shows it — pressing it (Jev: \(stopped.rawValue))"))
+                        decision = d
+                        move = m
+                        stop = nil
+                    }
                 }
             }
             if let stop {
@@ -1128,6 +1155,10 @@ final class AgentRun: @unchecked Sendable {
                     if decision.kind == .clickItem, let i = decision.target.flatMap({ Int($0.choice) }),
                        let it = screen.items.first(where: { $0.index == i }) { literalHit = CUFacts.matchesLiteral(it.text, literal) }
                 case .select(_, let option)?: literalHit = CUFacts.matchesLiteral(option, literal)
+                case .press?:
+                    if decision.kind == .pressOffscreen, let k = decision.target.flatMap({ Int($0.choice) }), k < screen.offscreen.count {
+                        literalHit = CUFacts.matchesLiteral(screen.offscreen[k].label, literal)
+                    }
                 default: break
                 }
             }
@@ -1289,13 +1320,16 @@ final class AgentRun: @unchecked Sendable {
             let acted = screen
             previousLabels = (Set(screen.items.map { CUFacts.plainLabel($0.text) }), screen.usedOCR)
             screen = await observe()
+            // A one-click goal's click: give a late pane its moment before judging it.
+            let answered = literalLanded ? await awaitAnswer(before: acted, label: literal) : !screen.signature.same(as: before)
             if let action, actionRan {
                 let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
-                recordReplay(action, on: acted, itemText: itemText, moved: !screen.signature.same(as: before))
+                recordReplay(action, on: acted, itemText: itemText, moved: answered)
             }
             // "Click on interviewing": the item it names was clicked and the screen answered. That is
             // the goal, whole — no second click on a toggle, and no writer read to say so.
-            if literalLanded, !screen.signature.same(as: before), !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
+            if literalLanded, answered,
+               !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
                 _ = run.recordAction(what ?? "", waiting: false)
                 writeRun("done (the click the goal names landed)")
                 remember()

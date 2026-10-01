@@ -223,14 +223,14 @@ final class VoiceCommandExecutor {
             }
         case .browser(let b, _):
             guard let done = await BrowserControls.perform(b, input: input) else { return .failed("No browser is open") }
-            if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID {
+            if let app = Self.userFrontApp() {
                 lastApp = (app.bundleIdentifier, app.localizedName ?? "the browser")
             }
             return Task.isCancelled ? .cancelled : .done(done)
         case .window(let w, _):
             switch await WindowControls.perform(w, fallbackApp: lastApp?.bundleID ?? lastApp?.name, input: input) {
             case .success(let done):
-                if w.verb == .quit || w.verb == .hide, let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != AgentTarget.selfPID {
+                if w.verb == .quit || w.verb == .hide, let f = Self.userFrontApp() {
                     lastApp = (f.bundleIdentifier, f.localizedName ?? "the app")
                 }
                 return .done(done)
@@ -253,6 +253,20 @@ final class VoiceCommandExecutor {
         if foreground, let bid = entry.bundleID { await Self.waitForFrontmost(bundleID: bid) }
         if Task.isCancelled { return .cancelled }
         return .done("Opened \(entry.name)")
+    }
+
+    /// The app in front, when it is one the user works in: never Navi, and never the lock screen or
+    /// screen saver — live (2026-10-01) a run that ended while the Mac was locked made the next
+    /// spoken command "In loginwindow: click on displays".
+    static func userFrontApp() -> NSRunningApplication? {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID,
+              isUserApp(bundleID: app.bundleIdentifier, regular: app.activationPolicy == .regular) else { return nil }
+        return app
+    }
+
+    nonisolated static func isUserApp(bundleID: String?, regular: Bool) -> Bool {
+        guard regular, let b = bundleID else { return false }
+        return !["com.apple.loginwindow", "com.apple.ScreenSaver.Engine", "com.apple.SecurityAgent", "com.apple.UserNotificationCenter"].contains(b)
     }
 
     static func continuesOnCurrentTab(goal: String, surface: TaskSurface.Surface, frontmostApp: String?,
@@ -386,7 +400,7 @@ final class VoiceCommandExecutor {
             case .cancelled: outcome = timedOutRun == handle.id ? .failed("Stalled with no progress for \(Self.taskIdleMs / 1000) s and was stopped") : .cancelled
             }
         }
-        if case .done = outcome, let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != AgentTarget.selfPID {
+        if case .done = outcome, let app = Self.userFrontApp() {
             lastApp = (app.bundleIdentifier, app.localizedName ?? "the app")
         }
         return outcome
