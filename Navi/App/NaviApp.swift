@@ -108,7 +108,7 @@ struct MenuBarMenu: View {
             openWindow(id: WindowID.main)
             AppActivation.showDock()
         }
-        Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
+        AccountMenuItems()
         Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
         if NaviSettings.developerMode {
@@ -152,6 +152,27 @@ struct MenuBarMenu: View {
         case "claude-opus-5": return "Opus 5"
         case "claude-haiku-4-5": return "Haiku 4.5"
         default: return id
+        }
+    }
+}
+
+/// The account's corner of the menu-bar menu: who is signed in and on what
+/// plan (or "Sign in to Navi…"), plus anything blocking the cloud.
+struct AccountMenuItems: View {
+    @ObservedObject private var account = NaviAccount.shared
+
+    var body: some View {
+        if let title = account.menuTitle {
+            Button(title) { AppDelegate.shared?.openMainWindow(section: .account) }
+            if account.isUpdateRequired {
+                Button("Update Navi to keep using it…") { account.updateApp() }
+            } else if account.isAccountDisabled {
+                Button("Contact support…") { account.contactSupport() }
+            }
+        } else if account.hasDeveloperKeys {
+            Button("Developer mode · Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
+        } else {
+            Button(account.isSigningIn ? "Waiting for your browser…" : "Sign in to Navi…") { account.signIn() }
         }
     }
 }

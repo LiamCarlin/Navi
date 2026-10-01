@@ -45,6 +45,7 @@ struct UsageView: View {
     @AppStorage(UsageCounters.answersKey) private var answers = 0
     @AppStorage(UsageCounters.tasksKey) private var tasks = 0
     @State private var confirmReset = false
+    @ObservedObject private var account = NaviAccount.shared
 
     var body: some View {
         FormPage(title: "Usage", subtitle: "What Navi has done for you this month, counted on this Mac.") {
@@ -56,6 +57,20 @@ struct UsageView: View {
                 .padding(.vertical, 4)
             } footer: {
                 Text("Answers are questions Navi answered in the panel; tasks are things it did for you on your Mac. Counters start over on the first of each month.")
+            }
+
+            // What the plan allows is counted by the account, across all your Macs.
+            if account.isSignedIn {
+                Section("Your plan") {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.planLabel).font(.headline)
+                            Text("\(account.answersLine) · \(account.tasksLine)").font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Account…") { SettingsNavigator.shared.go(.account) }
+                    }
+                }
             }
 
             Section {

@@ -9,8 +9,10 @@ enum Onboarding {
     }
 }
 
-/// First-launch sheet: Welcome → Sign in → Permissions → Spotlight shortcut → Done.
-/// Each step reuses the same rows as the corresponding settings section.
+/// First-launch sheet: Sign in → Permissions → Spotlight shortcut → Voice → Done.
+/// Step one welcomes and says why an account is needed; signing in can wait
+/// ("Not now") because apps, files, math and system commands work without one.
+/// Each later step reuses the same rows as the corresponding settings section.
 struct OnboardingView: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var settings: NaviSettings
@@ -18,7 +20,7 @@ struct OnboardingView: View {
     @StateObject private var voicePerms = PermissionsModel()
     @State private var step = 0
 
-    private let steps = ["Welcome", "Sign in", "Permissions", "Shortcut", "Voice", "Done"]
+    private let steps = ["Sign in", "Permissions", "Shortcut", "Voice", "Done"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,11 +28,10 @@ struct OnboardingView: View {
             Divider()
             Group {
                 switch step {
-                case 0: welcome
-                case 1: signIn
-                case 2: permissions
-                case 3: shortcut
-                case 4: voice
+                case 0: signIn
+                case 1: permissions
+                case 2: shortcut
+                case 3: voice
                 default: done
                 }
             }
@@ -41,13 +42,16 @@ struct OnboardingView: View {
         .frame(width: 640, height: 520)
         // The browser round trip lands back here: move on as soon as the session exists.
         .onChange(of: account.isSignedIn) { _, signedIn in
-            if signedIn, step == 1 { withAnimation { step = 2 } }
+            if signedIn, step == 0 {
+                // Let the "You're signed in" confirmation register before moving on.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { if step == 0 { withAnimation { step = 1 } } }
+            }
         }
     }
 
-    /// Step 1 needs a session (or developer keys) before Continue works.
+    /// Step one continues once there is a session (or developer keys); "Not now" skips it.
     private var canContinue: Bool {
-        step != 1 || account.isSignedIn || account.hasDeveloperKeys
+        step != 0 || account.isSignedIn || account.hasDeveloperKeys
     }
 
     // MARK: Chrome
@@ -76,6 +80,10 @@ struct OnboardingView: View {
             Button("Skip setup") { finish() }.buttonStyle(.borderless).foregroundStyle(.secondary)
             Spacer()
             if step > 0 { Button("Back") { withAnimation { step -= 1 } } }
+            if step == 0, !canContinue {
+                Button("Not now") { withAnimation { step += 1 } }
+                    .help("Apps, files, math and system commands work without an account. Sign in later from the menu bar or Account.")
+            }
             if step < steps.count - 1 {
                 Button("Continue") { withAnimation { step += 1 } }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
@@ -95,28 +103,6 @@ struct OnboardingView: View {
 
     // MARK: Steps
 
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Spacer()
-            HStack(spacing: 18) {
-                NaviMark(size: 72)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Welcome to Navi").font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("A faster Spotlight that understands what you mean.").font(.title3).foregroundStyle(.secondary)
-                }
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                bullet("bolt.fill", "Navi decides what you want in under a second — apps open instantly.")
-                bullet("waveform", "Talk to it: press ⌥Space and say what you want. Navi acts on each instruction as you speak — in any app, in any browser.")
-                bullet("text.bubble", "Ask anything, or say what to do and Navi does it on your Mac.")
-                bullet("brain", "Recall turns your day into a private journal you can ask about.")
-                bullet("lock.fill", "One account, one subscription, no API keys. Your screen never leaves this Mac except as short summaries.")
-            }
-            Spacer()
-        }
-        .padding(28)
-    }
-
     private func bullet(_ symbol: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol).frame(width: 22).foregroundStyle(.tint)
@@ -124,33 +110,34 @@ struct OnboardingView: View {
         }
     }
 
+    /// Step one: welcome, why there is an account, and the sign-in button.
     private var signIn: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Spacer()
+        VStack(alignment: .leading, spacing: 16) {
+            Spacer(minLength: 0)
+            HStack(spacing: 16) {
+                NaviMark(size: 56)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Welcome to Navi").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                    Text(account.isSignedIn ? "You're signed in" : "Sign in to Navi")
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                }
+            }
             if account.isSignedIn {
-                HStack(spacing: 14) {
-                    Image(systemName: "checkmark.seal.fill").font(.system(size: 40)).foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Signed in").font(.system(size: 24, weight: .bold, design: .rounded))
-                        Text("\(account.email ?? "Your account") · \(account.planLabel)")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.seal.fill").font(.system(size: 30)).foregroundStyle(.green)
+                    Text("\(account.email ?? "Your account") · \(account.planLabel)")
+                        .font(.title3).foregroundStyle(.secondary)
                 }
             } else {
-                Text("Sign in to Navi").font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("One account, one subscription, no API keys. 7-day free trial of Pro — no card to start.")
-                    .font(.title3).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 12) {
-                    Button {
-                        account.signIn()
-                    } label: {
-                        Label(account.isSigningIn ? "Waiting for your browser…" : "Sign in with your browser", systemImage: "safari")
-                            .padding(.horizontal, 8)
-                    }
-                    .buttonStyle(.glassProminent).controlSize(.large)
-                    if account.isSigningIn { ProgressView().controlSize(.small) }
+                VStack(alignment: .leading, spacing: 9) {
+                    bullet("text.bubble", "Answers, tasks and voice control run on your Navi account — that's where the thinking happens.")
+                    bullet("creditcard", "One subscription covers everything: no API keys, nothing to set up. 7-day free trial of Pro, no card to start.")
+                    bullet("bolt.fill", "Apps, files, math and system commands work right away, with or without an account.")
+                    bullet("lock.fill", "Your screen stays on this Mac; Recall only ever sends short summaries.")
                 }
-                Text("A page opens in your browser; sign in with email or Google and you'll land back here.")
+                .font(.callout)
+                SignInButton(account: account)
+                Text("A page opens in your browser. Sign in with your email, Google or Apple and you'll land back here.")
                     .font(.caption).foregroundStyle(.tertiary)
                 if let err = account.lastError {
                     Label(err, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
@@ -213,7 +200,7 @@ struct OnboardingView: View {
                 Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Auto mode").font(.headline)
-                        Text("Jev drives every step itself and only stops to ask before sending, paying or deleting. Turn it off to approve each action.")
+                        Text("Navi carries out every step itself and only stops to ask before sending, paying or deleting. Turn it off to approve each action.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }

@@ -73,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if url.host == "auth" || url.host == "billing" {
                 if NaviAccount.shared.handle(url: url) { continue }
             }
+            if url.host == "account" {
+                // navi://account — the site's "Manage your account" links land here.
+                openMainWindow(section: .account)
+                continue
+            }
             if url.host == "voice" {
                 // navi://voice toggles voice control; navi://voice?file=/path.aiff feeds a recording (debug).
                 if let f = comps?.queryItems?.first(where: { $0.name == "file" })?.value, !f.isEmpty {
