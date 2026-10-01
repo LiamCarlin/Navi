@@ -14,6 +14,8 @@ import SwiftUI
 struct NaviPanelView: View {
     @EnvironmentObject private var vm: PanelViewModel
     @EnvironmentObject private var settings: NaviSettings
+    /// Critical account banners (update required, account disabled, operator notice).
+    @ObservedObject private var account = NaviAccount.shared
 
     var body: some View {
         GlassEffectContainer(spacing: 16) {
@@ -38,7 +40,11 @@ struct NaviPanelView: View {
             }
 
             if let err = vm.errorMessage {
-                ErrorBanner(message: err) { vm.clearError() }
+                ErrorBanner(message: err, actionTitle: vm.upgradeAction == nil ? nil : vm.upgradeActionTitle,
+                            action: vm.upgradeAction.map { act in { act(); vm.clearError() } }) { vm.clearError() }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let notice = account.panelNotice {
+                AccountNoticeBanner(notice: notice, account: account)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -128,7 +134,8 @@ struct NaviPanelView: View {
                        hasScreenshot: vm.agentScreenshot != nil,
                        clarifyOptions: vm.clarification?.options.count ?? -1,
                        scheduling: vm.scheduler != nil || vm.reminder != nil,
-                       error: vm.errorMessage)
+                       error: vm.errorMessage,
+                       notice: account.panelNotice?.id)
     }
 
     private var colorScheme: ColorScheme? {
@@ -170,6 +177,7 @@ struct PanelLayoutKey: Equatable {
     var clarifyOptions: Int
     var scheduling: Bool
     var error: String?
+    var notice: String? = nil
 }
 
 extension PanelViewModel {
