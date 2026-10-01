@@ -765,6 +765,22 @@ final class AgentRun: @unchecked Sendable {
 
         let t0 = Date()
         var screen = await observe()
+
+        /// Some apps answer late (System Settings loads a pane after its row is selected): while the
+        /// screen still reads as before, look again for up to ~0.75 s. True once it changed or the
+        /// control named `label` is the selected one.
+        func awaitAnswer(before: CUSignature, label: String?) async -> Bool {
+            func answered() -> Bool {
+                !screen.signature.same(as: before) || label.map { CUFacts.literalSelected($0, in: screen.snapshot) } == true
+            }
+            var polls = 0
+            while !answered(), polls < 3, !isCancelled {
+                polls += 1
+                try? await Task.sleep(for: .milliseconds(250))
+                screen = await observe()
+            }
+            return answered()
+        }
         let controls = screen.items.filter(\.fromAX).count
         handle.emit(.status("Jev-driven · \(screen.items.count) items on screen (\(controls) controls\(screen.usedOCR ? ", OCR" : "")) · \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
 
@@ -941,7 +957,7 @@ final class AgentRun: @unchecked Sendable {
                 let acted = screen
                 _ = run.screenMoved(acted.signature)
                 screen = await observe()
-                let moved = !screen.signature.same(as: acted.signature)
+                let moved = await awaitAnswer(before: acted.signature, label: st.kind == .click || st.kind == .press ? st.label : nil)
                 _ = run.recordAction(st.human + " (replayed)", waiting: false)
                 humanLog.append(human)
                 redactedLog.append(human)
@@ -1277,24 +1293,15 @@ final class AgentRun: @unchecked Sendable {
             let acted = screen
             previousLabels = (Set(screen.items.map { CUFacts.plainLabel($0.text) }), screen.usedOCR)
             screen = await observe()
+            // A one-click goal's click: give a late pane its moment before judging it.
+            let answered = literalLanded ? await awaitAnswer(before: before, label: literal) : !screen.signature.same(as: before)
             if let action, actionRan {
                 let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
-                recordReplay(action, on: acted, itemText: itemText, moved: !screen.signature.same(as: before))
+                recordReplay(action, on: acted, itemText: itemText, moved: answered)
             }
             // "Click on interviewing": the item it names was clicked and the screen answered. That is
             // the goal, whole — no second click on a toggle, and no writer read to say so.
-            // Some apps answer late (System Settings loads a pane after its row is selected): look
-            // again for up to ~0.75 s before handing a click that worked back to Jev.
-            if literalLanded, let literal {
-                var polls = 0
-                while screen.signature.same(as: before), !CUFacts.literalSelected(literal, in: screen.snapshot), polls < 3 {
-                    polls += 1
-                    try? await Task.sleep(for: .milliseconds(250))
-                    screen = await observe()
-                }
-            }
-            if literalLanded, let literal,
-               !screen.signature.same(as: before) || CUFacts.literalSelected(literal, in: screen.snapshot),
+            if literalLanded, answered,
                !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
                 _ = run.recordAction(what ?? "", waiting: false)
                 writeRun("done (the click the goal names landed)")
