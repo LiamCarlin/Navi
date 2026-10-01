@@ -189,7 +189,7 @@ export default async function UserDetail({
               <ConfirmButton className={s.btnDanger} message="Permanently delete this user, their grants and usage?">Delete user</ConfirmButton>
             </form>
             {profile.stripeSubscriptionId && profile.subscriptionStatus !== "canceled" && (
-              <div className={s.banner} style={{ margin: 0 }}>Has a Stripe subscription — cancel it in Stripe before deleting, or they keep being billed.</div>
+              <div className={s.banner} style={{ margin: 0 }}>Has a Stripe subscription — deleting cancels it immediately (no refund) and removes the Stripe customer first; if that fails, nothing is deleted.</div>
             )}
           </div>
         </Card>

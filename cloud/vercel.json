@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/auth/purge",
+      "schedule": "17 4 * * *"
+    }
+  ]
+}

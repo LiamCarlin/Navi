@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
  * Supabase cookie session and sets the console's own cookie. Non-admins get a 404.
  */
 export async function GET(req: Request): Promise<Response> {
-  if (!authIpLimiter.hit(clientIp(req)).ok) return new Response("Too many attempts", { status: 429 });
+  if (!(await authIpLimiter.hit(clientIp(req))).ok) return new Response("Too many attempts", { status: 429 });
   if (env.dbDriver !== "supabase" || !env.supabaseUrl || !env.supabaseAnonKey) return notFound();
 
   const url = new URL(req.url);

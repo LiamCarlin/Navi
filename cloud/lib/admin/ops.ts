@@ -4,9 +4,11 @@
  * the tests exercise. Audit details are metadata only — never key material.
  */
 
+import { billingCanceller, deleteAccount, type BillingCanceller } from "../account";
 import { saveConfig, type ProductConfig } from "../config";
 import type { Db, Profile, QuotaReset } from "../db";
 import { removeVendorKey, resolveVendorKey, storeVendorKey, testVendorKey, type KeyTestResult, type VendorProvider } from "../keys";
+import { getSessionProvider, type SessionProvider } from "../sessions";
 import { dayKey, ENTITLEMENT_KEYS, featuresInBucket, isTier, monthKey, type Tier } from "../plans";
 
 export class AdminInputError extends Error {}
@@ -96,11 +98,22 @@ export async function signOutEverywhere(db: Db, actor: string, userId: string): 
   await audit(db, actor, "user.sign_out_all", p.email, { userId });
 }
 
-/** Deletes the account (auth user → profile, grants, usage cascade). The admin must retype the email. */
-export async function deleteUser(db: Db, actor: string, userId: string, confirmEmail: string): Promise<void> {
+/**
+ * Deletes the account the same way the user's own "Delete account" does (lib/account.ts):
+ * Stripe subscriptions cancelled first (nothing is deleted if that fails), then every row,
+ * then the auth user. The admin must retype the email.
+ */
+export async function deleteUser(
+  db: Db,
+  actor: string,
+  userId: string,
+  confirmEmail: string,
+  deps: { sessions?: SessionProvider; billing?: BillingCanceller | null } = {},
+): Promise<void> {
   const p = await mustProfile(db, userId);
   if (confirmEmail.trim().toLowerCase() !== p.email.toLowerCase()) throw new AdminInputError("Type the user's email exactly to confirm.");
-  await db.adminDeleteUser(userId);
+  const billing = deps.billing !== undefined ? deps.billing : billingCanceller();
+  await deleteAccount({ db, sessions: deps.sessions ?? getSessionProvider(), billing }, { id: userId, email: p.email }, "admin");
   await audit(db, actor, "user.delete", p.email, {
     userId,
     tier: p.tier,

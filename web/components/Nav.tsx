@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Wordmark } from "./Glyph";
 
+/** Navi Cloud (sign-in, /account). Unset → the site stays in waitlist mode with no account links. */
+const CLOUD = process.env.NEXT_PUBLIC_NAVI_CLOUD_URL?.replace(/\/+$/, "");
+/** Flip to 1 at launch: the main CTA becomes "Get Navi" (sign up → account → download) instead of the waitlist. */
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "1" && Boolean(CLOUD);
+
 const links = [
   { href: "#does", label: "What it does" },
   { href: "#voice", label: "Voice" },
@@ -41,9 +46,20 @@ export function Nav() {
         </nav>
         <div className="flex items-center gap-3">
           <ThemeToggle />
-          <a href="#waitlist" className="btn-primary !h-9 !text-sm">
-            Join the waitlist
-          </a>
+          {CLOUD && (
+            <a href={`${CLOUD}/auth/start?redirect=account`} className="navlink hidden text-sm sm:inline">
+              Sign in
+            </a>
+          )}
+          {SIGNUPS_OPEN ? (
+            <a href={`${CLOUD}/auth/start?redirect=account`} className="btn-primary !h-9 !text-sm">
+              Get Navi
+            </a>
+          ) : (
+            <a href="#waitlist" className="btn-primary !h-9 !text-sm">
+              Join the waitlist
+            </a>
+          )}
         </div>
       </div>
     </header>

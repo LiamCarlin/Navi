@@ -9,7 +9,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 /** POST /waitlist { email, source?, note? } → 201 created / 200 already on the list. Also used by web/. */
 export const POST = handle(async (req) => {
-  const rl = waitlistIpLimiter.hit(clientIp(req));
+  const rl = await waitlistIpLimiter.hit(clientIp(req));
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
 
   const body = await readJson<{ email?: unknown; source?: unknown; note?: unknown }>(req);
