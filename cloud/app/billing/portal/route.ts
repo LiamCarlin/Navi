@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 /** POST /billing/portal → { url } — Stripe Customer Portal for the signed-in user. */
 export const POST = handle(async (req) => {
   const user = await requireUser(req);
-  const rl = perUserLimiter.hit(user.id);
+  const rl = await perUserLimiter.hit(user.id);
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
   if (!stripeConfigured()) throw new HttpError(503, { error: "billing_unconfigured", message: "Billing is not set up on this deployment." });
 

@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
  */
 export const POST = handle(async (req) => {
   const user = await requireUser(req);
-  const rl = perUserLimiter.hit(user.id);
+  const rl = await perUserLimiter.hit(user.id);
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
 
   const body = await readJson<{ plan?: unknown; interval?: unknown }>(req);
