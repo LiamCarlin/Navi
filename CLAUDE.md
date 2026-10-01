@@ -46,7 +46,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserMoves` (what they click, their shortcuts and procedures, per app/site), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks + shortcuts), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits → procedures), `VaultWriter` (Obsidian markdown), `Recall` |
@@ -133,6 +133,37 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     conversation with mikey" went to a group chat 3/3 without it, "Mikey Ku" 3/3 with.
     After each digest `MemoryService` rewrites the vault's `Navi/How you work.md`.
     `scripts/axprobe` takes `AXPROBE_CONTEXT='[…]'` for the per-step A/B.
+  - **Contacts** (`Agent/UserContacts`, folded into `UserKnowledge` people): a name in a chat
+    sidebar is not a conversation, so how the user *reaches* someone comes from signs they dealt
+    with them: Messages' window title (the open chat), clicks on chat rows/bubbles in any chat app
+    (`ActionJournal`; "…, Received from João"), a chat-app session titled with the person, and
+    `Name <address>` pairs in mail OCR (Outlook, Mail, Gmail; OCR's capital I → l, column junk
+    dropped, a once-seen address that doesn't fit the name dropped). Places rank by
+    sessions + 3 × chats opened; `reach_them_by` = the app per contact kind (texting, email, video
+    calls), `email` = the address. `channelApp` replaces the texting-only chat app ("text joão" →
+    WhatsApp, "email dhvan" → Outlook); in a mail app's To/Cc the driver types the known address for
+    a name (`liveEmailAddress`). Correspondents seen only in mail become people ("email the
+    registrar" → registrar@olin.edu). Group chats never block first-name folding.
+  - **Task grounding** (`Agent/TaskGrounding`): what a task's words point at in the user's own
+    work — "open the last assignment I did", "the doc I was working on", "that video from
+    yesterday", "continue where I left off", "email crawford the lab report", "reply to the email
+    from gabi". Only tasks that point at something run it (a time or "last/that/I was…", a kind of
+    thing, "my/our", a message, a known name). Code collects ≤ 6 candidates from digested sessions
+    (title, the page's own browser title, URL path, app/skill, tags; kinds via `UserHabits.kinds`;
+    the time the task names; per page or per app+item; never assistants, search/results/settings
+    pages, Navi, or chats unless the task is about a message; dictated text and recipients are not
+    search words); Jev picks one (`refers_to` choice + none, ≥ 0.4) from when each was last open,
+    for how long, what the user did there and what is on screen; without Jev the newest wins for a
+    "last" reference. Cached per task (3 min), started while typing (`ComputerAgent.prepare`),
+    awaited at run start and by the planner (≤ 2 s). The pick is the first `user_context` thing
+    (`the_task_refers_to_this`) for the planner, every Jev step and the runner; the start URL /
+    app of a voice run (not when the task reaches someone — then it is the content, and the field
+    writer gets it as `from_screen_memory`). ⌘Space adds an "Open it" row for such queries
+    whatever the intent; voice turns "open/pull up … <own past work>" into a task, never an app
+    name or an answer. Live (2026-10-01, Liam's memory): 18/18 sensible Jev picks at ~0.6 s ("the
+    last assignment I did" → Assignment 02 at 0.80, not the newer 1-minute glance); Haiku planner
+    A/B: joão → WhatsApp (was Messages), Meera's address in the goal, the exact Canvas assignment /
+    Onshape doc / sheet instead of the site's home.
   - **Speed rules** (docs/TYPESAFE_CU.md "Speed and success"): copies of one target pool Jev's
     probability (`CUDecide.mergeCopies`); one-click goals ("click on X", "select Y") click the
     one matching label when Jev stops short and end when that click lands (`CUFacts.literalTarget`);

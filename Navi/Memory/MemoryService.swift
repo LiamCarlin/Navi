@@ -230,6 +230,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     private func refreshKnowledge(vault: VaultWriter) {
         guard let k = UserKnowledge.current else { return }
         k.invalidate()
+        TaskGrounding.invalidate()   // "the last thing I did" may be a new session now
         let now = Date()
         var md = UserKnowledge.markdown(k.things(now: now), now: now)
         if let m = UserMoves.current {
@@ -309,6 +310,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         report.vault = VaultCleanup(root: stack?.vault.root ?? vaultRoot).deleteAllNaviNotes()
         UserKnowledge.current?.invalidate()
         UserMoves.current?.invalidate()
+        TaskGrounding.invalidate()
         await MainActor.run {
             if wasRunning { stack?.scheduler.start() }
             status.framesToday = 0

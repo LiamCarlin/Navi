@@ -44,13 +44,19 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     /// open another. nil ⇒ every step goes through the native driver.
     nonisolated(unsafe) static var browserRunner: (@Sendable (String, String?, AgentRunHandle, Bool, Bool) async -> String?)?
 
-    init(jev: JevClient, claude: ClaudeClient) { self.jev = jev; self.claude = claude }
+    init(jev: JevClient, claude: ClaudeClient) {
+        self.jev = jev; self.claude = claude
+        TaskGrounding.install(jev: jev)   // what "the doc I was working on" means is settled with this Jev
+    }
 
     /// Called by the router the moment a query routes to `.computerTask` —
     /// typically a second or more before ⏎. Plans the task now (Claude) so
     /// `run` doesn't wait for it; without Claude, classifies the surface (Jev).
     @MainActor
     func prepare(task: String, context: QueryContext) {
+        // What the task refers to in the user's own work ("the last assignment I did"), settled
+        // while they type; the planner prefetch below waits for it.
+        TaskGrounding.prepare(task: task)
         if claude.isConfigured {
             TaskPlanner.prefetch(task: task, claude: claude)
         } else if ComputerAgent.browserRunner != nil, jev.isConfigured {
@@ -193,6 +199,8 @@ final class AgentRun: @unchecked Sendable {
     private var writerAnswer: String?
     /// Background mode: the app this step drives. nil in foreground mode.
     private var target: AgentTarget?
+    /// What the task refers to in the user's own work (`TaskGrounding`), when it points at something.
+    private var grounded: TaskGrounding.Grounded?
     /// Background mode: the window the last screenshot came from (event routing for Claude's clicks).
     private var screenshotWindow: CGWindowID?
     @MainActor private var overlay: AgentOverlay?
@@ -302,6 +310,13 @@ final class AgentRun: @unchecked Sendable {
         defer { endActivity() }
 
         do {
+            // What the task refers to in the user's own work ("the doc I was working on" → that
+            // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
+            if let g = await TaskGrounding.ground(task: originalTask) {
+                grounded = g
+                handle.emit(.status("From your screen memory: \(g.thing.name) · \(g.thing.place) · \(TaskGrounding.shortWhen(g.thing.lastSeen, now: Date()))"))
+            }
+            try checkCancelled()
             // Step 0 — the plan. Usually already answered by `prepare` while the user was typing.
             let (front, plan) = await resolvePlan()
             try checkCancelled()
@@ -351,6 +366,24 @@ final class AgentRun: @unchecked Sendable {
     private func resolvePlanWithoutPlanner() async -> (FrontmostProbe.Info, TaskPlanner.Plan) {
         var surface = config.surfaceHint
         var front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        // "Open the last assignment I did", "go back to the onshape model": the thing the task was
+        // grounded to is where the work happens — its page, or the app it lives in. Only for a
+        // command to reopen it; not when the task reaches someone (the thing is what to send),
+        // works on the open tab, or names another app.
+        if let g = grounded, !config.useCurrentTab, !TaskGrounding.isCommunication(originalTask),
+           TaskGrounding.reopensOwnWork(originalTask) {
+            let named = AppSkills.mentioned(in: originalTask)
+            let inNamed = named.map { n in g.thing.bundleID.map(n.bundleIDs.contains) ?? (AppSkills.skill(url: g.thing.url)?.name == n.name) } ?? true
+            if inNamed, let u = g.thing.url {
+                Log.agent.info("TaskGrounding: starting on the grounded page")
+                var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+                plan.steps[0].url = u
+                return (front, plan)
+            }
+            if inNamed, let b = g.thing.bundleID, NSWorkspace.shared.urlForApplication(withBundleIdentifier: b) != nil {
+                return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: b))
+            }
+        }
         if surface == .unsure {
             guard ComputerAgent.browserRunner != nil, jev.isConfigured else {
                 return (front, TaskPlanner.fallback(task: originalTask, surface: .app))
@@ -404,10 +437,11 @@ final class AgentRun: @unchecked Sendable {
                                            isRunning: { running.contains($0) },
                                            usage: { s in profile.map { UserHabits.usage(of: s, in: $0).app?.screens ?? 0 } ?? 0 }) else { return nil }
         if let f = frontmost.bundleID, hit.skill.bundleIDs.contains(f) { return nil }
-        // "text dhvan …" goes where the user actually talks to Dhvan (WhatsApp), not the
-        // default texting app — unless the task names an app.
-        if AppSkills.mentioned(in: task) == nil, let chat = UserKnowledge.liveChatApp(for: task), chat != hit.bundleID,
-           let s = AppSkills.skill(bundleID: hit.bundleID), UserHabits.kinds.first(where: { $0.kind == "texting" })?.skills.contains(s.name) == true,
+        // "text dhvan …" goes where the user actually opens Dhvan's chat (WhatsApp), "facetime
+        // mom" where they call her — not the default app of that kind — unless the task names an app.
+        if AppSkills.mentioned(in: task) == nil, let chat = UserKnowledge.liveChannelApp(for: task), chat != hit.bundleID,
+           let s = AppSkills.skill(bundleID: hit.bundleID),
+           UserHabits.kinds.contains(where: { UserContacts.channelKinds.contains($0.kind) && $0.skills.contains(s.name) }),
            NSWorkspace.shared.urlForApplication(withBundleIdentifier: chat) != nil {
             if let f = frontmost.bundleID, f == chat { return nil }
             Log.agent.info("UserKnowledge: the person is reached in \(chat, privacy: .public)")
@@ -720,8 +754,13 @@ final class AgentRun: @unchecked Sendable {
         var urlCandidates = candidates.filter { $0.source == "url" || $0.source == "domain" }.map(\.text)
         // What the task names in the user's own life ("the HCI notes" → that Google Doc): in
         // Jev's state every step (`user_context`), and its page as a `use_browser` site.
-        let userContext = UserKnowledge.context(for: task)
-        for u in UserKnowledge.liveURLCandidates(for: task) where !urlCandidates.contains(u) { urlCandidates.append(u) }
+        let userContext = UserKnowledge.context(for: task, original: originalTask)
+        // What the writer should know when it writes the text: the thing the task means (its link,
+        // for "email crawford the lab report") from screen memory.
+        let writerMemory: [String] = (grounded ?? UserKnowledge.grounded(task)).map { g in
+            ["The goal refers to \(g.thing.name) (\(g.thing.place))" + (g.thing.url.map { " — \($0)" } ?? "")]
+        } ?? []
+        for u in UserKnowledge.liveURLCandidates(for: task, original: originalTask) where !urlCandidates.contains(u) { urlCandidates.append(u) }
         let effectGoal = !Self.isLookup(task)
         /// The user wants something read back ("compute 57 × 23", "how many…"): the writer's answer is the deliverable.
         let wantsResult = Self.asksForResult(task)
@@ -1011,12 +1050,12 @@ final class AgentRun: @unchecked Sendable {
             // The writer starts on the one obvious field while Jev decides; used only if Jev picks it.
             var speculative: (elementID: String, task: Task<CUWriter.Fill?, Never>)?
             if writerAvailable, obvious == nil, let field = FieldText.obviousField(in: screen.snapshot) {
-                let (claude, goal, history, guidance, conversation) = (self.claude, task, run.history, run.guidance, context.conversation)
+                let (claude, goal, history, guidance, conversation, memory) = (self.claude, task, run.history, run.guidance, context.conversation, writerMemory)
                 let hints = skill?.fieldHints ?? []
                 let current = screen
                 speculative = (field.id, Task.detached(priority: .userInitiated) {
                     try? await CUWriter.composeText(claude: claude, goal: goal, field: field, screen: current, history: history,
-                                                    guidance: guidance, conversation: conversation, hints: hints)
+                                                    guidance: guidance, conversation: conversation, hints: hints, memory: memory)
                 })
             }
             defer { speculative?.task.cancel() }
@@ -1133,7 +1172,8 @@ final class AgentRun: @unchecked Sendable {
                     } else {
                         do {
                             fill = try await CUWriter.composeText(claude: claude, goal: task, field: field, screen: screen, history: run.history,
-                                                                 guidance: run.guidance, conversation: context.conversation, hints: skill?.fieldHints ?? [])
+                                                                 guidance: run.guidance, conversation: context.conversation, hints: skill?.fieldHints ?? [],
+                                                                 memory: writerMemory)
                         } catch { try checkCancelled() }
                     }
                     calls.writer(ms: Int(Date().timeIntervalSince(t) * 1000))
@@ -1144,6 +1184,18 @@ final class AgentRun: @unchecked Sendable {
                 if text == nil {
                     what = "type_text refused: nothing to type into \(CUFacts.quoted(field.displayName.trimmingCharacters(in: CharacterSet(charactersIn: "‘’"))))"
                     action = nil
+                }
+                // An email's To/Cc for someone the user has mailed before: their address, the one
+                // their own mail showed ("Meera" → mb128@wellesley.edu) — no guessing between
+                // namesakes, no "no contact came up". "Meera Baswan <mb…>" (the planner's goal) → the address.
+                if let typed = text, RecipientPicker.isRecipientField(field) {
+                    if let address = UserContacts.soleAddress(in: typed), address != typed {
+                        text = address
+                    } else if UserContacts.isMailPlace(bundleID: screen.snapshot.bundleID ?? "", url: screen.url),
+                              let address = UserKnowledge.liveEmailAddress(named: typed) {
+                        handle.emit(.status("Addressing \(typed) at \(address), the address your email shows for them"))
+                        text = address
+                    }
                 }
             }
 

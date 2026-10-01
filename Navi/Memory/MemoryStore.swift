@@ -470,6 +470,56 @@ final class MemoryStore: @unchecked Sendable {
         }
     }
 
+    // MARK: Contacts and pages (read by `UserKnowledge`)
+
+    /// Clicks and keys in `bundleIDs` since `since`, oldest first.
+    func actions(bundleIDs: Set<String>, since: Date, limit: Int = 20_000) throws -> [ActionRecord] {
+        guard !bundleIDs.isEmpty else { return [] }
+        let list = Array(bundleIDs)
+        return try queue.sync {
+            try query("SELECT * FROM actions WHERE ts >= ? AND bundle_id IN (\(list.map { _ in "?" }.joined(separator: ","))) ORDER BY ts ASC LIMIT ?",
+                      Self.binds(since, list, limit)).map(Self.action(from:))
+        }
+    }
+
+    /// Frames of `bundleIDs` that have a window title, since `since` (no OCR text loaded).
+    func titledFrames(bundleIDs: Set<String>, since: Date, limit: Int = 20_000) throws -> [FrameRecord] {
+        guard !bundleIDs.isEmpty else { return [] }
+        let list = Array(bundleIDs)
+        return try queue.sync {
+            try query("""
+            SELECT id, ts, bundle_id, app_name, window_title, url FROM frames
+            WHERE ts >= ? AND window_title IS NOT NULL AND bundle_id IN (\(list.map { _ in "?" }.joined(separator: ","))) ORDER BY ts ASC LIMIT ?
+            """, Self.binds(since, list, limit)).map(Self.frame(from:))
+        }
+    }
+
+    private static func binds(_ since: Date, _ list: [String], _ limit: Int) -> [Any?] {
+        [since.timeIntervalSince1970 as Any?] + list.map { $0 as Any? } + [limit as Any?]
+    }
+
+    /// Frames whose text shows a `Name <address>` pair, since `since`.
+    func framesWithAddresses(since: Date, limit: Int = 5000) throws -> [FrameRecord] {
+        try queue.sync {
+            try query("SELECT * FROM frames WHERE ts >= ? AND ocr_text LIKE '%<%@%>%' ORDER BY ts ASC LIMIT ?",
+                      [since.timeIntervalSince1970, limit]).map(Self.frame(from:))
+        }
+    }
+
+    /// Each page's latest window title (a browser's title is the page's), since `since`.
+    /// `bundleID` is the app that was in front: only a browser's window title is the page's.
+    func pageTitles(since: Date, limit: Int = 20_000) throws -> [(url: String, title: String, bundleID: String, at: Date)] {
+        try queue.sync {
+            try query("""
+            SELECT url, window_title, bundle_id, MAX(ts) AS at FROM frames
+            WHERE ts >= ? AND url IS NOT NULL AND window_title IS NOT NULL AND window_title != '' GROUP BY url, bundle_id LIMIT ?
+            """, [since.timeIntervalSince1970, limit]).compactMap { r in
+                guard let u = r["url"] as? String, let t = r["window_title"] as? String else { return nil }
+                return (u, t, r["bundle_id"] as? String ?? "", Date(timeIntervalSince1970: r["at"] as? Double ?? 0))
+            }
+        }
+    }
+
     func actionCount() throws -> Int {
         try queue.sync { Int((try query("SELECT COUNT(*) AS n FROM actions", []).first?["n"] as? Int64) ?? 0) }
     }

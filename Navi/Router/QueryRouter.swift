@@ -416,6 +416,18 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         if decision.intent != .openFile, FileSearch.looksLikeFile(q) {
             rows += (await FileSearch.results(for: q, limit: 4)).map { r in var r = r; r.score = min(r.score, 0.45); return r }
         }
+        // "Open the last assignment I did", "pull up the doc I was working on": the user's own
+        // past work, which the agent finds in screen memory (`TaskGrounding`) and opens —
+        // whatever intent the words read as ("that pdf from yesterday" looks like a file search).
+        if decision.intent != .computerTask, UserKnowledge.current != nil, TaskGrounding.reopensOwnWork(q, possessive: false) {
+            let agent = self.agent
+            agent.prepare(task: q, context: context)
+            rows.append(SearchResult(id: "task:\(q)", kind: .task, title: "Open it: \(q)",
+                                     subtitle: "From your screen memory · Navi finds it and opens it",
+                                     icon: .system("clock.arrow.circlepath"), score: 0.97, shortcutHint: "⏎ Open") {
+                .runAgent(agent.run(task: q, context: context))
+            })
+        }
         if decision.needsClarification {
             let answers = self.answers
             rows.insert(SearchResult(id: "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
