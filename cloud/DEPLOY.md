@@ -117,7 +117,8 @@ Subject: `Your Navi sign-in code: {{ .Token }}`
 ```
 
 `next={{ .RedirectTo }}` carries whether the sign-in was started by the app or by the account
-page; `/auth/callback` reads it. **Check:** after §7, ask for a code on the preview's
+page; `/auth/callback` reads it. The button always opens the **Site URL**'s host, so when testing
+on a preview deployment, type the code instead of clicking the button. **Check:** after §7, ask for a code on the preview's
 `/auth/start`, and confirm both the button and the typed code sign you in.
 
 ## 4. Google and Apple (optional)
