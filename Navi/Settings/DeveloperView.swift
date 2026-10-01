@@ -202,8 +202,8 @@ struct BrowserRuntimeSection: View {
     @State private var chrome: UltrafastBridge.ChromeStatus? = nil
     @State private var busy = false
     @State private var log = ""
-    @AppStorage("ultrafastScreenshots") private var screenshots = false
-    @AppStorage("ultrafastTextModel") private var textModel = "claude-haiku-4-5"
+    @AppStorage("ultrafastScreenshots", store: .navi) private var screenshots = false
+    @AppStorage("ultrafastTextModel", store: .navi) private var textModel = "claude-haiku-4-5"
 
     var body: some View {
         Section {
@@ -285,6 +285,7 @@ enum Pricing {
 
 struct TokenUsageSection: View {
     @EnvironmentObject private var settings: NaviSettings
+    @State private var confirmReset = false
 
     private var rate: Pricing.Rate { Pricing.claude(settings.answerModel) }
     private var claudeCost: Double {
@@ -306,10 +307,26 @@ struct TokenUsageSection: View {
             LabeledContent("Estimated total") {
                 Text(Fmt.usd(claudeCost + jevCost)).font(.title3.weight(.semibold)).monospacedDigit()
             }
+            HStack {
+                Spacer()
+                Button("Reset counters…", role: .destructive) { confirmReset = true }
+                    .controlSize(.small)
+            }
+            .confirmationDialog("Reset the usage counters?", isPresented: $confirmReset) {
+                Button("Reset", role: .destructive) {
+                    UsageCounters.reset()
+                    settings.usageJevCalls = 0
+                    settings.usageClaudeInputTokens = 0
+                    settings.usageClaudeOutputTokens = 0
+                    settings.usageDigestFrames = 0
+                }
+            } message: {
+                Text("Also starts this month's answer and task counts on the Account page over.")
+            }
         } header: {
             Text("Tokens & cost")
         } footer: {
-            Text("Counted on this Mac since the last reset (Usage → Reset counters). Dollar figures are estimates from list prices.")
+            Text("Counted on this Mac since the last reset. Dollar figures are estimates from list prices.")
         }
 
         Section("Prices used") {
@@ -497,7 +514,7 @@ enum ProviderTests {
     }
 
     @MainActor static func jev() async throws -> String {
-        let client = AppDelegate.shared?.services.jev ?? JevClient()
+        let client = AppDelegate.shared?.services?.jev ?? JevClient()
         let (r, _) = try await timed {
             try await client.ask(state: "ping",
                                  questions: ["ok": .noul(instructions: "The word 'ping' appears in the state")],
@@ -508,7 +525,7 @@ enum ProviderTests {
     }
 
     @MainActor static func jevVercel() async throws -> String {
-        let client = AppDelegate.shared?.services.jev ?? JevClient()
+        let client = AppDelegate.shared?.services?.jev ?? JevClient()
         let (r, _) = try await timed {
             try await client.ask(state: "ping",
                                  questions: ["ok": .noul(instructions: "The word 'ping' appears in the state")],
@@ -519,7 +536,7 @@ enum ProviderTests {
     }
 
     @MainActor static func claude() async throws -> String {
-        let client = AppDelegate.shared?.services.claude ?? ClaudeClient()
+        let client = AppDelegate.shared?.services?.claude ?? ClaudeClient()
         let (text, ms) = try await timed {
             try await client.complete(model: "claude-haiku-4-5", system: nil, prompt: "Reply with OK", maxTokens: 5)
         }

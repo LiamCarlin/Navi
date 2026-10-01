@@ -51,11 +51,11 @@ Code session can do it from the repo (open a PR; Liam merges).
 
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
-| ☐ | `CloudTransport.defaultBaseURL` = the deployed API (today hard-coded `https://api.navi.app`; better: read an Info.plist key set in `project.yml`, like `NaviUpdateFeedURL`) | Agent (account workstream owns the file) | a fresh user account (no `cloudBaseURL` default) signs in against production |
+| ☐ | `NaviCloudBaseURL` in `project.yml` = the deployed API (read by `CloudTransport.defaultBaseURL`; `https://api.navi.app` is the fallback, and it does not resolve yet) | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
 | ☐ | `NaviUpdateFeedURL` in `project.yml` = where `appcast.json` is served (default: the latest GitHub Release — works as is) | Agent | `curl -sL <url> \| python3 -m json.tool` |
 | ☐ | Privacy/terms/support links (`AboutView`: `https://navi.app/privacy`, `/terms`, `support@navi.app`) point at pages and a mailbox that exist | Liam (pages) + Agent (URLs) | each link opens; a test mail to support arrives |
 | ☐ | Version bump (`CFBundleShortVersionString` 1.0.0 / `CFBundleVersion`) via PR | Agent | About shows the version |
-| ☐ | Remaining vendor names in Settings copy (VoiceSettingsView auto-mode text, OnboardingView auto-mode text, MemoryView "sent to Jev", HomeView tip "search for jev") | Agent (settings workstream) | `grep -rniE 'claude\|anthropic\|jev\|typesafe\|gemini' Navi/Settings` hits only Developer/Providers views, `Log.` and comments |
+| ☐ | No vendor names anywhere a user looks (re-check after every UI PR) | Agent | `grep -rniE 'claude\|anthropic\|jev\|typesafe\|gemini' Navi/Settings Navi/Panel` hits only Developer/Providers views, `Log.` and comments |
 
 ## 5. Signing, notarization, distribution
 
@@ -104,9 +104,4 @@ Dry run (`scripts/dev/runtime-smoke.sh --cloud … --token …`).
 
 ## 8. Known open issues from the 2026-10-01 pass
 
-- `cloud/lib/mock.ts`: for a single-option choice the mock answers `{"1": 0.82}` (sums to 0.82),
-  which the runner's validator rejects — mock-only, but it breaks local runs on pages with one
-  element. Fix: give the lone key probability 1. (cloud workstream)
 - Browser runs that fail keep their tab open by design; local test runs leave background tabs.
-- `CloudTransport` has no public "token valid for N minutes" call; `UltrafastBridge.accessToken`
-  mirrors its refresh (see the integration-hook comment there). (account workstream)

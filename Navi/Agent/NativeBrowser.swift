@@ -39,7 +39,7 @@ enum NativeBrowser {
     /// Is the jev-ultrafast runner the right tool for this browser right now?
     /// Cheap: a file check plus a set lookup — no doctor script on the hot path.
     static func runnerUsable(for bundleID: String) -> Bool {
-        guard UserDefaults.standard.object(forKey: "ultrafastEnabled") as? Bool ?? true else { return false }
+        guard UserDefaults.navi.object(forKey: "ultrafastEnabled") as? Bool ?? true else { return false }
         guard AXSnapshotter.chromiumBundles.contains(bundleID) else { return false }
         // The runtime bundled in Release builds, else the repo checkout's venv (Debug). Checking
         // only the checkout meant an installed copy on a fresh Mac never used its own runtime.
@@ -68,7 +68,7 @@ enum NativeBrowser {
                 _ = try await NSWorkspace.shared.open([target], withApplicationAt: app, configuration: config)
                 return true
             } catch {
-                Log.agent.warning("open \(url, privacy: .public) in \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.agent.warning("open \(url, privacy: .private) in \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         return NSWorkspace.shared.open(target)

@@ -11,9 +11,9 @@ enum DeveloperMode {
     static let defaultsKey = "developerMode"
 
     static var isEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: defaultsKey) }
+        get { UserDefaults.navi.bool(forKey: defaultsKey) }
         set {
-            UserDefaults.standard.set(newValue, forKey: defaultsKey)
+            UserDefaults.navi.set(newValue, forKey: defaultsKey)
             NotificationCenter.default.post(name: .naviDeveloperModeChanged, object: nil)
         }
     }

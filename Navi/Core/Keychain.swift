@@ -15,6 +15,9 @@ import Security
 /// immediately and writes through in the background.
 ///
 /// Environment variables (`TYPESAFE_API_KEY`, …) override the store for dev.
+///
+/// Under the test host (`TestHost`) the store is in-memory only: it starts empty
+/// and never reads or writes the real item.
 enum Keychain {
     static let service = "com.liamcarlin.navi"
     static let account = "keys"
@@ -49,6 +52,16 @@ enum Keychain {
 
     static func has(_ key: Key) -> Bool { !(get(key) ?? "").isEmpty }
 
+    /// No SecItem calls at all: under the test host, and (Debug) a run against a
+    /// local cloud — no ACL prompt, no writes to the real item.
+    static var isInMemory: Bool {
+        if TestHost.isActive { return true }
+        #if DEBUG
+        if DevCloud.current != nil { return true }
+        #endif
+        return false
+    }
+
     static var loadState: LoadState { lock.lock(); defer { lock.unlock() }; return state }
 
     /// Kick off the one-time background read. Call early at launch.
@@ -58,9 +71,15 @@ enum Keychain {
     }
 
     private static func startLoadLocked() {
+        if isInMemory { state = .loaded; return }
         state = .loading
         queue.async { load() }
     }
+
+    /// Writes made before the first read finished (a `navi://auth/callback`
+    /// that launched the app, a key pasted while the ACL prompt is up). They are
+    /// replayed over what the read returns, so neither side loses the other's keys.
+    private static var pendingWrites: [String: String?] = [:]
 
     private static func load() {
         var loaded: [String: String] = [:]
@@ -85,6 +104,10 @@ enum Keychain {
             }
         }
         lock.lock()
+        for (k, v) in pendingWrites {
+            if let v { loaded[k] = v } else { loaded.removeValue(forKey: k) }
+        }
+        pendingWrites = [:]
         cache = loaded
         state = (status == errSecSuccess || status == errSecItemNotFound) ? .loaded : .failed(status)
         lock.unlock()
@@ -99,11 +122,29 @@ enum Keychain {
     @discardableResult
     static func set(_ key: Key, value: String?) -> Bool {
         lock.lock()
-        if let value, !value.isEmpty { cache[key.rawValue] = value } else { cache.removeValue(forKey: key.rawValue) }
-        let snapshot = cache
+        let stored: String? = (value?.isEmpty ?? true) ? nil : value
+        if let stored { cache[key.rawValue] = stored } else { cache.removeValue(forKey: key.rawValue) }
+        if state == .notLoaded { startLoadLocked() }
+        if state == .loading { pendingWrites[key.rawValue] = stored }
         lock.unlock()
+        if isInMemory {
+            NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
+            return true
+        }
         queue.async {
-            if !writeItem(snapshot) { Log.settings.error("Keychain write failed for \(key.rawValue)") }
+            // Runs after the first read (same serial queue), so the snapshot is the
+            // merged item — never a cache that missed the keys still being read.
+            lock.lock()
+            let snapshot = cache
+            let readFailed: Bool
+            if case .failed = state { readFailed = true } else { readFailed = false }
+            lock.unlock()
+            if readFailed {
+                // Writing now would replace an item we couldn't read with a partial copy.
+                Log.settings.error("Keychain write skipped for \(key.rawValue): the item couldn't be read")
+            } else if !writeItem(snapshot) {
+                Log.settings.error("Keychain write failed for \(key.rawValue)")
+            }
             NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
         }
         return true

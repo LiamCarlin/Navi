@@ -215,7 +215,7 @@ enum TaskPlanner {
                                         maxTokens: 700, effort: "low", thinking: nil)
         let reply = completePrefilled(m.text)
         let plan = parse(reply).map { prune($0, task: task) }
-        if plan == nil { Log.agent.warning("TaskPlanner: unparseable reply: \(reply.prefix(300), privacy: .public)") }
+        if plan == nil { Log.agent.warning("TaskPlanner: unparseable reply: \(reply.prefix(300), privacy: .private)") }
         if habits != nil { Log.agent.debug("TaskPlanner: planned with user habits") }
         return (plan, Int(Date().timeIntervalSince(start) * 1000), reply)
     }

@@ -1,46 +1,51 @@
 import SwiftUI
 
-/// Settings → Agent: when Navi asks before acting, and whether it works
-/// behind your windows. Engine tuning (driver, confidence threshold, fallback
+/// Settings → Tasks (the agent): when Navi asks before acting, and whether it
+/// works behind your windows. Engine tuning (driver, confidence threshold, fallback
 /// budget, model) lives in the Developer section.
 struct AgentSettingsView: View {
     @EnvironmentObject private var settings: NaviSettings
 
     var body: some View {
-        FormPage(title: "Agent", subtitle: "\"Open Chrome, search for X and click the first result\" — Navi does it for you.") {
+        FormPage(title: "Tasks", subtitle: "Say what to do — \u{201C}open Chrome, search for X and click the first result\u{201D} — and Navi does it on your Mac.") {
             Section {
                 Picker("Ask me", selection: $settings.agentApprovalMode) {
                     ForEach(ApprovalMode.allCases) { Text(Self.label(for: $0)).tag($0) }
                 }
                 .pickerStyle(.radioGroup)
-                Text(modeExplanation).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                caption(modeExplanation)
             } header: {
                 Text("Approval")
             } footer: {
-                Text("Whatever you choose, Navi never enters passwords or payment details and never touches security settings — it hands those back to you.")
+                Text("Whatever you choose, Navi never enters passwords or payment details and never changes security settings — it hands those back to you.")
             }
 
             Section {
-                Toggle("Run tasks in the background", isOn: $settings.agentRunInBackground)
-                Text(settings.agentRunInBackground
-                     ? "Navi works in the app behind your windows: your cursor, keyboard and frontmost app stay yours. For keyboard shortcuts like ⌘S the app comes forward for a split second and focus comes straight back."
-                     : "Navi brings the app to the front and uses the real cursor and keyboard. Best for drawing apps and menus; keep your hands off while it works.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Work in the background", isOn: $settings.agentRunInBackground)
+                caption(settings.agentRunInBackground
+                        ? "Navi works in the app behind your windows, so your cursor, keyboard and front app stay yours. For shortcuts like ⌘S the app comes forward for a split second."
+                        : "Navi brings the app to the front and uses the real cursor and keyboard. Best for drawing apps and menus — keep your hands off while it works.")
                 Toggle("Show the result when a task finishes", isOn: $settings.agentRevealWhenDone)
                     .disabled(!settings.agentRunInBackground)
-                Text("When a background task makes something — a note, an event, a document, a tab — Navi brings that window to the front once it's done. Lookups stay in the background; their answer is in the panel.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Toggle("Approve Chrome's connection prompt for me", isOn: $settings.agentAutoApproveChrome)
-                Text("Chrome asks \u{201C}Allow remote debugging?\u{201D} every time Navi reconnects — after your Mac sleeps or Chrome restarts. Navi clicks Allow for its own browser connection (and Navi's developer tools), never for another app's.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Toggle("Hide Chrome's \u{201C}automated test software\u{201D} bar", isOn: $settings.agentHideChromeAutomationBar)
-                Text("Chrome shows this bar while Navi is connected. Navi closes it as soon as it appears.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                caption("When a background task makes something — a note, an event, a document — Navi brings that window forward once it's done. Answers to questions stay in the panel.")
+                Toggle("Show progress on screen while Navi works", isOn: $settings.agentShowLiveOverlay)
+                Stepper(value: $settings.agentMaxSteps, in: 5...200, step: 5) {
+                    LabeledContent("Give up after") {
+                        Text("\(settings.agentMaxSteps) steps").monospacedDigit()
+                    }
+                }
+            } header: {
+                Text("While it works")
+            }
+
+            Section {
+                Toggle("Do things the way I do", isOn: $settings.agentUsesScreenHabits)
+                caption("Navi uses Recall to pick the apps and sites you actually use, the app you talk to each person in, and where your projects and documents live. Only names, page titles and links are used — never the text on your screen.")
+            } header: {
+                Text("Your habits")
+            }
+
+            Section {
                 Toggle("Typing sounds", isOn: $settings.agentTypingSounds)
                 HStack {
                     Slider(value: $settings.agentTypingSoundsVolume, in: 0.05...1) {
@@ -53,31 +58,26 @@ struct AgentSettingsView: View {
                     Button("Preview") { TypingSoundPlayer.shared.preview() }
                 }
                 .disabled(!settings.agentTypingSounds)
-                Text("Soft mechanical key clicks while Navi types for you, so you can hear it working even behind your windows. Only Navi's typing makes a sound — yours never does.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                caption("Soft key clicks while Navi types for you, so you can hear it working behind your windows. Your own typing never makes a sound.")
             } header: {
-                Text("While it works")
+                Text("Sound")
             }
 
             Section {
-                Toggle("Do things the way I do", isOn: $settings.agentUsesScreenHabits)
-                Text("Navi plans and acts from your screen memory: the apps and sites you actually use (the Outlook app for email, your school's Canvas), the people you talk to and where (the app you text each person in), and your projects and documents — their pages, who works on them, the order you usually go through them. Only names, page titles and links are used — never the text on your screen. See what Navi knows in your vault's Navi/How you work note.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Approve Chrome's connection prompt for me", isOn: $settings.agentAutoApproveChrome)
+                caption("Chrome asks \u{201C}Allow remote debugging?\u{201D} each time Navi reconnects — after your Mac sleeps or Chrome restarts. Navi clicks Allow only for its own connection.")
+                Toggle("Hide Chrome's \u{201C}automated test software\u{201D} bar", isOn: $settings.agentHideChromeAutomationBar)
+                caption("Chrome shows this bar while Navi is connected. Navi closes it as soon as it appears.")
             } header: {
-                Text("Your habits")
-            }
-
-            Section("Limits") {
-                Stepper(value: $settings.agentMaxSteps, in: 5...200, step: 5) {
-                    LabeledContent("Maximum steps per task") {
-                        Text("\(settings.agentMaxSteps)").monospacedDigit()
-                    }
-                }
-                Toggle("Show the live overlay while Navi works", isOn: $settings.agentShowLiveOverlay)
+                Text("Google Chrome")
             }
         }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Plain wording for the approval modes (the enum's own labels are engine-facing).
@@ -89,8 +89,10 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var modeExplanation: String {
-        switch settings.agentApprovalMode {
+    private var modeExplanation: String { Self.explanation(for: settings.agentApprovalMode) }
+
+    static func explanation(for mode: ApprovalMode) -> String {
+        switch mode {
         case .alwaysAsk: return "Every click and keystroke waits for your OK. Slowest, safest."
         case .askForRisky: return "Navi pauses only before something hard to undo — sending, paying, deleting, posting."
         case .autonomous: return "No prompts. Passwords, payments and security settings are still off-limits."

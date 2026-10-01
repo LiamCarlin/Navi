@@ -75,7 +75,7 @@ enum UltrafastBridge {
     static var repoRoot: URL? {
         let fm = FileManager.default
         var candidates: [URL] = []
-        if let p = UserDefaults.standard.string(forKey: "ultrafastRepoRoot"), !p.isEmpty {
+        if let p = UserDefaults.navi.string(forKey: "ultrafastRepoRoot"), !p.isEmpty {
             candidates.append(URL(fileURLWithPath: p))
         }
         if let res = Bundle.main.resourceURL { candidates.append(res.appendingPathComponent("ultrafast")) }
@@ -254,10 +254,10 @@ enum UltrafastBridge {
     /// every client follows), else the developer's own keys; nil when there are neither.
     static func credentials(for run: CloudRun, cloud: CloudTransport = .shared) async -> RunnerCredentials? {
         if cloud.isActive {
-            guard let token = await accessToken(cloud, validFor: minimumTokenLifetime) else { return nil }
+            guard let token = await cloud.accessToken(validFor: minimumTokenLifetime) else { return nil }
             return .cloud(baseURL: cloud.baseURL, token: token, feature: run.feature, runID: run.runID)
         }
-        let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
+        let pref = JevProvider(rawValue: UserDefaults.navi.string(forKey: "jevProvider") ?? "") ?? .auto
         switch JevClient.resolveTransport(preference: pref) {
         case .typesafe:
             guard let key = Keychain.get(.typesafe), !key.isEmpty else { return nil }
@@ -270,57 +270,25 @@ enum UltrafastBridge {
         }
     }
 
-    /// True when a token expiring at `expiresAt` would lapse within `lifetime`. An unknown
-    /// expiry is trusted (the proxy's 401 is the backstop).
-    static func needsRefresh(expiresAt: Date?, validFor lifetime: TimeInterval, now: Date = Date()) -> Bool {
-        guard let expiresAt else { return false }
-        return expiresAt.timeIntervalSince(now) < lifetime
-    }
-
-    /// The account's access token, refreshed first when it would lapse during a run.
-    ///
-    /// Integration hook (account workstream): `CloudTransport`'s single-flight refresher is
-    /// private, so this mirrors its `/auth/refresh` call. The app's own proactive refresh only
-    /// fires in a token's last 30 s, so the two do not overlap in practice; a public
-    /// `CloudTransport.accessToken(validFor:)` would make this a one-liner.
-    static func accessToken(_ cloud: CloudTransport, validFor lifetime: TimeInterval, now: Date = Date()) async -> String? {
-        let current = cloud.tokens.accessToken.flatMap { $0.isEmpty ? nil : $0 }
-        let expires = cloud.tokens.accessExpiresAt
-        if let current, !needsRefresh(expiresAt: expires, validFor: lifetime, now: now) { return current }
-        if let refresh = cloud.tokens.refreshToken, !refresh.isEmpty {
-            do {
-                let (data, _) = try await cloud.post(path: "/auth/refresh", json: ["refreshToken": refresh])
-                let t = try CloudTransport.decodeTokens(data)
-                cloud.tokens.store(access: t.accessToken, refresh: t.refreshToken ?? refresh, expiresAt: t.expiresAt)
-                Log.agent.info("browser runner: refreshed the session before the run")
-                return t.accessToken
-            } catch {
-                Log.agent.error("browser runner: session refresh failed: \(error.localizedDescription, privacy: .public)")
-                // Only an auth failure ends the session; a network blip keeps the tokens.
-                if case NaviError.signedOut = error { await cloud.signOutLocally(); return nil }
-                if case NaviError.http(let s, _) = error, (400..<500).contains(s) { await cloud.signOutLocally(); return nil }
-            }
-        }
-        // Refresh unavailable: a token that is still valid beats none.
-        if let current, (expires.map { $0 > now } ?? true) { return current }
-        return nil
-    }
-
     // MARK: Run
+
+    /// Opt-outs honoured by browser-harness (`BH_TELEMETRY`) and browser-use (`ANONYMIZED_TELEMETRY`).
+    static let noTelemetry: [String: String] = ["BH_TELEMETRY": "0", "BROWSER_HARNESS_TELEMETRY": "0", "ANONYMIZED_TELEMETRY": "false"]
 
     /// Environment for the runner: transport + credentials, models, playbooks, runtime paths.
     static func environment(credentials: RunnerCredentials) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONUNBUFFERED"] = "1"
-        env["TYPESAFE_MODEL"] = UserDefaults.standard.string(forKey: "jevModel") ?? "jev-latest"
+        env.merge(noTelemetry) { $1 }   // Privacy: no third-party usage pings from the runner
+        env["TYPESAFE_MODEL"] = UserDefaults.navi.string(forKey: "jevModel") ?? "jev-latest"
         env = applying(credentials, to: env)
         // Text helper for TYPE_TEXT: Claude Haiku (through the account, or on the developer's
         // Anthropic key). Developers can instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL /
         // TEXT_MODEL (upstream's OpenAI-compatible helper) before launching Navi.
-        env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
+        env["NAVI_TEXT_MODEL"] = UserDefaults.navi.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
         // Coach (Claude diagnoses a failing run once): the agent model from Settings.
-        env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
+        env["NAVI_AGENT_MODEL"] = UserDefaults.navi.string(forKey: "agentModel") ?? "claude-sonnet-5"
         // Web-app playbooks (`AppSkills`): the runner adds the one matching each page to Jev's state.
         env["NAVI_PLAYBOOKS_JSON"] = AppSkills.webPlaybooksJSON()
         if let rt = runtime {
@@ -491,7 +459,7 @@ enum UltrafastBridge {
         if !things.isEmpty, let data = try? JSONSerialization.data(withJSONObject: ["note": CUDecide.userContextNote, "things": things], options: [.sortedKeys]) {
             env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
         }
-        let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true
+        let reveal = UserDefaults.navi.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy
         lastTabPolicy = policy
@@ -527,20 +495,26 @@ enum UltrafastBridge {
         var finished = false
         var stepIndex = 0
         // Keep the raw event stream of the last run for debugging (local only).
-        let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-        let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
-        // A dictionary, not a bare string: NSJSONSerialization raises an ObjC exception
-        // (uncatchable by `try?`) for a top-level string without `.fragmentsAllowed`.
-        let startLine = (try? JSONSerialization.data(withJSONObject: ["event": "start", "url": url, "task": task])) ?? Data("{\"event\":\"start\"}".utf8)
-        FileManager.default.createFile(atPath: logURL.path, contents: startLine + Data("\n".utf8))
-        let logHandle = try? FileHandle(forWritingTo: logURL)
-        logHandle?.seekToEndOfFile()
+        // Privacy (`TaskLogs`): only while task logs are on; lines redacted, screenshots never kept.
+        var logHandle: FileHandle?
+        if TaskLogs.isEnabled {
+            let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
+            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
+            // A dictionary, not a bare string: NSJSONSerialization raises an ObjC exception
+            // (uncatchable by `try?`) for a top-level string without `.fragmentsAllowed`.
+            let startLine = (try? JSONSerialization.data(withJSONObject: ["event": "start", "url": url, "task": TaskLogs.redact(task)])) ?? Data("{\"event\":\"start\"}".utf8)
+            FileManager.default.createFile(atPath: logURL.path, contents: startLine + Data("\n".utf8))
+            logHandle = try? FileHandle(forWritingTo: logURL)
+            logHandle?.seekToEndOfFile()
+        }
         defer { try? logHandle?.close() }
         do {
             for try await line in out.fileHandleForReading.bytes.lines {
                 if Task.isCancelled { break }
-                logHandle?.write(Data((line + "\n").utf8))
+                if let logHandle, !line.contains("\"screenshot\"") {
+                    logHandle.write(Data((TaskLogs.redact(line) + "\n").utf8))
+                }
                 guard let data = line.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let event = json["event"] as? String else { continue }
@@ -744,6 +718,7 @@ enum UltrafastBridge {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env.merge(UltrafastBridge.noTelemetry) { $1 }   // Privacy: browser-harness / browser-use phone home otherwise
         env.merge(extraEnv) { $1 }
         p.environment = env
         let pipe = Pipe()

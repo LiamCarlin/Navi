@@ -9,7 +9,7 @@ import Combine
 final class NaviSettings: ObservableObject {
     static let shared = NaviSettings()
 
-    private let d = UserDefaults.standard
+    private let d = UserDefaults.navi
 
     // MARK: General
     @Published var isFirstLaunch: Bool { didSet { d.set(isFirstLaunch, forKey: "isFirstLaunch") } }
@@ -103,6 +103,15 @@ final class NaviSettings: ObservableObject {
     @Published var memoryAllowedPersonalData: [String] { didSet { d.set(memoryAllowedPersonalData, forKey: "memoryAllowedPersonalData") } }
     @Published var memoryPausedUntil: Date? { didSet { d.set(memoryPausedUntil, forKey: "memoryPausedUntil") } }
 
+    // MARK: Privacy & Data (privacy workstream — Settings/PrivacyView.swift)
+    // `memoryRetentionDays` above: 0 = keep forever; enforced daily by `PrivacyMaintenance`.
+    /// Retention also removes the journal notes Navi wrote for expired sessions (never the user's own notes).
+    @Published var memoryRetentionIncludesVault: Bool { didSet { d.set(memoryRetentionIncludesVault, forKey: "memoryRetentionIncludesVault") } }
+    /// Sites screen memory never captures (domains; subdomains match). See `CaptureExclusions`.
+    @Published var memoryExcludedSites: [String] { didSet { d.set(memoryExcludedSites, forKey: "memoryExcludedSites") } }
+    /// "Keep task logs for troubleshooting" (`TaskLogs`). Off for users unless they opt in.
+    @Published var keepTaskLogs: Bool { didSet { d.set(keepTaskLogs, forKey: TaskLogs.keepKey) } }
+
     // MARK: Usage / cost tracking (rough, local only)
     @Published var usageJevCalls: Int { didSet { d.set(usageJevCalls, forKey: "usageJevCalls") } }
     @Published var usageClaudeInputTokens: Int { didSet { d.set(usageClaudeInputTokens, forKey: "usageClaudeInputTokens") } }
@@ -149,8 +158,10 @@ final class NaviSettings: ObservableObject {
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
-            "memoryRetentionDays": 14,
-            "memoryVaultPath": NSString(string: "~/Navi Vault").expandingTildeInPath,
+            "memoryRetentionDays": 30,
+            "memoryRetentionIncludesVault": true,
+            "memoryExcludedSites": CaptureExclusions.defaultSites,
+            "memoryVaultPath": Self.defaultVaultPath,
             "memoryExcludedBundleIDs": ["com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"],
             "memoryKeepScreenshots": true,
             "memoryAllowedPersonalData": PersonalData.Category.allCases.filter { PersonalData.Category.allowedByDefault.contains($0) }.map(\.rawValue),
@@ -200,6 +211,9 @@ final class NaviSettings: ObservableObject {
         memoryKeepScreenshots = d.bool(forKey: "memoryKeepScreenshots")
         memoryAllowedPersonalData = d.stringArray(forKey: "memoryAllowedPersonalData") ?? []
         memoryPausedUntil = d.object(forKey: "memoryPausedUntil") as? Date
+        memoryRetentionIncludesVault = d.bool(forKey: "memoryRetentionIncludesVault")
+        memoryExcludedSites = d.stringArray(forKey: "memoryExcludedSites") ?? []
+        keepTaskLogs = TaskLogs.isEnabled
         usageJevCalls = d.integer(forKey: "usageJevCalls")
         usageClaudeInputTokens = d.integer(forKey: "usageClaudeInputTokens")
         usageClaudeOutputTokens = d.integer(forKey: "usageClaudeOutputTokens")
@@ -251,7 +265,7 @@ final class NaviSettings: ObservableObject {
     // MARK: Derived
 
     /// Hidden Developer section + vendor details: `defaults write com.liamcarlin.navi developerMode -bool YES`.
-    nonisolated static var developerMode: Bool { UserDefaults.standard.bool(forKey: "developerMode") }
+    nonisolated static var developerMode: Bool { UserDefaults.navi.bool(forKey: "developerMode") }
 
     /// True when the selected Jev transport has a key.
     var hasJevKey: Bool { JevClient.resolveTransport(preference: jevProvider) != nil }
@@ -268,14 +282,22 @@ final class NaviSettings: ObservableObject {
         memoryAllowedPersonalData = PersonalData.Category.allCases.map(\.rawValue).filter(set.contains)
     }
 
+    /// ~/Navi Vault — or a scratch folder under the test host, which must never write the user's vault.
+    nonisolated static var defaultVaultPath: String {
+        TestHost.isActive ? TestHost.scratchDirectory.appendingPathComponent("Navi Vault").path
+            : NSString(string: "~/Navi Vault").expandingTildeInPath
+    }
+
     var memoryIsPaused: Bool {
         if let until = memoryPausedUntil { return until > Date() }
         return false
     }
 
     /// Application Support directory for Navi's local data (SQLite, frames).
-    static var dataDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    /// Under the test host: a scratch directory, never the user's (`TestHost`).
+    nonisolated static var dataDirectory: URL {
+        let base = TestHost.isActive ? TestHost.scratchDirectory
+            : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("Navi", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

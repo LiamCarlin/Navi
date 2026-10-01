@@ -57,10 +57,10 @@ struct RunnerCredentialsTests {
 
     @Test func refreshOnlyWhenTheTokenWouldLapseDuringARun() {
         let now = Date(timeIntervalSince1970: 1_000_000)
-        #expect(!UltrafastBridge.needsRefresh(expiresAt: now.addingTimeInterval(3600), validFor: 1200, now: now))
-        #expect(UltrafastBridge.needsRefresh(expiresAt: now.addingTimeInterval(600), validFor: 1200, now: now))
-        #expect(UltrafastBridge.needsRefresh(expiresAt: now.addingTimeInterval(-5), validFor: 1200, now: now))
-        #expect(!UltrafastBridge.needsRefresh(expiresAt: nil, validFor: 1200, now: now))
+        #expect(!CloudTransport.needsRefresh(expiresAt: now.addingTimeInterval(3600), validFor: 1200, now: now))
+        #expect(CloudTransport.needsRefresh(expiresAt: now.addingTimeInterval(600), validFor: 1200, now: now))
+        #expect(CloudTransport.needsRefresh(expiresAt: now.addingTimeInterval(-5), validFor: 1200, now: now))
+        #expect(!CloudTransport.needsRefresh(expiresAt: nil, validFor: 1200, now: now))
     }
 
     @Test func aFreshTokenIsHandedOverWithoutANetworkCall() async {
@@ -68,7 +68,7 @@ struct RunnerCredentialsTests {
         StubProtocol.install(host: host) { _ in StubProtocol.json(500, ["error": "unexpected"]) }
         let tokens = MemoryTokenStore(access: "acc-long", refresh: "ref-1", expiresAt: Date().addingTimeInterval(3000))
         let cloud = CloudTransport(session: StubProtocol.session(), baseURL: URL(string: "http://\(host)")!, tokens: tokens)
-        let token = await UltrafastBridge.accessToken(cloud, validFor: 1200)
+        let token = await cloud.accessToken(validFor: 1200)
         #expect(token == "acc-long")
         #expect(StubProtocol.requests(host: host).isEmpty)
     }
@@ -81,7 +81,7 @@ struct RunnerCredentialsTests {
         }
         let tokens = MemoryTokenStore(access: "acc-old", refresh: "ref-1", expiresAt: Date().addingTimeInterval(300))
         let cloud = CloudTransport(session: StubProtocol.session(), baseURL: URL(string: "http://\(host)")!, tokens: tokens)
-        let token = await UltrafastBridge.accessToken(cloud, validFor: 1200)
+        let token = await cloud.accessToken(validFor: 1200)
         #expect(token == "acc-new")
         #expect(tokens.accessToken == "acc-new" && tokens.refreshToken == "ref-2")
         let body = (try? JSONSerialization.jsonObject(with: StubProtocol.requests(host: host).first?.httpBody ?? Data())) as? [String: Any]
@@ -93,7 +93,7 @@ struct RunnerCredentialsTests {
         StubProtocol.install(host: host) { _ in StubProtocol.json(502, ["error": "bad gateway"]) }
         let tokens = MemoryTokenStore(access: "acc-old", refresh: "ref-1", expiresAt: Date().addingTimeInterval(300))
         let cloud = CloudTransport(session: StubProtocol.session(), baseURL: URL(string: "http://\(host)")!, tokens: tokens)
-        #expect(await UltrafastBridge.accessToken(cloud, validFor: 1200) == "acc-old")
+        #expect(await cloud.accessToken(validFor: 1200) == "acc-old")
         #expect(tokens.refreshToken == "ref-1")
     }
 
@@ -102,8 +102,21 @@ struct RunnerCredentialsTests {
         StubProtocol.install(host: host) { _ in StubProtocol.json(401, ["error": "unauthenticated"]) }
         let tokens = MemoryTokenStore(access: "acc-old", refresh: "ref-1", expiresAt: Date().addingTimeInterval(-10))
         let cloud = CloudTransport(session: StubProtocol.session(), baseURL: URL(string: "http://\(host)")!, tokens: tokens)
-        #expect(await UltrafastBridge.accessToken(cloud, validFor: 1200) == nil)
+        #expect(await cloud.accessToken(validFor: 1200) == nil)
         #expect(tokens.accessToken == nil && tokens.refreshToken == nil)       // signed out locally
+    }
+
+    // MARK: Cloud base URL from the build
+
+    @Test func cloudBaseURLComesFromInfoPlistWithFallback() {
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: nil) == CloudTransport.fallbackBaseURL)
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: "  ") == CloudTransport.fallbackBaseURL)
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: "not a url") == CloudTransport.fallbackBaseURL)
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: "ftp://api.example.com") == CloudTransport.fallbackBaseURL)
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: "https://api.example.com/") == "https://api.example.com")
+        #expect(CloudTransport.resolveDefaultBaseURL(infoPlist: "http://127.0.0.1:3100") == "http://127.0.0.1:3100")
+        let plist = Bundle.main.object(forInfoDictionaryKey: "NaviCloudBaseURL") as? String
+        #expect(CloudTransport.defaultBaseURL == CloudTransport.resolveDefaultBaseURL(infoPlist: plist))
     }
 
     // MARK: Runner errors

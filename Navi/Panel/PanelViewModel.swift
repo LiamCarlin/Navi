@@ -136,19 +136,19 @@ final class PanelViewModel: ObservableObject {
     /// Dismisses the error banner.
     func clearError() { errorMessage = nil; upgradeAction = nil }
 
-    /// Shows an error. Account errors (`NaviError.quotaExceeded` / `.notEntitled`
-    /// / `.signedOut`) render as one plain line plus an Upgrade / Sign in action.
-    func showError(_ error: Error) {
+    /// Shows an error. Account errors (quota, entitlement, signed out, update
+    /// required, feature switched off, account disabled) render as one plain
+    /// line plus the action that fixes it (`NaviError.recovery`). `feature`
+    /// words the signed-out line ("Sign in to use answers.").
+    func showError(_ error: Error, feature: CloudFeature? = nil) {
         let account = NaviAccount.shared
-        if let (message, title) = Self.accountPresentation(for: error, quotas: account.quotas) {
+        if let (message, title) = Self.accountPresentation(for: error, quotas: account.quotas, feature: feature) {
             errorMessage = message
             upgradeActionTitle = title
-            switch error as? NaviError {
-            case .signedOut, .missingAPIKey: upgradeAction = { account.signIn() }
-            case .notEntitled(let feature, _):
-                let recall = feature.hasPrefix("recall")
-                upgradeAction = { account.openCheckout(plan: recall ? .proRecall : .pro, interval: .month) }
-            default: upgradeAction = { account.openCheckout(plan: .pro, interval: .month) }
+            if let recovery = (error as? NaviError)?.recovery, recovery != .tryLater, !title.isEmpty {
+                upgradeAction = { account.recover(recovery) }
+            } else {
+                upgradeAction = nil
             }
         } else {
             errorMessage = error.localizedDescription
@@ -156,8 +156,19 @@ final class PanelViewModel: ObservableObject {
         }
     }
 
+    /// Checks the account before starting cloud work (an answer, a task): when
+    /// it can't run — signed out, update required, switched off, account
+    /// disabled — shows that one line and returns false.
+    private func accountAllows(_ feature: CloudFeature) -> Bool {
+        guard let blocker = NaviAccount.shared.blocker(for: feature) else { return true }
+        Log.panel.info("\(feature.rawValue, privacy: .public) not started: \(String(describing: blocker), privacy: .public)")
+        showError(blocker, feature: feature)
+        return false
+    }
+
     /// Pure: the one-line message and action title for an account error, or nil.
-    nonisolated static func accountPresentation(for error: Error, quotas: Quotas) -> (message: String, actionTitle: String)? {
+    /// An empty action title means the line has no button (try again later).
+    nonisolated static func accountPresentation(for error: Error, quotas: Quotas, feature: CloudFeature? = nil) -> (message: String, actionTitle: String)? {
         guard let e = error as? NaviError else { return nil }
         let time: (Date?) -> String = { d in d.map { " Resets at \($0.formatted(date: .omitted, time: .shortened))." } ?? "" }
         switch e {
@@ -190,10 +201,14 @@ final class PanelViewModel: ObservableObject {
             default: return ("That isn't included in the \(plan) plan.", "Upgrade")
             }
         case .signedOut:
-            return ("Sign in to Navi to keep going.", "Sign in")
+            return (NaviAccount.signInLine(for: feature), "Sign in")
         case .missingAPIKey where !NaviSettings.developerMode:
             // A BYOK key can only be "missing" when the account transport is not active: sign in.
-            return ("Sign in to Navi to keep going.", "Sign in")
+            return (NaviAccount.signInLine(for: feature), "Sign in")
+        case .upgradeRequired, .accountDisabled:
+            return (e.errorDescription ?? "", e.recovery == .updateApp ? "Update" : "Contact support")
+        case .featureDisabled:
+            return (e.errorDescription ?? "", "")
         default:
             return nil
         }
@@ -358,10 +373,13 @@ final class PanelViewModel: ObservableObject {
     }
 
     func perform(_ result: SearchResult) {
-        Log.panel.info("perform \(result.kind.rawValue, privacy: .public): \(result.title, privacy: .public)")
+        Log.panel.info("perform \(result.kind.rawValue, privacy: .public): \(result.title, privacy: .private)")
         #if DEBUG
         DebugTrace.log("perform \(result.kind.rawValue): \(result.title)")
         #endif
+        // Answers and tasks run on the account: say so up front instead of failing mid-run.
+        if result.kind == .answer, !accountAllows(.answer) { return }
+        if result.kind == .task, !accountAllows(.task) { return }
         let q = query
         if !q.isEmpty { recentQueries = Array(([q] + recentQueries).prefix(20)) }
         if agentRun == nil { agentDismissed = true }   // moving on from a finished run
@@ -392,6 +410,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     func askNavi(_ q: String) {
+        guard accountAllows(.answer) else { return }
         let hits: [MemoryHit] = []
         startAnswer(services.answers.streamAnswer(query: q, context: context, memory: hits))
     }
@@ -410,7 +429,7 @@ final class PanelViewModel: ObservableObject {
                 }
             } catch is CancellationError {
             } catch {
-                self?.showError(error)
+                self?.showError(error, feature: .answer)
             }
             self?.isAnswering = false
         }
@@ -469,7 +488,7 @@ final class PanelViewModel: ObservableObject {
                 }
             }
             scheduler = s
-            Log.panel.info("scheduler card for “\(request.activity, privacy: .public)” (\(request.people.count) people)")
+            Log.panel.info("scheduler card for “\(request.activity, privacy: .private)” (\(request.people.count) people)")
         }
         if mode != .schedule { mode = .schedule }
     }
@@ -558,7 +577,7 @@ final class PanelViewModel: ObservableObject {
         }
         guard let refined else { return }
         let intent = decision?.intent ?? .computerTask
-        Log.panel.info("clarified (\(intent.rawValue, privacy: .public)) → \(refined, privacy: .public)")
+        Log.panel.info("clarified (\(intent.rawValue, privacy: .public)) → \(refined, privacy: .private)")
         services.router.didClarify(query: refined, intent: intent)
         clearClarification()
         mode = .results

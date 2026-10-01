@@ -23,6 +23,7 @@ struct NaviApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultSize(width: 960, height: 640)
+        .defaultLaunchBehavior(TestHost.isActive ? .suppressed : .automatic)   // no window over the test host
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { openWindow(id: WindowID.main) }
@@ -30,7 +31,7 @@ struct NaviApp: App {
             }
         }
 
-        MenuBarExtra {
+        MenuBarExtra(isInserted: .constant(!TestHost.isActive)) {
             MenuBarMenu()
                 .environmentObject(NaviSettings.shared)
         } label: {
@@ -98,17 +99,16 @@ struct MenuBarMenu: View {
     private var voiceActive: Bool { _ = voiceTick; return AppDelegate.shared?.voice?.isListening ?? false }
 
     var body: some View {
-        Button("Open Navi  ⌘Space") { AppDelegate.shared?.togglePanel() }
-        Button(voiceActive ? "Stop Voice Control" : "Start Voice Control…") { AppDelegate.shared?.toggleVoice() }
+        Button("Open Navi  \(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))") { AppDelegate.shared?.togglePanel() }
+        Button(voiceActive ? "Stop Listening" : "Start Listening") { AppDelegate.shared?.toggleVoice() }
             .onReceive(NotificationCenter.default.publisher(for: .naviVoiceStateChanged)) { _ in voiceTick &+= 1 }
-        if let vm = AppDelegate.shared?.panelController.viewModel, vm.hasAgentToShow {
-            Button(vm.agentRun != nil ? "Show running task…" : "Show last task…") { AppDelegate.shared?.showCurrentTask() }
+        if let vm = AppDelegate.shared?.panelController?.viewModel, vm.hasAgentToShow {
+            Button(vm.agentRun != nil ? "Show Running Task" : "Show Last Task") { AppDelegate.shared?.showCurrentTask() }
         }
-        Button("Navi App & Settings…") {
-            openWindow(id: WindowID.main)
-            AppActivation.showDock()
-        }
-        Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
+        Divider()
+        Button("Settings…") { AppDelegate.shared?.openMainWindow(section: .home) }
+            .keyboardShortcut(",")
+        AccountMenuItems()
         Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
         if NaviSettings.developerMode {
@@ -126,19 +126,19 @@ struct MenuBarMenu: View {
             }
             Divider()
         }
-        // Same setting as Settings → Agent; here so it can be flipped between tasks.
-        Toggle("Run tasks in background", isOn: $settings.agentRunInBackground)
+        // Same setting as Settings → Tasks; here so it can be flipped between tasks.
+        Toggle("Work in the Background", isOn: $settings.agentRunInBackground)
         Divider()
         if !NaviAccount.shared.entitlements.recall {
             Button("Unlock Recall…") { AppDelegate.shared?.openMainWindow(section: .memory) }
         } else {
-            Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
+            Toggle("Recall", isOn: $settings.memoryCaptureEnabled)
         }
         if settings.memoryCaptureEnabled, NaviAccount.shared.entitlements.recall {
             if settings.memoryIsPaused {
-                Button("Resume capture") { settings.memoryPausedUntil = nil }
+                Button("Resume Recall") { settings.memoryPausedUntil = nil }
             } else {
-                Button("Pause capture for 1 hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
+                Button("Pause Recall for 1 Hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
             }
         }
         Divider()
@@ -152,6 +152,27 @@ struct MenuBarMenu: View {
         case "claude-opus-5": return "Opus 5"
         case "claude-haiku-4-5": return "Haiku 4.5"
         default: return id
+        }
+    }
+}
+
+/// The account's corner of the menu-bar menu: who is signed in and on what
+/// plan (or "Sign in to Navi…"), plus anything blocking the cloud.
+struct AccountMenuItems: View {
+    @ObservedObject private var account = NaviAccount.shared
+
+    var body: some View {
+        if let title = account.menuTitle {
+            Button(title) { AppDelegate.shared?.openMainWindow(section: .account) }
+            if account.isUpdateRequired {
+                Button("Update Navi…") { account.updateApp() }
+            } else if account.isAccountDisabled {
+                Button("Contact Support…") { account.contactSupport() }
+            }
+        } else if account.hasDeveloperKeys {
+            Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
+        } else {
+            Button(account.isSigningIn ? "Waiting for Your Browser…" : "Sign In to Navi…") { account.signIn() }
         }
     }
 }

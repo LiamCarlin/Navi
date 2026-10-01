@@ -67,6 +67,8 @@
 	<string>Navi turns what you say into text, on your Mac, while voice control is on.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>Navi lets you know when a task it was doing in the background is finished.</string>
+	<key>NaviCloudBaseURL</key>
+	<string>https://api.navi.app</string>
 	<key>NaviUpdateFeedURL</key>
 	<string>https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json</string>
 </dict>

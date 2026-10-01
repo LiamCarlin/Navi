@@ -28,7 +28,7 @@ final class ClaudeClient: @unchecked Sendable {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 600
         cfg.httpAdditionalHeaders = ["User-Agent": "Navi/0.1 (macOS)"]
-        session = URLSession(configuration: cfg)
+        session = URLSession(configuration: TestHost.guarded(cfg))
     }
 
     var isConfigured: Bool { cloud.isActive || Keychain.has(.anthropic) }

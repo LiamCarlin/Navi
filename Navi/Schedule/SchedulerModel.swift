@@ -81,7 +81,7 @@ final class SchedulerModel: ObservableObject {
 
     /// The user's own meeting link (Zoom, Meet, FaceTime…) put on events with video on.
     static var videoLink: String {
-        UserDefaults.standard.string(forKey: videoLinkKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        UserDefaults.navi.string(forKey: videoLinkKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     // MARK: Derived
@@ -242,7 +242,7 @@ final class SchedulerModel: ObservableObject {
 
     func saveVideoLink() {
         let link = videoLinkDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard.set(link, forKey: Self.videoLinkKey)
+        UserDefaults.navi.set(link, forKey: Self.videoLinkKey)
         editingVideoLink = false
         videoOn = !link.isEmpty
     }
