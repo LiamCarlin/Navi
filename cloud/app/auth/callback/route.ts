@@ -1,88 +1,72 @@
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import { cookies } from "next/headers";
-import { randomBytes } from "node:crypto";
-import { getDb } from "@/lib/db";
-import { env } from "@/lib/env";
-import { clientIp, rateLimited } from "@/lib/http";
+import { classifyAuthError, getAuthBackend, SignInError, type SignInErrorKind } from "@/lib/auth-backend";
+import type { SessionTokens } from "@/lib/db";
+import { clientIp } from "@/lib/http";
 import { authIpLimiter } from "@/lib/ratelimit";
-import { tokensFromSupabaseSession } from "@/lib/sessions";
+import { clearSupabaseCookies, cookieJar, finishSignIn, parseFlow, redirectResponse, startPath, type Flow } from "@/lib/signin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const AUTH_CODE_TTL_MS = 5 * 60_000;
-const APP_CALLBACK = "navi://auth/callback";
-
-function toApp(params: Record<string, string>): Response {
-  const q = new URLSearchParams(params).toString();
-  return Response.redirect(`${APP_CALLBACK}?${q}`, 302);
-}
-
-function page(title: string, body: string, status = 200): Response {
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="margin:0;background:#0b0b0d;color:#f2f2f4;font-family:-apple-system,system-ui,sans-serif"><main style="max-width:480px;margin:18vh auto;padding:0 24px"><h1 style="font-size:24px;font-weight:600">${title}</h1><p style="color:#9a9aa3">${body}</p></main>`,
-    { status, headers: { "content-type": "text/html; charset=utf-8" } },
-  );
+/** `redirect` straight on the URL, or inside `next`/`redirect_to` (email templates that wrap {{ .RedirectTo }}). */
+function flowFrom(url: URL): Flow {
+  const direct = url.searchParams.get("redirect");
+  if (direct) return parseFlow(direct);
+  for (const k of ["next", "redirect_to"]) {
+    const v = url.searchParams.get(k);
+    if (!v) continue;
+    try { return parseFlow(new URL(v, url).searchParams.get("redirect")); } catch { /* ignore */ }
+  }
+  return parseFlow(null);
 }
 
 /**
- * GET /auth/callback — Supabase lands here after a magic link or Google sign-in
- * (`?code=` PKCE, or `?token_hash=&type=` for OTP-style email templates).
- * We finish the exchange server-side, mint a single-use 5-minute code, and
- * bounce to `navi://auth/callback?code=…`. The app swaps it at /auth/exchange.
+ * GET /auth/callback — where the sign-in email's link and the Google/Apple return land.
+ *   ?code=…                    PKCE (the browser that started)            → finish
+ *   ?token_hash=…&type=email   token-hash email template (any browser)    → finish
+ *   ?error=…&error_code=…      the provider or the link said no           → /auth/start with the reason
+ * finish: app flow → 302 navi://auth/callback?code=<single-use, 5 min>; web flow → cookie → /account.
+ * Failures go back to /auth/start?error=<kind>, which explains what happened, offers the
+ * 6-digit code, and links back to the app (navi://auth/callback?error=sign_in_failed).
  */
 export async function GET(req: Request): Promise<Response> {
-  const rl = authIpLimiter.hit(clientIp(req));
-  if (!rl.ok) {
-    const e = rateLimited(rl.retryAfterSeconds);
-    return Response.json(e.body, { status: e.status, headers: e.headers });
-  }
-
   const url = new URL(req.url);
-  const errorParam = url.searchParams.get("error_description") ?? url.searchParams.get("error");
-  if (errorParam) return toApp({ error: "sign_in_failed", message: errorParam });
+  const flow = flowFrom(url);
+  const fail = (kind: SignInErrorKind) => redirectResponse(req, startPath(flow, { error: kind }), clearSupabaseCookies(req));
 
-  if (env.dbDriver !== "supabase" || !env.supabaseUrl || !env.supabaseAnonKey) {
-    return page("Sign-in is not configured", "This Navi Cloud instance has no Supabase project. Use <code>POST /auth/dev-login</code> in development.", 501);
+  const rl = await authIpLimiter.hit(clientIp(req));
+  if (!rl.ok) return fail("rate_limited");
+
+  const errorCode = url.searchParams.get("error_code");
+  const error = url.searchParams.get("error");
+  if (errorCode || error) {
+    const description = url.searchParams.get("error_description") ?? "";
+    return fail(classifyAuthError({ code: errorCode ?? error ?? "", message: description }, errorCode ? "link" : "oauth"));
   }
 
-  const cookieStore = await cookies();
-  const supabase = createServerClient(env.supabaseUrl, env.supabaseAnonKey, {
-    cookies: {
-      getAll: () => cookieStore.getAll(),
-      setAll: (list: { name: string; value: string; options?: CookieOptions }[]) => {
-        for (const c of list) {
-          try { cookieStore.set(c.name, c.value, c.options); } catch { /* headers already sent */ }
-        }
-      },
-    },
-  });
+  const backend = getAuthBackend();
+  if (!backend) return fail("unconfigured");
 
   const code = url.searchParams.get("code");
   const tokenHash = url.searchParams.get("token_hash");
-  const type = url.searchParams.get("type");
+  const type = url.searchParams.get("type") ?? "email";
+  const jar = cookieJar(req);
 
-  let session;
-  if (code) {
-    const res = await supabase.auth.exchangeCodeForSession(code);
-    if (res.error) return toApp({ error: "sign_in_failed", message: res.error.message });
-    session = res.data.session;
-  } else if (tokenHash && type) {
-    const res = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type as "magiclink" | "email" | "signup" | "recovery" });
-    if (res.error) return toApp({ error: "sign_in_failed", message: res.error.message });
-    session = res.data.session;
-  } else {
-    return page("Missing sign-in code", "Open the link from your email again, or go back to Navi and retry.", 400);
+  let tokens: SessionTokens;
+  try {
+    if (tokenHash) tokens = await backend.verifyTokenHash(tokenHash, type);
+    else if (code) tokens = await backend.exchangeCode(code, jar);
+    else return fail("expired"); // nothing to finish with: a mangled or truncated link
+  } catch (e) {
+    if (e instanceof SignInError) return fail(e.kind);
+    console.error("[navi-cloud] /auth/callback failed:", (e as Error).message);
+    return fail("failed");
   }
-  if (!session) return toApp({ error: "sign_in_failed", message: "No session returned" });
 
-  const tokens = tokensFromSupabaseSession(session);
-  const oneTime = randomBytes(24).toString("base64url");
-  const db = await getDb();
-  await db.createAuthCode({ code: oneTime, tokens, expiresAt: new Date(Date.now() + AUTH_CODE_TTL_MS).toISOString() });
-
-  // Sign the browser out of the cookie session: the app owns the tokens from here.
-  await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
-
-  return toApp({ code: oneTime });
+  try {
+    const done = await finishSignIn(flow, tokens);
+    return redirectResponse(req, done.location, [...clearSupabaseCookies(req), ...jar.setCookies, ...done.setCookies]);
+  } catch (e) {
+    console.error("[navi-cloud] /auth/callback finish failed:", (e as Error).message);
+    return fail("failed");
+  }
 }

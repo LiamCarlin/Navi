@@ -1,0 +1,168 @@
+/* Navi Cloud pages (/auth/*, /account) — the same tokens as web/ (dark). Classes are `nv-`
+   prefixed so nothing here leaks into other pages of this app. */
+
+:root {
+  --nv-bg: #0a0a0b;
+  --nv-bg-elev: #111113;
+  --nv-bg-sunk: #050506;
+  --nv-fg: #f4f4f5;
+  --nv-fg-muted: #a3a3ad;
+  --nv-fg-dim: #85858f;
+  --nv-accent: #8b8cf8;
+  --nv-accent-soft: rgba(139, 140, 248, 0.14);
+  --nv-line: rgba(255, 255, 255, 0.08);
+  --nv-line-strong: rgba(255, 255, 255, 0.14);
+  --nv-ok: #6fd39a;
+  --nv-ok-soft: rgba(111, 211, 154, 0.1);
+  --nv-warn: #e8b45a;
+  --nv-warn-soft: rgba(232, 180, 90, 0.1);
+  --nv-bad: #f0868a;
+  --nv-bad-soft: rgba(240, 134, 138, 0.1);
+  --nv-r-md: 12px;
+  --nv-r-lg: 16px;
+  color-scheme: dark;
+}
+
+.nv-page {
+  min-height: 100dvh;
+  background:
+    radial-gradient(60% 45% at 50% -10%, rgba(139, 140, 248, 0.16), transparent 70%),
+    var(--nv-bg);
+  color: var(--nv-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.nv-page *, .nv-page *::before, .nv-page *::after { box-sizing: border-box; }
+.nv-page a { color: inherit; }
+
+.nv-top {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px 20px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.nv-wordmark { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -0.01em; font-size: 17px; text-decoration: none; }
+.nv-wordmark svg { width: 1em; height: 1em; color: var(--nv-accent); }
+
+.nv-narrow { max-width: 420px; margin: 0 auto; padding: 12vh 20px 64px; }
+.nv-wide { max-width: 760px; margin: 0 auto; padding: 48px 20px 80px; }
+
+.nv-h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 8px; }
+.nv-h2 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.nv-lede { color: var(--nv-fg-muted); margin: 0 0 28px; }
+.nv-muted { color: var(--nv-fg-muted); }
+.nv-dim { color: var(--nv-fg-dim); font-size: 13px; }
+.nv-tnum { font-variant-numeric: tabular-nums; }
+
+.nv-card { background: var(--nv-bg-elev); border: 1px solid var(--nv-line); border-radius: var(--nv-r-lg); padding: 20px; }
+.nv-card + .nv-card { margin-top: 14px; }
+.nv-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+
+.nv-stack { display: grid; gap: 12px; }
+.nv-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+.nv-label { display: block; font-size: 13px; color: var(--nv-fg-muted); margin-bottom: 6px; }
+.nv-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 16px;
+  color: var(--nv-fg);
+  background: var(--nv-bg-sunk);
+  border: 1px solid var(--nv-line-strong);
+  border-radius: var(--nv-r-md);
+  outline: none;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.nv-input:focus { border-color: var(--nv-accent); box-shadow: 0 0 0 3px var(--nv-accent-soft); }
+.nv-input:disabled { opacity: 0.6; }
+.nv-code { font-size: 26px; letter-spacing: 0.4em; text-align: center; font-variant-numeric: tabular-nums; height: 56px; }
+
+.nv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: opacity 150ms, border-color 150ms, background 150ms;
+}
+.nv-btn:disabled, .nv-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.nv-btn-block { width: 100%; }
+.nv-btn-sm { height: 36px; padding: 0 14px; font-size: 14px; }
+.nv-btn-primary { background: var(--nv-fg); color: var(--nv-bg); }
+.nv-btn-primary:not(:disabled):hover { opacity: 0.88; }
+.nv-btn-secondary { background: transparent; color: var(--nv-fg); border-color: var(--nv-line-strong); }
+.nv-btn-secondary:not(:disabled):hover { border-color: var(--nv-fg-dim); }
+.nv-btn-accent { background: var(--nv-accent); color: #0a0a0b; }
+.nv-btn-accent:not(:disabled):hover { opacity: 0.9; }
+.nv-btn-danger { background: transparent; color: var(--nv-bad); border-color: rgba(240, 134, 138, 0.35); }
+.nv-btn-danger:not(:disabled):hover { border-color: var(--nv-bad); }
+.nv-btn-solid-danger { background: #d9534f; color: #fff; }
+.nv-btn svg { width: 18px; height: 18px; flex: none; }
+
+.nv-link { background: none; border: 0; padding: 0; font: inherit; color: var(--nv-fg-muted); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.nv-link:hover { color: var(--nv-fg); }
+
+.nv-divider { display: flex; align-items: center; gap: 12px; color: var(--nv-fg-dim); font-size: 13px; margin: 6px 0; }
+.nv-divider::before, .nv-divider::after { content: ""; flex: 1; height: 1px; background: var(--nv-line); }
+
+.nv-banner { border-radius: var(--nv-r-md); padding: 12px 14px; font-size: 14px; border: 1px solid; margin-bottom: 18px; }
+.nv-banner strong { display: block; font-weight: 600; margin-bottom: 2px; }
+.nv-banner-bad { background: var(--nv-bad-soft); border-color: rgba(240, 134, 138, 0.3); color: #f7c9cb; }
+.nv-banner-ok { background: var(--nv-ok-soft); border-color: rgba(111, 211, 154, 0.3); color: #c7f0d8; }
+.nv-banner-warn { background: var(--nv-warn-soft); border-color: rgba(232, 180, 90, 0.3); color: #f3dcae; }
+.nv-banner-info { background: var(--nv-accent-soft); border-color: rgba(139, 140, 248, 0.3); color: #d6d6fd; }
+
+.nv-pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid var(--nv-line-strong); color: var(--nv-fg-muted); }
+.nv-pill-accent { color: var(--nv-accent); border-color: rgba(139, 140, 248, 0.4); background: var(--nv-accent-soft); }
+
+.nv-meter { margin-top: 12px; }
+.nv-meter-top { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 6px; }
+.nv-meter-bar { height: 6px; border-radius: 999px; background: var(--nv-line); overflow: hidden; }
+.nv-meter-fill { height: 100%; border-radius: 999px; background: var(--nv-accent); }
+.nv-meter-fill.nv-full { background: var(--nv-warn); }
+
+.nv-list { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--nv-line); }
+.nv-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--nv-line); font-size: 14px; }
+
+.nv-plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.nv-plan { border: 1px solid var(--nv-line-strong); border-radius: var(--nv-r-md); padding: 16px; display: grid; gap: 8px; align-content: start; }
+.nv-plan-price { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+
+.nv-seg { display: inline-flex; border: 1px solid var(--nv-line-strong); border-radius: 999px; padding: 3px; font-size: 13px; }
+.nv-seg button { border: 0; background: transparent; color: var(--nv-fg-muted); padding: 5px 12px; border-radius: 999px; font: inherit; cursor: pointer; }
+.nv-seg button[aria-pressed="true"] { background: var(--nv-fg); color: var(--nv-bg); }
+
+.nv-foot { margin-top: 40px; color: var(--nv-fg-dim); font-size: 13px; text-align: center; }
+.nv-foot a { color: var(--nv-fg-muted); }
+
+.nv-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: nv-spin 700ms linear infinite; }
+@keyframes nv-spin { to { transform: rotate(360deg); } }
+
+.nv-dialog { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; padding: 20px; z-index: 50; }
+.nv-dialog-card { width: 100%; max-width: 440px; background: var(--nv-bg-elev); border: 1px solid var(--nv-line-strong); border-radius: var(--nv-r-lg); padding: 22px; }
+
+@media (max-width: 560px) {
+  .nv-plans { grid-template-columns: 1fr; }
+  .nv-narrow { padding-top: 8vh; }
+  .nv-wide { padding-top: 28px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nv-spinner { animation-duration: 2s; }
+}

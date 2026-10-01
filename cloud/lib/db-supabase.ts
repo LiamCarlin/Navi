@@ -5,7 +5,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { AuthCodeRecord, Db, EntitlementGrant, Profile, ProfilePatch, SessionTokens, UsageUnit, UsageWindow } from "./db";
+import type { AuthCodeRecord, Db, EntitlementGrant, Profile, ProfilePatch, SessionTokens, UsageRecord, UsageUnit, UsageWindow } from "./db";
 import { env } from "./env";
 import type { Feature } from "./plans";
 import { trialEnd } from "./plans";
@@ -177,6 +177,77 @@ export function createSupabaseDb(client: SupabaseClient = serviceClient()): Db {
         "waitlist.upsert",
       ) as { email: string }[] | null;
       return { created: Boolean(data && data.length > 0) };
+    },
+
+    // MARK: account
+    async createUserAuthCode(userId, record) {
+      must(
+        await sb.from("auth_codes").insert({
+          code: record.code,
+          user_id: userId,
+          access_token: record.tokens.accessToken,
+          refresh_token: record.tokens.refreshToken,
+          token_expires_at: record.tokens.expiresAt,
+          expires_at: record.expiresAt,
+        }),
+        "auth_codes.insert",
+      );
+    },
+    async exportUserData(userId, email) {
+      const profile = await this.getProfile(userId);
+      const entitlementRows = must(
+        await sb.from("entitlements").select("key, granted_by, expires_at, created_at").eq("user_id", userId),
+        "entitlements.export",
+      ) as { key: string; granted_by: string; expires_at: string | null; created_at: string }[];
+      // PostgREST caps a response at 1000 rows; a heavy user has more usage than that.
+      const usage: UsageRecord[] = [];
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const rows = must(
+          await sb
+            .from("usage")
+            .select("feature, run_id, day, month, cost_usd, created_at")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: true })
+            .order("run_id", { ascending: true })
+            .range(from, from + PAGE - 1),
+          "usage.export",
+        ) as { feature: UsageRecord["feature"]; run_id: string; day: string; month: string; cost_usd: number | string; created_at: string }[];
+        for (const r of rows) {
+          usage.push({ feature: r.feature, runId: r.run_id, day: r.day, month: r.month, costUsd: Number(r.cost_usd), createdAt: r.created_at });
+        }
+        if (rows.length < PAGE) break;
+      }
+      const w = email
+        ? (must(
+            await sb.from("waitlist").select("email, source, note, created_at").eq("email", email.toLowerCase()).maybeSingle(),
+            "waitlist.export",
+          ) as { email: string; source: string | null; note: string | null; created_at: string } | null)
+        : null;
+      return {
+        profile,
+        entitlements: entitlementRows.map((r) => ({ key: r.key, grantedBy: r.granted_by, expiresAt: r.expires_at })),
+        usage,
+        waitlist: w ? { email: w.email, source: w.source, note: w.note, createdAt: w.created_at } : null,
+      };
+    },
+    async deleteUserData(userId, email) {
+      const del = async (table: string, column: string, value: string) => {
+        const res = await sb.from(table).delete({ count: "exact" }).eq(column, value);
+        if (res.error) throw new Error(`supabase ${table}.delete: ${res.error.message}`);
+        return res.count ?? 0;
+      };
+      // Children first; profiles last so a half-finished delete can be retried by the same user.
+      const usage = await del("usage", "user_id", userId);
+      const entitlements = await del("entitlements", "user_id", userId);
+      const authCodes = await del("auth_codes", "user_id", userId);
+      const waitlist = email ? await del("waitlist", "email", email.toLowerCase()) : 0;
+      const profile = await del("profiles", "user_id", userId);
+      return { profile, entitlements, usage, authCodes, waitlist };
+    },
+    async purgeExpired() {
+      const data = must(await sb.rpc("navi_purge"), "navi_purge") as { auth_codes?: number; rate_limits?: number } | null;
+      return { authCodes: Number(data?.auth_codes ?? 0), rateLimits: Number(data?.rate_limits ?? 0) };
     },
   };
 }
