@@ -152,7 +152,7 @@ final class CUReplay: @unchecked Sendable {
         case .click, .press, .select:
             if !step.role.isEmpty {
                 let pool = step.kind == .press ? screen.offscreen + screen.snapshot.elements : screen.snapshot.elements
-                var hits = pool.filter { $0.role == step.role && CUFacts.plainLabel($0.label) == step.label }
+                var hits = pool.filter { $0.role == step.role && CUFacts.matchesLiteral($0.label, step.label) }
                 if hits.count > 1 { hits = hits.filter { $0.path == step.path } }
                 if hits.count == 1, let e = hits.first {
                     switch step.kind {

@@ -204,7 +204,20 @@ enum CUFacts {
         return label
     }
 
-    static func matchesLiteral(_ text: String, _ label: String) -> Bool { plainLabel(text) == label }
+    /// Letters and digits only: "Wi‑Fi" (a non-breaking hyphen, as System Settings writes it),
+    /// "wi-fi" and "WiFi" are one label.
+    static func labelKey(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+
+    static func matchesLiteral(_ text: String, _ label: String) -> Bool {
+        let k = labelKey(label)
+        return !k.isEmpty && labelKey(text) == k
+    }
+
+    /// The control the literal label names is now the selected one (a sidebar row, a tab): the
+    /// click took, even while the pane it opens is still loading.
+    static func literalSelected(_ label: String, in snapshot: AXSnapshot) -> Bool {
+        snapshot.elements.contains { $0.isSelected && matchesLiteral($0.label, label) }
+    }
 
     /// The one item on screen the literal label names: copies in one row (a control and the OCR
     /// line over it) count once, the control preferred; two in different rows is ambiguous → nil.

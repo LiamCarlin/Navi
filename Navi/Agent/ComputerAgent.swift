@@ -1283,7 +1283,19 @@ final class AgentRun: @unchecked Sendable {
             }
             // "Click on interviewing": the item it names was clicked and the screen answered. That is
             // the goal, whole — no second click on a toggle, and no writer read to say so.
-            if literalLanded, !screen.signature.same(as: before), !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
+            // Some apps answer late (System Settings loads a pane after its row is selected): look
+            // again for up to ~0.75 s before handing a click that worked back to Jev.
+            if literalLanded, let literal {
+                var polls = 0
+                while screen.signature.same(as: before), !CUFacts.literalSelected(literal, in: screen.snapshot), polls < 3 {
+                    polls += 1
+                    try? await Task.sleep(for: .milliseconds(250))
+                    screen = await observe()
+                }
+            }
+            if literalLanded, let literal,
+               !screen.signature.same(as: before) || CUFacts.literalSelected(literal, in: screen.snapshot),
+               !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
                 _ = run.recordAction(what ?? "", waiting: false)
                 writeRun("done (the click the goal names landed)")
                 remember()

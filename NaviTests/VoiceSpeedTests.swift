@@ -185,6 +185,14 @@ struct VoiceSpeedTests {
         let twoRows = [Self.item(0, "Buy", y: 300), Self.item(1, "Buy", y: 400)]
         #expect(CUFacts.literalItem("buy", in: twoRows) == nil)
         #expect(CUFacts.literalItem("cloud", in: s) == nil)
+        // System Settings spells it with a non-breaking hyphen; speech gives "wi-fi" or "wifi".
+        let wifi = [Self.item(0, "Wi\u{2011}Fi", y: 100, role: "row", source: .ax)]
+        #expect(CUFacts.literalItem(CUFacts.literalTarget("click on Wi-Fi")!, in: wifi)?.index == 0)
+        #expect(CUFacts.literalItem("wifi", in: wifi)?.index == 0)
+        var sel = AXSnapshot(elements: [TypesafeCUTests.el("e1", "AXCell", "Battery", x: 0, y: 0)])
+        #expect(!CUFacts.literalSelected("battery", in: sel))
+        sel.elements[0].isSelected = true
+        #expect(CUFacts.literalSelected("battery", in: sel))
     }
 
     // MARK: Copies of one target
