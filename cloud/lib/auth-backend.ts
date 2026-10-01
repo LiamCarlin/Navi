@@ -5,8 +5,10 @@
  *   verifyEmailOtp   the typed code → session (works in any browser, on any device)
  *   verifyTokenHash  the magic link, when the email template links with `token_hash`
  *                    (works in any browser — see DEPLOY.md "Email template")
- *   exchangeCode     the magic link / OAuth return in PKCE form (`?code=`); needs the verifier
- *                    cookie set when the flow started, so it only works in the same browser
+ *   exchangeCode     the OAuth return in PKCE form (`?code=`); needs the verifier cookie set
+ *                    when the flow started, so it only works in the same browser
+ *   sessionFromFragment  the magic link in Supabase's default template: email OTPs are sent
+ *                    without PKCE, so the session lands in the URL fragment of any browser
  *   oauthUrl         "Continue with Google / Apple" → the provider's consent page
  *
  * Drivers: `supabase` (Supabase Auth, server-side — the browser never talks to Supabase, so
@@ -20,7 +22,8 @@ import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { SessionTokens } from "./db";
 import { env } from "./env";
 import { createMemorySessionProvider, memoryUserForEmail, tokensFromSupabaseSession } from "./sessions";
-import type { CookieOptions } from "./web-session";
+import { verifyAccessToken } from "./auth";
+import { secondsUntilExpiry, type CookieOptions } from "./web-session";
 
 // MARK: - Errors (the copy users see — never names a vendor)
 
@@ -100,6 +103,12 @@ export function classifyAuthError(e: { name?: string; status?: number; code?: st
   return "failed";
 }
 
+/** SessionTokens for a fragment session, expiry read from the (already verified) access token. */
+function fragmentTokens(accessToken: string, refreshToken: string): SessionTokens {
+  const left = secondsUntilExpiry(accessToken) ?? 3600;
+  return { accessToken, refreshToken, expiresAt: new Date(Date.now() + Math.max(0, left) * 1000).toISOString() };
+}
+
 // MARK: - Interface
 
 export type OAuthProvider = "google" | "apple";
@@ -117,6 +126,11 @@ export interface AuthBackend {
   verifyEmailOtp(email: string, code: string): Promise<SessionTokens>;
   verifyTokenHash(tokenHash: string, type: string): Promise<SessionTokens>;
   exchangeCode(code: string, jar: CookieJar): Promise<SessionTokens>;
+  /**
+   * The session an implicit-flow link left in the URL fragment (lib/fragment-signin.ts).
+   * Verified with the auth server, never trusted from the JWT payload alone.
+   */
+  sessionFromFragment(accessToken: string, refreshToken: string): Promise<SessionTokens>;
   oauthUrl(provider: OAuthProvider, redirectTo: string, jar: CookieJar): Promise<string>;
   /** The "Continue with …" buttons to show. */
   providers(): Promise<OAuthProvider[]>;
@@ -159,8 +173,11 @@ export function createSupabaseAuthBackend(): AuthBackend {
   return {
     kind: "supabase",
 
-    async sendEmailOtp(email, emailRedirectTo, jar) {
-      const { error } = await pkce(jar).auth.signInWithOtp({ email, options: { emailRedirectTo, shouldCreateUser: true } });
+    async sendEmailOtp(email, emailRedirectTo) {
+      // No PKCE challenge on purpose: the link in Supabase's default template then works in any
+      // browser (the session comes back in the fragment, see lib/fragment-signin.ts) instead of
+      // only the one that asked. The 6-digit code and a token_hash template work either way.
+      const { error } = await plain().auth.signInWithOtp({ email, options: { emailRedirectTo, shouldCreateUser: true } });
       if (error) throw new SignInError(classifyAuthError(error, "send"), error.message);
     },
 
@@ -181,6 +198,12 @@ export function createSupabaseAuthBackend(): AuthBackend {
       const { data, error } = await pkce(jar, true).auth.exchangeCodeForSession(code);
       if (error || !data.session) throw new SignInError(classifyAuthError(error, "link"), error?.message);
       return tokensFromSupabaseSession(data.session);
+    },
+
+    async sessionFromFragment(accessToken, refreshToken) {
+      const { data, error } = await plain().auth.getUser(accessToken);
+      if (error || !data.user) throw new SignInError(classifyAuthError(error, "link"), error?.message);
+      return fragmentTokens(accessToken, refreshToken);
     },
 
     async oauthUrl(provider, redirectTo, jar) {
@@ -287,6 +310,15 @@ export function createMemoryAuthBackend(clock: () => number = Date.now): AuthBac
     async exchangeCode() {
       // No PKCE in memory mode; only the token_hash link form exists here.
       throw new SignInError("expired");
+    },
+
+    async sessionFromFragment(accessToken, refreshToken) {
+      try {
+        await verifyAccessToken(accessToken);
+      } catch {
+        throw new SignInError("expired");
+      }
+      return fragmentTokens(accessToken, refreshToken);
     },
 
     async oauthUrl() {

@@ -11,17 +11,28 @@ interface Props {
   googleEnabled: boolean;
 }
 
-/** Supabase magic link / Google for the console; lands on /admin/auth/callback (PKCE). */
+/** Magic link (sent by the server, any browser) or Google (PKCE, same browser) for the console; both land on /admin/auth/callback. */
 export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, googleEnabled }: Props) {
   const supabase = useMemo(() => createBrowserClient(supabaseUrl, anonKey), [supabaseUrl, anonKey]);
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "busy" | "sent" | { error: string }>("idle");
 
+  /** Sent by the server without PKCE, so the link works in whichever browser opens the email. */
   async function sendLink(e: FormEvent) {
     e.preventDefault();
     setState("busy");
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: callbackUrl } });
-    setState(error ? { error: error.message } : "sent");
+    try {
+      const res = await fetch("/admin/auth/email", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      if (res.ok) return setState("sent");
+      const body = (await res.json().catch(() => ({}))) as { message?: string };
+      setState({ error: body.message ?? "Couldn’t send the email. Try again." });
+    } catch {
+      setState({ error: "Couldn’t reach the server. Try again." });
+    }
   }
 
   async function google() {
@@ -31,7 +42,7 @@ export function AdminSignInForm({ supabaseUrl, anonKey, callbackUrl, googleEnabl
   }
 
   if (state === "sent") {
-    return <div className={s.flashOk}>Check your email — the link signs you in to the console.</div>;
+    return <div className={s.flashOk}>If that address is an admin, a sign-in link is on its way. It works in any browser.</div>;
   }
 
   return (
