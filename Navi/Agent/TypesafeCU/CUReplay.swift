@@ -73,7 +73,10 @@ final class CUReplay: @unchecked Sendable {
     /// A goal as a cache key: spoken politeness, case and punctuation dropped; word order kept
     /// ("select local" and "select cloud" stay two goals; "click send" never matches "send").
     static func key(for goal: String) -> String {
-        VoiceDecider.normalizedGoal(goal).lowercased()
+        var g = VoiceDecider.normalizedGoal(goal).lowercased()
+        // A voice follow-up names its app up front ("In System Settings: …"); the app is the key's other half.
+        if let r = g.range(of: #"^in [^:]{1,40}:\s*"#, options: .regularExpression) { g = String(g[r.upperBound...]) }
+        return g
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
             .filter { !filler.contains($0) }

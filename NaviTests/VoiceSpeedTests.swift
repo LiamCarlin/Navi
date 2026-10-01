@@ -248,6 +248,10 @@ struct VoiceSpeedTests {
         #expect(CUReplay.key(for: "Can you start a new Claude code chat, please?") == "start new claude code chat")
         #expect(CUReplay.key(for: "start a new claude code chat") == "start new claude code chat")
         #expect(CUReplay.key(for: "select local") != CUReplay.key(for: "select cloud"))
+        #expect(CUReplay.key(for: "In System Settings: click on Displays") == CUReplay.key(for: "click on displays"))
+        #expect(!VoiceCommandExecutor.isUserApp(bundleID: "com.apple.loginwindow", regular: true))
+        #expect(!VoiceCommandExecutor.isUserApp(bundleID: "com.apple.Safari", regular: false))
+        #expect(VoiceCommandExecutor.isUserApp(bundleID: "com.apple.Safari", regular: true))
     }
 
     @Test func replayRecordsLooksUpAndForgets() {
