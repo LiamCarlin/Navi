@@ -35,7 +35,7 @@ struct AccountView: View {
                 Section("Developer") {
                     Toggle(isOn: $settings.useCloud) {
                         ExplainedRow(title: "Use Navi Cloud",
-                                     explanation: settings.useCloud ? "Calls go through your account." : "Off: the keys under AI Providers are used directly and nothing is metered.") { EmptyView() }
+                                     explanation: settings.useCloud ? "Calls go through your account." : "Off: the keys under Developer are used directly and nothing is metered.") { EmptyView() }
                     }
                     .toggleStyle(.switch)
                     HStack {
@@ -81,6 +81,7 @@ struct AccountView: View {
                 Label("Developer mode: your own keys are in use and every feature is on. Sign in to switch to your Navi plan.",
                       systemImage: "hammer")
                     .font(.callout).foregroundStyle(.secondary)
+                LocalUsageRow()
             }
         }
     }
@@ -141,8 +142,9 @@ struct AccountView: View {
             } else {
                 usageRow(title: "Tasks", used: account.usage.tasksThisMonth, cap: account.quotas.tasksPerMonth, period: "this month")
             }
+            LocalUsageRow()
             featureRow("Voice control", on: account.entitlements.voice)
-            featureRow("Recall (screen memory)", on: account.entitlements.recall)
+            featureRow("Recall", on: account.entitlements.recall)
             if let r = account.usage.resetsAt {
                 Text("Counters reset \(r.formatted(date: .abbreviated, time: .shortened)).").font(.caption).foregroundStyle(.tertiary)
             }

@@ -8,7 +8,9 @@ import AppKit
 /// `.providers` is the hidden **Developer** section (keys, models, agent
 /// tuning, browser runtime, token usage — see `DeveloperView`). It is listed
 /// only while `DeveloperMode.isEnabled`; `SettingsRootView` still renders it
-/// through `ProvidersView`, which now shows `DeveloperView`.
+/// through `ProvidersView`, which now shows `DeveloperView`. `.developer` is
+/// an alias for the same page. `.usage` is no longer listed: what Navi did for
+/// you this month is on the Account page, next to the plan's limits.
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case home, account, general, providers, permissions, memory, privacy, agent, calendars, voice, usage, about, developer
 
@@ -16,9 +18,19 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 
     /// Sidebar order. The Developer section appears last, and only in developer mode.
     static var allCases: [SettingsSection] {
-        var all: [SettingsSection] = [.home, .general, .permissions, .memory, .privacy, .agent, .calendars, .voice, .usage, .about]
-        if DeveloperMode.isEnabled { all.append(.providers) }
-        return all
+        sidebarGroups.flatMap(\.sections)
+    }
+
+    /// The sidebar, grouped the way System Settings groups its panes: you,
+    /// what Navi does, how it fits into your Mac.
+    static var sidebarGroups: [(title: String?, sections: [SettingsSection])] {
+        var groups: [(title: String?, sections: [SettingsSection])] = [
+            (nil, [.home, .account]),
+            ("Features", [.agent, .voice, .memory, .calendars]),
+            ("Mac", [.general, .permissions, .privacy, .about]),
+        ]
+        if DeveloperMode.isEnabled { groups.append(("Developer", [.providers])) }
+        return groups
     }
 
     var title: String {
@@ -28,9 +40,9 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .general: return "General"
         case .providers: return "Developer"
         case .permissions: return "Permissions"
-        case .memory: return "Screen Memory"
-        case .privacy: return "Privacy & Data"   // privacy workstream
-        case .agent: return "Agent"
+        case .memory: return "Recall"
+        case .agent: return "Tasks"
+        case .privacy: return "Privacy & Data"
         case .calendars: return "Calendars"
         case .voice: return "Voice"
         case .usage: return "Usage"
@@ -46,7 +58,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .general: return "gearshape"
         case .providers: return "hammer"
         case .permissions: return "lock.shield"
-        case .memory: return "brain"
+        case .memory: return "clock.arrow.circlepath"
         case .privacy: return "hand.raised"
         case .agent: return "cursorarrow.click.2"
         case .calendars: return "calendar"
@@ -54,6 +66,16 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .usage: return "chart.bar"
         case .about: return "info.circle"
         case .developer: return "hammer"
+        }
+    }
+
+    /// The listed section a retired or aliased one opens: Usage moved into
+    /// Account, `.developer` is the Developer page listed as `.providers`.
+    var canonical: SettingsSection {
+        switch self {
+        case .usage: return .account
+        case .developer: return .providers
+        default: return self
         }
     }
 
@@ -66,8 +88,10 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 @MainActor
 final class SettingsNavigator: ObservableObject {
     static let shared = SettingsNavigator()
-    @Published var section: SettingsSection? = .home
-    func go(_ s: SettingsSection) { section = s }
+    @Published var section: SettingsSection? = .home {
+        didSet { if let s = section, s.canonical != s { section = s.canonical } }
+    }
+    func go(_ s: SettingsSection) { section = s.canonical }
 }
 
 // MARK: - Status primitives
@@ -119,7 +143,7 @@ struct StatusCard: View {
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator.opacity(0.6)))
     }
@@ -163,9 +187,17 @@ struct FormPage<Content: View>: View {
 
     var body: some View {
         Form {
-            Section { SectionHeader(title: title, subtitle: subtitle) }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            // The title rides as a header, so it sits on the window background
+            // like the section titles below it instead of in a grouped row. The
+            // empty footer keeps the next section's own header full size.
+            Section {} header: {
+                SectionHeader(title: title, subtitle: subtitle)
+                    .foregroundStyle(.primary)
+                    .textCase(nil)
+                    .padding(.top, 8)
+            } footer: {
+                Color.clear.frame(height: 0)
+            }
             content
         }
         .formStyle(.grouped)

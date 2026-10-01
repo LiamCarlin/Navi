@@ -2,8 +2,9 @@ import SwiftUI
 import AppKit
 
 struct AboutView: View {
+    @EnvironmentObject private var settings: NaviSettings
+    @ObservedObject private var updater = Updater.shared
     @State private var developerCaption: String?
-    @State private var updateNote: String?
 
     static let privacyURL = "https://navi.app/privacy"
     static let termsURL = "https://navi.app/terms"
@@ -16,13 +17,13 @@ struct AboutView: View {
     }
 
     var body: some View {
-        FormPage(title: "About", subtitle: "Navi \(version)") {
+        FormPage(title: "About", subtitle: "Updates, support and the fine print.") {
             Section {
                 HStack(spacing: 16) {
                     NaviMark(size: 56)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Navi").font(.title2.weight(.semibold))
-                        Text("Press ⌘Space and say what you want.").foregroundStyle(.secondary)
+                        Text("Press \(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers)) and say what you want.").foregroundStyle(.secondary)
                     }
                 }
                 .padding(.vertical, 4)
@@ -37,9 +38,10 @@ struct AboutView: View {
                         .help("Option-click to toggle developer mode")
                 }
                 HStack(spacing: 12) {
-                    Button("Check for updates…") { checkForUpdates() }
-                    if let updateNote {
-                        Text(updateNote).font(.caption).foregroundStyle(.secondary)
+                    Button("Check for Updates…") { updater.checkForUpdates(userInitiated: true) }
+                        .disabled(updater.state == .checking)
+                    if updater.state == .checking {
+                        ProgressView().controlSize(.small)
                     }
                     Spacer()
                 }
@@ -52,13 +54,13 @@ struct AboutView: View {
             Section("Links") {
                 LinkPill(title: "Privacy policy", url: Self.privacyURL)
                 LinkPill(title: "Terms of use", url: Self.termsURL)
-                LinkPill(title: Self.supportEmail, url: "mailto:\(Self.supportEmail)")
+                LinkPill(title: "Contact support", url: "mailto:\(Self.supportEmail)")
             }
 
             Section {
                 HStack {
                     Button("Quit Navi", role: .destructive) { NSApp.terminate(nil) }
-                    Text("Stops the hotkey, voice control and Screen Memory.").font(.caption).foregroundStyle(.secondary)
+                    Text("Stops the shortcut, voice control and Recall until you open Navi again.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                 }
             }
@@ -72,11 +74,6 @@ struct AboutView: View {
         developerCaption = DeveloperMode.isEnabled ? "Developer mode on" : "Developer mode off"
         // The sidebar lists sections from `SettingsSection.allCases`; nudge it to re-read.
         SettingsNavigator.shared.objectWillChange.send()
-    }
-
-    /// Placeholder until the updater ships (distribution workstream).
-    private func checkForUpdates() {
-        updateNote = "You're on \(version). Automatic updates are coming soon."
     }
 }
 

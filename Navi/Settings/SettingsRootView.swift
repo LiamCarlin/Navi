@@ -26,8 +26,12 @@ struct SettingsRootView: View {
 
     private var sidebar: some View {
         List(selection: $nav.section) {
-            ForEach(SettingsSection.allCases.filter(\.isVisible)) { s in
-                Label(s.title, systemImage: s.symbol).tag(s)
+            ForEach(Array(SettingsSection.sidebarGroups.enumerated()), id: \.offset) { _, group in
+                if let title = group.title {
+                    Section(title) { rows(group.sections) }
+                } else {
+                    rows(group.sections)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -43,22 +47,24 @@ struct SettingsRootView: View {
         }
     }
 
+    private func rows(_ sections: [SettingsSection]) -> some View {
+        ForEach(sections.filter(\.isVisible)) { s in
+            Label(s.title, systemImage: s.symbol).tag(s)
+        }
+    }
+
     @ViewBuilder private var detail: some View {
         switch nav.section ?? .home {
         case .home: HomeView()
-        case .account: AccountView()
-        case .developer:
-            // TODO(branding): swap for DeveloperView.developerSection once Navi/Settings/DeveloperView.swift lands.
-            Text("Developer").font(.largeTitle.weight(.semibold)).frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .account, .usage: AccountView()
         case .general: GeneralView()
-        case .providers: ProvidersView()
+        case .providers, .developer: ProvidersView()
         case .permissions: PermissionsView()
         case .memory: MemoryView()
         case .privacy: PrivacyView()   // privacy workstream (Settings/PrivacyView.swift)
         case .agent: AgentSettingsView()
         case .calendars: CalendarSettingsView()
         case .voice: VoiceSettingsView()
-        case .usage: UsageView()
         case .about: AboutView()
         }
     }

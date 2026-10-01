@@ -18,10 +18,10 @@ enum Permissions {
         }
         var label: String {
             switch self {
-            case .granted: return "Granted"
-            case .denied: return "Denied"
-            case .notDetermined: return "Not requested"
-            case .unknown: return "Unknown"
+            case .granted: return "Allowed"
+            case .denied: return "Not allowed"
+            case .notDetermined: return "Not asked yet"
+            case .unknown: return "Not checked yet"
             }
         }
     }
