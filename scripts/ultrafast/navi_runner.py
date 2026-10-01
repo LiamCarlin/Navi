@@ -11,7 +11,14 @@ JSON lines to stdout for Navi's panel:
   {"event":"done","status":"done"|"blocked","elapsed_ms":…,"steps":N,"summary":…}
   {"event":"error","message":…}
 
-Navi passes keys through the environment (never argv):
+Navi passes credentials through the environment (never argv). A signed-in
+user has no vendor keys — everything goes through Navi Cloud (adaptation 20):
+  NAVI_JEV_TRANSPORT=navi     — Jev → <NAVI_CLOUD_URL>/v1/jev, text helper and
+  NAVI_CLOUD_URL                coach → <NAVI_CLOUD_URL>/v1/claude, with
+  NAVI_CLOUD_TOKEN              `Authorization: Bearer <NAVI_CLOUD_TOKEN>` (the
+  NAVI_CLOUD_FEATURE            account's short-lived access token) and
+  NAVI_CLOUD_RUN                X-Navi-Feature / X-Navi-Run (the task's run)
+Developer mode (bring your own keys):
   TYPESAFE_API_KEY            — Jev direct, or
   AI_GATEWAY_API_KEY          — Jev via Vercel AI Gateway (NAVI_JEV_TRANSPORT=vercel)
   ANTHROPIC_API_KEY           — text helper (Claude Haiku) unless TEXT_MODEL_API_KEY is set
@@ -84,6 +91,11 @@ Reliability adaptations (from failed runs, see git log):
      whole runs ("Text helper returned no valid field value"). The step is
      now recorded as a no-change failure, the field is no longer offered for
      TYPE_TEXT on that document, and Jev decides again from the same page.
+ 20. Navi Cloud: with NAVI_JEV_TRANSPORT=navi the runner holds no vendor key.
+     Jev and Claude requests go to the account's proxy with a bearer token and
+     the task's feature/run headers, so a browser step is metered as part of
+     the task that started it; the proxy's 401/402/403 become typed errors
+     (`{"event":"error","code":"quota_exceeded",…}`) Navi words as its own.
  19. The user's own context rides in Jev's state: Navi's screen memory knows
      who "bella" is (Bella Chen, texted in Messages), which Google Doc "the HCI
      notes" are and who works on them. Those things (NAVI_USER_CONTEXT_JSON,
@@ -190,6 +202,102 @@ def post_json_vercel(url, key, body):
 _upstream_post_json = jev_model.post_json
 
 
+# --- Adaptation 20: Navi Cloud (a signed-in user has no vendor keys) --------
+
+class CloudError(RuntimeError):
+    """The proxy refused the call (signed out, over quota, not on the plan, …).
+    `fields` ride on the runner's error event so Navi can word it itself."""
+
+    def __init__(self, message, **fields):
+        super().__init__(message)
+        self.fields = fields
+
+
+def navi_cloud():
+    """(base_url, headers) when this run goes through Navi Cloud, else None."""
+    if os.environ.get("NAVI_JEV_TRANSPORT") != "navi":
+        return None
+    base = os.environ.get("NAVI_CLOUD_URL", "").strip().rstrip("/")
+    token = os.environ.get("NAVI_CLOUD_TOKEN", "").strip()
+    if not base or not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}",
+               "X-Navi-Feature": os.environ.get("NAVI_CLOUD_FEATURE", "").strip() or "task"}
+    run = os.environ.get("NAVI_CLOUD_RUN", "").strip()
+    if run:
+        headers["X-Navi-Run"] = run
+    return base, headers
+
+
+def cloud_error(response):
+    """A CloudError for the proxy's own refusals (docs/LAUNCH_ROADMAP.md §3.1); None otherwise."""
+    status = response.status_code
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    code = body.get("error")
+    extra = {k: body[k] for k in ("feature", "tier", "resetsAt", "retryAfterSeconds") if body.get(k) is not None}
+    if status == 401:
+        return CloudError("Your Navi session has expired. Sign in to Navi again.", code="signed_out", status=401)
+    if status == 402:
+        return CloudError("You've reached your plan's limit for tasks.", code="quota_exceeded", status=402, **extra)
+    if status == 403:
+        return CloudError("Your plan doesn't include this.", code="not_entitled", status=403, **extra)
+    if status == 429 and code == "rate_limited":
+        return CloudError("Navi is busy, try again in a moment.", code="rate_limited", status=429, **extra)
+    if status == 503 and code in {"upstream_unconfigured", "billing_unconfigured"}:
+        return CloudError("Navi isn't set up yet.", code=code, status=503)
+    return None
+
+
+def post_cloud(path, body, what):
+    """POST to Navi Cloud with the run's headers. Busy/overloaded answers are retried
+    like upstream does; a refusal (401/402/403, unconfigured) never is."""
+    base, headers = navi_cloud()
+    for attempt in range(3):
+        try:
+            response = jev_model.CLIENT.post(base + path, json=body, headers=headers)
+        except httpx.HTTPError:
+            raise RuntimeError(f"Could not reach Navi ({what}); no action executed.") from None
+        refusal = cloud_error(response) if response.is_error else None
+        if refusal is not None and refusal.fields.get("code") != "rate_limited":
+            raise refusal
+        if response.status_code in {429, 529, 503} and attempt < 2:
+            time.sleep(0.5 * 2**attempt)
+            continue
+        if refusal is not None:
+            raise refusal
+        if response.is_error:
+            raise RuntimeError(f"Navi returned HTTP {response.status_code} ({what}); no action executed.")
+        return response.json()
+    raise RuntimeError(f"Navi is unavailable ({what}); no action executed.")
+
+
+def post_json_navi(url, key, body):
+    """Upstream's TypeSafe call, posted to <NAVI_CLOUD_URL>/v1/jev instead (same body)."""
+    if "typesafe.ai" not in url:
+        return _upstream_post_json(url, key, body)
+    return post_cloud("/v1/jev", body, "deciding")
+
+
+def claude_endpoint():
+    """Where Claude Messages calls go: (url, headers), or None when nothing is configured.
+    Cloud: the account's proxy with the bearer + run headers. Developer mode: the
+    Anthropic API (or ANTHROPIC_BASE_URL) with ANTHROPIC_API_KEY."""
+    cloud = navi_cloud()
+    if cloud:
+        base, headers = cloud
+        return base + "/v1/claude", {**headers, "anthropic-version": "2023-06-01"}
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return None
+    base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    return base + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
+
+
 # --- Adaptation 2: text helper on Claude Haiku ------------------------------
 
 FIELD_HINTS = {"playbook": None}   # set by main(); the helper adds the page's field hints
@@ -197,11 +305,11 @@ FIELD_HINTS = {"playbook": None}   # set by main(); the helper adds the page's f
 
 def field_text_claude(context):
     """Same contract as upstream field_text, using the Anthropic Messages API."""
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+    endpoint = claude_endpoint()
+    if endpoint is None:
         raise ValueError("TYPE_TEXT needs ANTHROPIC_API_KEY or TEXT_MODEL_API_KEY; nothing typed.")
+    url, headers = endpoint
     model = os.environ.get("NAVI_TEXT_MODEL", "claude-haiku-4-5")
-    base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
     playbook = FIELD_HINTS.get("playbook")
     if playbook is not None and isinstance(context, dict):
         hints = playbook.field_hints_for((context.get("page") or {}).get("url") or playbook.current_url)
@@ -211,8 +319,8 @@ def field_text_claude(context):
     for attempt in range(3):
         try:
             response = jev_model.CLIENT.post(
-                base + "/v1/messages",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                url,
+                headers=headers,
                 json={
                     "model": model,
                     "max_tokens": 512,
@@ -222,6 +330,9 @@ def field_text_claude(context):
             )
         except httpx.HTTPError:
             raise RuntimeError("Text helper connection failed; nothing typed.") from None
+        refusal = cloud_error(response) if response.is_error and navi_cloud() else None
+        if refusal is not None and refusal.fields.get("code") != "rate_limited":
+            raise refusal
         if response.status_code in {429, 529, 503} and attempt < 2:
             time.sleep(0.5 * 2**attempt)
             continue
@@ -350,11 +461,15 @@ def warm_connections():
             pass
 
     targets = []
-    if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
+    cloud = navi_cloud()
+    if cloud:
+        # One host serves Jev and Claude; /healthz is unauthenticated and free.
+        targets.append((cloud[0] + "/healthz", {}))
+    elif os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         targets.append(("https://ai-gateway.vercel.sh/", {}))
     elif os.environ.get("TYPESAFE_API_KEY"):
         targets.append(("https://api.typesafe.ai/v1/models", {"Authorization": f"Bearer {os.environ['TYPESAFE_API_KEY']}"}))
-    if os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("TEXT_MODEL_API_KEY"):
+    if not cloud and os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("TEXT_MODEL_API_KEY"):
         base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
         targets.append((base + "/v1/models", {"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"}))
     for url, headers in targets:
@@ -507,11 +622,11 @@ class Coach:
     playbook = None   # set by main(): the Playbook, so the coach reads the same site knowledge
 
     def ask(self, goal, page, history, why, screenshot_b64=None):
-        key = os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
+        endpoint = claude_endpoint()
+        if endpoint is None:
             raise ValueError("no Anthropic key")
+        url, headers = endpoint
         model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
-        base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
         from jev_ultrafast.model import action_space
 
         elements = action_space(page["actions"])[0]
@@ -531,12 +646,15 @@ class Coach:
         content.append({"type": "text", "text": json.dumps(state, sort_keys=True)})
         started = time.perf_counter()
         response = jev_model.CLIENT.post(
-            base + "/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            url,
+            headers=headers,
             json={"model": model, "max_tokens": 700, "system": COACH_SYSTEM, "messages": [{"role": "user", "content": content}]},
             timeout=60,
         )
         if response.is_error:
+            refusal = cloud_error(response) if navi_cloud() else None
+            if refusal is not None:
+                raise refusal
             raise RuntimeError(f"Claude returned HTTP {response.status_code}")
         text = "".join(b.get("text", "") for b in response.json().get("content", []) if b.get("type") == "text").strip()
         if text.startswith("```"):
@@ -1286,13 +1404,20 @@ def tick(agent, retried, rejected=None):
 
 
 def install_adaptations():
-    if os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
+    if navi_cloud():
+        jev_model.post_json = post_json_navi
+        # Upstream reads TYPESAFE_API_KEY unconditionally; give it a placeholder (never sent).
+        os.environ["TYPESAFE_API_KEY"] = "via-navi-cloud"
+    elif os.environ.get("NAVI_JEV_TRANSPORT") == "navi":
+        raise CloudError("Sign in to Navi to run browser tasks.", code="signed_out")
+    elif os.environ.get("NAVI_JEV_TRANSPORT") == "vercel":
         jev_model.post_json = post_json_vercel
         # Upstream reads TYPESAFE_API_KEY unconditionally; give it a placeholder.
         os.environ.setdefault("TYPESAFE_API_KEY", "via-vercel-gateway")
     import jev_ultrafast.agent as agent_module
 
-    helper = field_text_claude if (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")) else jev_model.field_text
+    use_claude = navi_cloud() is not None or (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"))
+    helper = field_text_claude if use_claude else jev_model.field_text
     speculative = SpeculativeText(helper)
     jev_model.field_text = speculative
     # agent.py imported the names directly; patch it there too.
@@ -1420,7 +1545,11 @@ def main():
     if not args.url or not args.goal:
         parser.error("--url and --goal are required")
 
-    speculative, rejected = install_adaptations()
+    try:
+        speculative, rejected = install_adaptations()
+    except CloudError as exc:
+        emit("error", message=str(exc), **exc.fields)
+        return 2
     playbook = Playbook(goal=args.goal)
     playbook.install()
     FIELD_HINTS["playbook"] = playbook
@@ -1468,7 +1597,9 @@ def main():
         def coach_or_stop(state, why):
             """Claude coaches once per document; failing again on that page ends the run."""
             if not coach.may_ask(state["page"].get("url")):
-                return ("blocked", f"Still failing after Claude's guidance ({why}). Claude's diagnosis: {coach.diagnosis}")
+                # The summary reaches the user's panel; the engine detail is in the status log.
+                emit("status", message=f"Still failing after Claude's guidance ({why})")
+                return ("blocked", f"Stopped: still stuck after a second look. {coach.diagnosis}")
             emit("status", message=f"Jev is struggling ({why}) — asking Claude to diagnose")
             shot = None
             try:
@@ -1478,8 +1609,11 @@ def main():
                 pass
             try:
                 ms = coach.ask(state["goal"], state["page"], state["history"], why, shot)
+            except CloudError:
+                raise           # signed out / over the plan: Navi words it (adaptation 20)
             except Exception as exc:  # noqa: BLE001
-                return ("blocked", f"Jev keeps failing ({why}) and Claude's diagnosis was unavailable: {exc}")
+                emit("status", message=f"Jev keeps failing ({why}) and Claude's diagnosis was unavailable: {exc}")
+                return ("blocked", "Stopped: stuck on this page.")
             emit("status", message=f"Claude · {ms} ms · {coach.diagnosis}")
             emit("guidance", text=coach.guidance)
             # A coaching entry breaks the no-change window so the stuck rule restarts.
@@ -1588,7 +1722,7 @@ def main():
         return 130
     except Exception as exc:  # noqa: BLE001
         final_steps = len(agent.state.get("history", []))
-        emit("error", message=str(exc))
+        emit("error", message=str(exc), **getattr(exc, "fields", {}))
         return 1
     finally:
         # The tab is what the user asked for ("make a Google Doc"): it stays open
