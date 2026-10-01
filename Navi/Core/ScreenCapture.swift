@@ -24,8 +24,9 @@ enum ScreenCapture {
     static func requestPermission() -> Bool { CGRequestScreenCaptureAccess() }
 
     /// Captures the display containing the mouse (or the main display).
-    /// Excludes Navi's own windows so the panel never appears in frames.
-    static func captureMainDisplay(excludeSelf: Bool = true) async throws -> Frame {
+    /// Excludes Navi's own windows so the panel never appears in frames, and every window of
+    /// `excludingBundleIDs` (screen memory's never-capture apps — privacy workstream).
+    static func captureMainDisplay(excludeSelf: Bool = true, excludingBundleIDs: Set<String> = []) async throws -> Frame {
         guard hasPermission else { throw NaviError.permissionDenied("Screen Recording") }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let mouse = NSEvent.mouseLocation
@@ -34,7 +35,9 @@ enum ScreenCapture {
         guard let display = content.displays.first(where: { $0.displayID == displayID }) ?? content.displays.first else {
             throw NaviError.other("No display available for capture")
         }
-        let selfWindows = excludeSelf ? content.windows.filter { $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier } : []
+        var hidden = excludingBundleIDs
+        if excludeSelf, let me = Bundle.main.bundleIdentifier { hidden.insert(me) }
+        let selfWindows = content.windows.filter { hidden.contains($0.owningApplication?.bundleIdentifier ?? "") }
         let filter = SCContentFilter(display: display, excludingWindows: selfWindows)
         let config = SCStreamConfiguration()
         let scale = screen?.backingScaleFactor ?? 2.0
