@@ -12,14 +12,29 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import { getDb, type Db, type VendorKeyRow } from "./db";
 import { env } from "./env";
 
-export type VendorProvider = "typesafe" | "anthropic" | "gemini" | "ai_gateway";
-export const VENDOR_PROVIDERS: readonly VendorProvider[] = ["typesafe", "anthropic", "gemini", "ai_gateway"];
+export type VendorProvider = "typesafe" | "anthropic" | "gemini" | "ai_gateway" | "vercel" | "supabase";
+export const VENDOR_PROVIDERS: readonly VendorProvider[] = ["typesafe", "anthropic", "gemini", "ai_gateway", "vercel", "supabase"];
 
-export const PROVIDER_INFO: Record<VendorProvider, { label: string; envVar: string; purpose: string }> = {
-  typesafe: { label: "TypeSafe (Jev)", envVar: "TYPESAFE_API_KEY", purpose: "Routing and every agent step (/v1/jev)" },
-  anthropic: { label: "Anthropic", envVar: "ANTHROPIC_API_KEY", purpose: "Answers, tasks, digests (/v1/claude, /v1/digest)" },
-  gemini: { label: "Gemini", envVar: "GEMINI_API_KEY", purpose: "Cheap Recall digests (/v1/digest provider:gemini)" },
-  ai_gateway: { label: "Vercel AI Gateway", envVar: "AI_GATEWAY_API_KEY", purpose: "Jev through the gateway when no TypeSafe key is set" },
+/** `ai` keys are what the proxy calls with; `billing` tokens only let the Overview read spend. */
+export type KeyGroup = "ai" | "billing";
+
+export const PROVIDER_INFO: Record<VendorProvider, { label: string; envVar: string; purpose: string; group: KeyGroup }> = {
+  typesafe: { label: "TypeSafe (Jev)", envVar: "TYPESAFE_API_KEY", purpose: "Routing and every agent step (/v1/jev)", group: "ai" },
+  anthropic: { label: "Anthropic", envVar: "ANTHROPIC_API_KEY", purpose: "Answers, tasks, digests (/v1/claude, /v1/digest)", group: "ai" },
+  gemini: { label: "Gemini", envVar: "GEMINI_API_KEY", purpose: "Cheap Recall digests (/v1/digest provider:gemini)", group: "ai" },
+  ai_gateway: { label: "Vercel AI Gateway", envVar: "AI_GATEWAY_API_KEY", purpose: "Jev through the gateway when no TypeSafe key is set", group: "ai" },
+  vercel: {
+    label: "Vercel",
+    envVar: "VERCEL_API_TOKEN",
+    purpose: "Hosting spend on the Overview (reads /v1/billing/charges; a token with the Billing or Viewer role is enough)",
+    group: "billing",
+  },
+  supabase: {
+    label: "Supabase",
+    envVar: "SUPABASE_ACCESS_TOKEN",
+    purpose: "Database plan + add-ons on the Overview (Management API personal access token, sbp_…)",
+    group: "billing",
+  },
 };
 
 export function isVendorProvider(x: unknown): x is VendorProvider {
@@ -103,6 +118,8 @@ function envKey(provider: VendorProvider): string | undefined {
     case "anthropic": return env.anthropicApiKey;
     case "gemini": return env.geminiApiKey;
     case "ai_gateway": return env.aiGatewayApiKey;
+    case "vercel": return env.vercelApiToken;
+    case "supabase": return env.supabaseAccessToken;
   }
 }
 
@@ -184,6 +201,7 @@ export interface KeyStatus {
   label: string;
   envVar: string;
   purpose: string;
+  group: KeyGroup;
   source: KeySource;
   /** Masked: "••••abcd". Never the key. */
   masked: string;
@@ -310,6 +328,10 @@ export function testRequest(provider: VendorProvider, key: string): { url: strin
           }),
         },
       };
+    case "vercel":
+      return { url: "https://api.vercel.com/v2/teams?limit=1", init: { method: "GET", headers: { authorization: `Bearer ${key}` } } };
+    case "supabase":
+      return { url: "https://api.supabase.com/v1/organizations", init: { method: "GET", headers: { authorization: `Bearer ${key}` } } };
   }
 }
 

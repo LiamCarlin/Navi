@@ -78,6 +78,11 @@ export const env = {
   get adminSessionSecret() { return str("ADMIN_SESSION_SECRET"); },
   /** Optional Vercel AI Gateway key: Jev goes through the gateway when no TypeSafe key is set. */
   get aiGatewayApiKey() { return str("AI_GATEWAY_API_KEY"); },
+  /** Read-only billing access for the Overview's spend tiles (else stored on the Keys page). */
+  get vercelApiToken() { return str("VERCEL_API_TOKEN"); },
+  /** Team whose spend is shown. Unset ⇒ the token's only team, or the team that owns this project. */
+  get vercelTeamId() { return str("VERCEL_TEAM_ID"); },
+  get supabaseAccessToken() { return str("SUPABASE_ACCESS_TOKEN"); },
   get aiGatewayEvalUrl() { return str("AI_GATEWAY_EVAL_URL") ?? "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"; },
 
   get isProduction() { return process.env.NODE_ENV === "production" && Boolean(str("VERCEL_ENV") === "production"); },

@@ -34,8 +34,16 @@ export default async function Keys({ searchParams }: { searchParams: Promise<Rec
       )}
       {env.mockUpstream && <div className={s.banner}>MOCK_UPSTREAM is on: the proxy answers with canned responses and doesn&apos;t use these keys. “Test” still makes a real call.</div>}
 
-      <div className={s.stack}>
-        {keys.map((k) => (
+      {(["ai", "billing"] as const).map((group) => (
+      <div key={group} className={s.stack} style={{ marginBottom: 18 }}>
+        <h2 className={s.h2} style={{ margin: "4px 0 0" }}>{group === "ai" ? "AI vendors" : "Billing data (read-only, for the Overview)"}</h2>
+        {group === "billing" && (
+          <p className={s.muted} style={{ margin: 0 }}>
+            Optional. With these, the Overview shows Vercel charges and Supabase&apos;s plan + add-ons next to Stripe revenue. Navi Cloud only
+            reads billing with them; a Vercel token can do more, so scope it to the one team.
+          </p>
+        )}
+        {keys.filter((k) => k.group === group).map((k) => (
           <section key={k.provider} className={s.card}>
             <div className={s.rowBetween}>
               <div>
@@ -83,6 +91,7 @@ export default async function Keys({ searchParams }: { searchParams: Promise<Rec
           </section>
         ))}
       </div>
+      ))}
       <p className={s.muted} style={{ marginTop: 14 }}>
         The proxy caches the key for up to 60 s per server instance; a rotation reaches every instance within a minute. Jev uses the TypeSafe key
         when one is set, else the AI Gateway key.
