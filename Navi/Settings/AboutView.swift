@@ -5,6 +5,7 @@ struct AboutView: View {
     @EnvironmentObject private var settings: NaviSettings
     @ObservedObject private var updater = Updater.shared
     @State private var developerCaption: String?
+    @State private var showAcknowledgements = false
 
     static let privacyURL = "https://buildnavi.com/privacy"
     static let termsURL = "https://buildnavi.com/terms"
@@ -55,6 +56,8 @@ struct AboutView: View {
                 LinkPill(title: "Privacy policy", url: Self.privacyURL)
                 LinkPill(title: "Terms of use", url: Self.termsURL)
                 LinkPill(title: "Contact support", url: "mailto:\(Self.supportEmail)")
+                Button("Acknowledgements") { showAcknowledgements = true }
+                    .buttonStyle(.link)
             }
 
             Section {
@@ -65,6 +68,7 @@ struct AboutView: View {
                 }
             }
         }
+        .sheet(isPresented: $showAcknowledgements) { AcknowledgementsView() }
     }
 
     /// ⌥-click on the version toggles the hidden Developer section.

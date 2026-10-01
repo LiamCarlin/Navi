@@ -55,7 +55,7 @@ Code session can do it from the repo (open a PR; Liam merges).
 | ☑ | `NaviCloudBaseURL` in `project.yml` = the deployed API — `https://navi-cloud.vercel.app` since 2026-10-01 (read by `CloudTransport.defaultBaseURL`; `https://api.buildnavi.com` is only the code fallback). Change it again when the custom domain is attached | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
 | ☐ | `NaviUpdateFeedURL` in `project.yml` = where `appcast.json` is served (default: the latest GitHub Release — works as is) | Agent | `curl -sL <url> \| python3 -m json.tool` |
 | ☐ | Privacy/terms/support links (`AboutView`: `https://buildnavi.com/privacy`, `/terms`, `support@buildnavi.com`) point at pages and a mailbox that exist | Liam (pages) + Agent (URLs) | each link opens; a test mail to support arrives |
-| ☐ | Version bump (`CFBundleShortVersionString` 1.0.0 / `CFBundleVersion`) via PR | Agent | About shows the version |
+| ☑ | Version bump: 1.0.0 (build 2) in `project.yml` + `Info.plist`. Bump the build number for every later release | Agent | About shows "1.0.0 (2)" |
 | ☐ | No vendor names anywhere a user looks (re-check after every UI PR) | Agent | `grep -rniE 'claude\|anthropic\|jev\|typesafe\|gemini' Navi/Settings Navi/Panel` hits only Developer/Providers views, `Log.` and comments |
 
 ## 5. Signing, notarization, distribution
@@ -67,7 +67,7 @@ Code session can do it from the repo (open a PR; Liam merges).
 | ☐ | Back up the update key `~/.config/navi-release/update-key.pem` (1Password / secure note) — losing it means no shipped copy accepts another update | Liam | restore test on another machine: `openssl pkey -in … -pubout` matches `UpdateVerifier.publicKeyBase64` |
 | ☐ | `scripts/release.sh --notes RELEASE_NOTES.txt` ends with **"Shippable."** | Liam (runs it; needs the cert) | the script's last lines; `spctl --assess --type execute -vv build/release/Navi.app` → `Notarized Developer ID` |
 | ☐ | `scripts/publish-release.sh` → draft `v<version>` on GitHub with `Navi-<v>.dmg`, `Navi.dmg`, `appcast.json`; review, **Publish** | Liam | `curl -sIL https://github.com/LiamCarlin/Navi/releases/latest/download/Navi.dmg` ends in `200` |
-| ☐ | Site's Download button → `https://github.com/LiamCarlin/Navi/releases/latest/download/Navi.dmg` (or a `/download` redirect to it) | Agent (site workstream) | click Download on the live site, the DMG starts |
+| ☑ | `buildnavi.com/download` (`web/app/download/route.ts`): goes to the waitlist while the site is in waitlist mode, and to `releases/latest/download/Navi.dmg` once `NEXT_PUBLIC_SIGNUPS_OPEN=1` | Agent | `curl -sI https://buildnavi.com/download` → 307 to `/#waitlist` now, to the DMG after sign-ups open |
 | ☐ | `--universal` build if Intel Macs are supported at launch (macOS 26 still runs on some) | Liam (decide) | `lipo -archs Navi.app/Contents/MacOS/Navi` lists both; `browser-runtime/python-x86_64` exists |
 
 ## 6. Smoke tests — on a Mac (or a new macOS user account) that has never seen Navi
@@ -101,7 +101,7 @@ Dry run (`scripts/dev/runtime-smoke.sh --cloud … --token …`).
 | ☐ | Privacy policy (`web/app/privacy/page.tsx`, drafted in #45 from `docs/PRIVACY.md`): what leaves the Mac — queries/answers and task steps (incl. a window screenshot when a task stops for review) to Navi Cloud and its model providers; Recall sends each moment's screen text for triage and, for important ones, the text plus up to two thumbnails for the summary (frames and thumbnails themselves stay on the Mac); sensitive frames and blocked personal details are dropped locally first — retention, deletion. Confirm the flagged claims: providers don't train on the data (Gemini only on the paid tier), the contact address, 30-day account deletion, minimum age 13, GDPR/CCPA wording | Liam (approve) + Agent (draft done) | published at the URL the app links; every claim matches `docs/PRIVACY.md` |
 | ☐ | Terms of service + refund policy (Stripe requires a refund/cancellation policy on the site) | Liam | published, linked from pricing and Checkout |
 | ☐ | Support email that someone reads | Liam | test mail answered |
-| ☐ | Third-party notices (python-build-standalone, browser-harness, jev-ultrafast MIT, sounds CC0) in the app's About or a bundled file | Agent | About → Acknowledgements lists them |
+| ☑ | Third-party notices: About → Acknowledgements (`Navi/Settings/AcknowledgementsView.swift`) lists typesafe-computer-use, jev-ultrafast, Python + python-build-standalone, every Python package the browser runtime bundles, and the CC0 typing sound, with each license's text. Update it when `scripts/bundle-runtime.sh` adds a package | Agent | About → Acknowledgements lists them |
 
 ## 8. Known open issues from the 2026-10-01 pass
 
