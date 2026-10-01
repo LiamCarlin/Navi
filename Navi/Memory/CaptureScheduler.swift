@@ -44,6 +44,8 @@ final class CaptureScheduler: @unchecked Sendable {
     enum Skip: Equatable, Sendable {
         case disabled, paused, screenLocked, screensaver, displayAsleep, noPermission
         case excludedApp(String), idle, unchanged, noFrontmostApp
+        /// A computer-use run is driving the screen (`AgentActivity`).
+        case agentRunning
     }
 
     init(store: MemoryStore, jev: JevClient, updateStatus: @escaping StatusUpdate) {
@@ -101,6 +103,7 @@ final class CaptureScheduler: @unchecked Sendable {
     func tick(_ cfg: CaptureConfig, now: Date = Date()) async -> Skip? {
         guard cfg.enabled else { return .disabled }
         guard !cfg.paused else { return .paused }
+        if AgentActivity.isBusy { return .agentRunning }
         if FrameCapture.isScreenLocked { return .screenLocked }
         if FrameCapture.isDisplayAsleep { return .displayAsleep }
         if FrameCapture.isScreensaverRunning { return .screensaver }

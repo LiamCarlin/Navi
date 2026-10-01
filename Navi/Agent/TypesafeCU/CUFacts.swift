@@ -159,4 +159,58 @@ enum CUFacts {
     static func quoted(_ s: String) -> String {
         s.contains("'") && !s.contains("\"") ? "\"\(s)\"" : "'\(s.replacingOccurrences(of: "'", with: "\\'"))'"
     }
+
+    // MARK: Literal goals (Navi)
+
+    /// "• Local" → "local", "Send…" → "send": a label without the marks apps and OCR put around it.
+    static func plainLabel(_ s: String) -> String {
+        let marks = CharacterSet(charactersIn: "•·◦‣▪︎▸▶︎►✓✔︎☑︎☐*>-–—…:").union(.whitespacesAndNewlines).union(.punctuationCharacters)
+        return s.lowercased().components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+            .trimmingCharacters(in: marks)
+    }
+
+    static let literalVerbs = ["click on the", "click on", "click the", "click", "tap on the", "tap on", "tap the", "tap", "press the", "press",
+                               "hit the", "hit", "select the", "select", "choose the", "choose", "pick the", "pick", "toggle the", "toggle",
+                               "check the", "uncheck the", "check", "uncheck"]
+    static let literalSuffixes = [" button", " tab", " link", " option", " checkbox", " check box", " menu item", " item", " icon",
+                                  " toggle", " switch", " please", " now", " for me"]
+    static let notLabels: Set<String> = ["it", "that", "this", "them", "one", "the first one", "the second one", "the last one", "all",
+                                         "everything", "something", "anything", "here", "there"]
+
+    /// The label a one-action goal names — "click on interviewing", "select local", "press the
+    /// send button" → "interviewing", "local", "send" — or nil for anything more: a second
+    /// instruction, a value to change something to, a pronoun. One click on that label *is*
+    /// the goal, so code can tell when it is done (Navi deviation, docs/TYPESAFE_CU.md).
+    static func literalTarget(_ goal: String) -> String? {
+        var g = VoiceDecider.normalizedGoal(goal).lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = g.last, ".!".contains(last) { g.removeLast() }
+        guard g.count <= 60, g.range(of: #"[,;?]|\b(and|then|to|into|from|with|if|until|after|before|so)\b"#, options: .regularExpression) == nil
+        else { return nil }
+        guard let verb = literalVerbs.first(where: { g.hasPrefix($0 + " ") }) else { return nil }
+        var label = String(g.dropFirst(verb.count + 1)).trimmingCharacters(in: .whitespaces)
+        var trimmed = true
+        while trimmed {
+            trimmed = false
+            for s in literalSuffixes where label.hasSuffix(s) && label.count > s.count {
+                label = String(label.dropLast(s.count)).trimmingCharacters(in: .whitespaces); trimmed = true
+            }
+        }
+        if label.hasPrefix("on ") { label = String(label.dropFirst(3)) }
+        label = plainLabel(label)
+        guard !label.isEmpty, !notLabels.contains(label), label.split(separator: " ").count <= 5 else { return nil }
+        if verb.hasPrefix("select") && label.hasPrefix("all") { return nil }
+        return label
+    }
+
+    static func matchesLiteral(_ text: String, _ label: String) -> Bool { plainLabel(text) == label }
+
+    /// The one item on screen the literal label names: copies in one row (a control and the OCR
+    /// line over it) count once, the control preferred; two in different rows is ambiguous → nil.
+    static func literalItem(_ label: String, in items: [CUItem]) -> CUItem? {
+        let hits = items.filter { matchesLiteral($0.text, label) }
+        guard let first = hits.first else { return nil }
+        let oneRow = hits.allSatisfy { abs($0.center.y - first.center.y) <= max($0.box.height, first.box.height, 8) / 2 + 4 }
+        guard oneRow else { return nil }
+        return hits.first(where: \.fromAX) ?? first
+    }
 }
