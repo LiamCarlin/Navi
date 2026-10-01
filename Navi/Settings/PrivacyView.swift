@@ -274,7 +274,7 @@ struct PrivacyView: View {
         scanning = true
         defer { scanning = false }
         let paths = NaviDataPaths.live
-        let searches = UserDefaults.standard.stringArray(forKey: "navi.recentQueries")?.count ?? 0
+        let searches = UserDefaults.navi.stringArray(forKey: "navi.recentQueries")?.count ?? 0
         inventory = await Task.detached(priority: .utility) { DataInventory.scan(paths, recentSearches: searches) }.value
     }
 

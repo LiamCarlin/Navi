@@ -225,10 +225,10 @@ final class TypingSoundPlayer: @unchecked Sendable {
     private var pacer = TypingSoundPacer()
     private var idleStop: DispatchWorkItem?
 
-    var isEnabled: Bool { UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? false }
+    var isEnabled: Bool { UserDefaults.navi.object(forKey: Self.enabledKey) as? Bool ?? false }
 
     private var volume: Float {
-        let v = UserDefaults.standard.object(forKey: Self.volumeKey) as? Double ?? Self.defaultVolume
+        let v = UserDefaults.navi.object(forKey: Self.volumeKey) as? Double ?? Self.defaultVolume
         return Float(v.isFinite ? min(max(v, 0), 1) : Self.defaultVolume)
     }
 

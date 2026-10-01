@@ -111,7 +111,7 @@ final class NaviAccount: ObservableObject {
     private var dismissedThisSession: Set<String> = []
     private var notices: NoticeMemory { NoticeMemory(defaults: defaults) }
 
-    init(cloud: CloudTransport = .shared, defaults: UserDefaults = .standard) {
+    init(cloud: CloudTransport = .shared, defaults: UserDefaults = .navi) {
         self.cloud = cloud
         self.defaults = defaults
         isSignedIn = cloud.isSignedIn

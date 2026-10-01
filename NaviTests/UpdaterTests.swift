@@ -123,7 +123,7 @@ struct UpdaterTests {
     }
 
     @Test func feedURLDefaultsAndOverride() {
-        let d = UserDefaults.standard
+        let d = UserDefaults.navi
         let before = d.string(forKey: "updateFeedURL")
         defer { d.set(before, forKey: "updateFeedURL") }
         d.removeObject(forKey: "updateFeedURL")

@@ -102,7 +102,7 @@ enum SpotlightShortcutFix {
         guard w.status == 0 else { throw NaviError.other("defaults write failed: \(w.stderr)") }
         let a = await Shell.run("/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings", ["-u"])
         if a.status != 0 { Log.settings.warning("activateSettings -u exited \(a.status): \(a.stderr)") }
-        AppDelegate.shared?.hotKey.register(settings: NaviSettings.shared)
+        AppDelegate.shared?.hotKey?.register(settings: NaviSettings.shared)
         Log.settings.info("Spotlight ⌘Space disabled via symbolichotkeys; hotkey re-registered")
     }
 }

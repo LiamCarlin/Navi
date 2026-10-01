@@ -55,6 +55,12 @@ export const PLANS: Record<Tier, Plan> = {
 
 export const TRIAL_DAYS = 7;
 
+/** List prices in USD (§2). Used by the admin console's MRR estimate when Stripe isn't consulted. */
+export const LIST_PRICES_USD: Record<Exclude<Tier, "free">, { month: number; year: number }> = {
+  pro: { month: 20, year: 192 },
+  pro_recall: { month: 30, year: 288 },
+};
+
 /**
  * What each `X-Navi-Feature` needs and what it counts against.
  *  - route:         Jev routing while typing. Free for everyone, cost-tracked only.
@@ -91,17 +97,20 @@ export interface TierSource {
   tier: Tier;
   /** ISO-8601, or null when the trial is over / never existed. */
   trialEndsAt?: string | null;
+  /** Admin override (comps, support) — wins over the paid tier and the trial. */
+  tierOverride?: Tier | null;
 }
 
-/** The tier a user is actually served at: a Free user inside their trial window is Pro. */
+/** The tier a user is actually served at: an admin override first; a Free user inside their trial window is Pro. */
 export function effectiveTier(profile: TierSource, now: Date): Tier {
+  if (profile.tierOverride && isTier(profile.tierOverride)) return profile.tierOverride;
   if (profile.tier !== "free") return profile.tier;
   if (profile.trialEndsAt && new Date(profile.trialEndsAt).getTime() > now.getTime()) return "pro";
   return "free";
 }
 
 export function isInTrial(profile: TierSource, now: Date): boolean {
-  return profile.tier === "free" && effectiveTier(profile, now) === "pro";
+  return profile.tier === "free" && !profile.tierOverride && effectiveTier(profile, now) === "pro";
 }
 
 export function trialEnd(signupAt: Date): Date {
@@ -130,9 +139,12 @@ export interface QuotaWindow {
   limit: number;
 }
 
-/** The cap that applies to a bucket at a tier, or null when that bucket is uncapped. */
-export function windowFor(tier: Tier, bucket: Bucket): QuotaWindow | null {
-  const q = PLANS[tier].quotas;
+/**
+ * The cap that applies to a bucket at a tier, or null when that bucket is uncapped.
+ * `quotas` defaults to the plan's; the admin console's per-tier overrides (lib/config.ts) pass their own.
+ */
+export function windowFor(tier: Tier, bucket: Bucket, quotas: Quotas = PLANS[tier].quotas): QuotaWindow | null {
+  const q = quotas;
   if (bucket === "answers") {
     return q.answersPerDay != null ? { kind: "day", limit: q.answersPerDay } : null;
   }
@@ -175,6 +187,8 @@ export interface QuotaInput {
   /** True when this run already holds a unit — a continuing run is never cut off mid-way. */
   runAlreadyCounted: boolean;
   now: Date;
+  /** Effective quotas for the tier (plan defaults when omitted). */
+  quotas?: Quotas;
 }
 
 /** The one place the 402/403 rules live. */
@@ -184,7 +198,7 @@ export function checkQuota(input: QuotaInput): QuotaDecision {
     return { ok: false, status: 403, error: "not_entitled", feature: input.feature, tier: input.tier };
   }
   if (!rule.bucket) return { ok: true, bucket: null, window: null };
-  const window = windowFor(input.tier, rule.bucket);
+  const window = windowFor(input.tier, rule.bucket, input.quotas);
   if (!window) return { ok: true, bucket: rule.bucket, window: null };
   if (!input.runAlreadyCounted && input.used >= window.limit) {
     return {
@@ -200,10 +214,10 @@ export function checkQuota(input: QuotaInput): QuotaDecision {
 }
 
 /** The `resetsAt` reported by `/v1/me`: the soonest reset among the tier's active windows. */
-export function nextResetFor(tier: Tier, now: Date): Date {
+export function nextResetFor(tier: Tier, now: Date, quotas?: Quotas): Date {
   const kinds = new Set<WindowKind>();
   for (const b of ["answers", "tasks"] as Bucket[]) {
-    const w = windowFor(tier, b);
+    const w = windowFor(tier, b, quotas);
     if (w) kinds.add(w.kind);
   }
   if (kinds.size === 0) return resetsAt(now, "day");

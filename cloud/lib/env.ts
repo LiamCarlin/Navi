@@ -67,6 +67,19 @@ export const env = {
   /** HS256 secret used to mint tokens when no Supabase JWT secret is configured (memory driver). */
   get devJwtSecret() { return str("DEV_JWT_SECRET") ?? "navi-dev-jwt-secret-change-me"; },
 
+  // Admin console (/admin) — see lib/admin/*, lib/keys.ts, lib/config.ts
+  /** Comma-separated emails that may open /admin (in addition to rows in the `admins` table). */
+  get adminEmails(): string[] {
+    return (str("ADMIN_EMAILS") ?? "").split(",").map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"));
+  },
+  /** Encrypts vendor keys stored from the console (AES-256-GCM). Unset ⇒ the console refuses to store keys. */
+  get keysSecret() { return str("NAVI_KEYS_SECRET"); },
+  /** Optional: signs the admin session cookie (else derived from another server secret). */
+  get adminSessionSecret() { return str("ADMIN_SESSION_SECRET"); },
+  /** Optional Vercel AI Gateway key: Jev goes through the gateway when no TypeSafe key is set. */
+  get aiGatewayApiKey() { return str("AI_GATEWAY_API_KEY"); },
+  get aiGatewayEvalUrl() { return str("AI_GATEWAY_EVAL_URL") ?? "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"; },
+
   get isProduction() { return process.env.NODE_ENV === "production" && Boolean(str("VERCEL_ENV") === "production"); },
 };
 
