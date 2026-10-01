@@ -303,3 +303,51 @@ import Testing
         #expect(try store.actionCount() == 0 && (try store.procedures(since: .distantPast)).isEmpty)
     }
 }
+
+@Suite struct ProcedureBackfillTests {
+    @Test func sessionsWithoutRoutinesNewestFirstBelowTheCursor() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("navi-backfill-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try MemoryStore(directory: dir)
+        let t = Date()
+        var ids: [Int64] = []
+        for i in 0..<5 {
+            ids.append(try store.insertSession(SessionRecord(start: t.addingTimeInterval(Double(i)), end: t.addingTimeInterval(Double(i)),
+                                                             bundleID: "a", appName: "A", title: "s\(i)", summary: "", topics: [], entities: [])))
+        }
+        try store.insertProcedure(ProcedureRecord(sessionID: ids[3], start: t, end: t, bundleID: "a", appName: "A", goal: "g", steps: ["x"], habits: []))
+        #expect(try store.maxSessionID() == ids[4])
+        #expect(try store.sessionsWithoutProcedure(below: ids[4] + 1, limit: 3).map(\.id) == [ids[4], ids[2], ids[1]])
+        #expect(try store.sessionsWithoutProcedure(below: ids[1], limit: 10).map(\.id) == [ids[0]])
+    }
+
+    @Test func oldNotesGainAHowSectionOnce() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("navi-backfill-vault-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Sessions"), withIntermediateDirectories: true)
+        let rel = "Sessions/old.md"
+        try "---\ntype: session\ntitle: \"Old\"\n---\n\n# Old\n\nDid things.\n\n## Related\n- [[Daily/2026-09-20]]\n"
+            .write(to: root.appendingPathComponent(rel), atomically: true, encoding: .utf8)
+        var d = DigestResult.empty
+        d.goal = "submit assignment 2"; d.steps = ["open Canvas", "click 'Submit'"]; d.habits = ["Uses the Assignments tab"]
+        let vault = VaultWriter(root: root)
+        try vault.appendHow(notePath: rel, digest: d)
+        try vault.appendHow(notePath: rel, digest: d)                                    // a second pass changes nothing
+        let text = try String(contentsOf: root.appendingPathComponent(rel), encoding: .utf8)
+        #expect(text.contains("goal: \"submit assignment 2\""))
+        #expect(text.contains("## How\n**Goal:** submit assignment 2\n1. open Canvas\n2. click 'Submit'\n- *How you work:* Uses the Assignments tab"))
+        #expect(text.components(separatedBy: "## How").count == 2)
+        #expect(text.contains("Did things.") && text.contains("## Related"))
+    }
+
+    @Test func noModelNoBackfill() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("navi-backfill-local-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try MemoryStore(directory: dir)
+        let vault = VaultWriter(root: dir.appendingPathComponent("vault"))
+        let digester = Digester(store: store, vault: vault, claude: ClaudeClient(), gemini: GeminiClient(), updateStatus: { _ in })
+        let r = await ProcedureBackfill(store: store, digester: digester, vault: vault).run(provider: .local, policy: .strict)
+        #expect(r == ProcedureBackfill.Report())
+        #expect(UserDefaults.navi.object(forKey: ProcedureBackfill.doneKey) == nil)       // the local digest names no goal: try again with a model
+    }
+}

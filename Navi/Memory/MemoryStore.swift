@@ -488,6 +488,20 @@ final class MemoryStore: @unchecked Sendable {
         }
     }
 
+    /// Sessions below `id` that have no procedure yet, newest first (`ProcedureBackfill`).
+    func sessionsWithoutProcedure(below id: Int64, limit: Int) throws -> [SessionRecord] {
+        try queue.sync {
+            try query("""
+            SELECT * FROM sessions WHERE id < ? AND id NOT IN (SELECT session_id FROM procedures)
+            ORDER BY id DESC LIMIT ?
+            """, [id, limit]).map(Self.session(from:))
+        }
+    }
+
+    func maxSessionID() throws -> Int64 {
+        try queue.sync { (try query("SELECT COALESCE(MAX(id), 0) AS n FROM sessions", []).first?["n"] as? Int64) ?? 0 }
+    }
+
     /// Procedures that started after `since`, newest first.
     func procedures(since: Date, limit: Int = 5000) throws -> [ProcedureRecord] {
         try queue.sync {

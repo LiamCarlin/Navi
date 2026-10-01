@@ -158,7 +158,9 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     native Jev step; the planner (`how_they_did_it_before`) and the browser runner
     (`NAVI_USER_CONTEXT_JSON.how_this_user_works`) get the procedures. "How you work.md" adds
     routines, what you click, and "Faster ways" (menu items clicked ≥ 3× that have a shortcut).
-    The personal-data cleanup also redacts actions and procedures.
+    The personal-data cleanup also redacts actions and procedures. `ProcedureBackfill` (once, after
+    the first digest of a launch; resumable cursor `memoryProcedureBackfillCursor`, then
+    `…Done`) re-digests older sessions text-only for goal/steps/habits → procedures + How sections.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
