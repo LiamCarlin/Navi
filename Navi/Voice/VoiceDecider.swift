@@ -392,6 +392,9 @@ enum VoiceDecider {
         let words = normalizedGoal(head).lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
         guard !words.isEmpty else { return true }
         if words.allSatisfy({ fragmentWords.contains($0) }) { return true }
+        // "+34", "22": no word at all. Live (2026-10-01) the recognizer's final re-delivered the tail of
+        // "calculate 22 plus 34" after the clause had run, and Jev sometimes called it a task.
+        if !head.contains(where: \.isLetter) { return true }
         let unclassified = (v.kind?.choice).map { $0 == Kind.none.rawValue || Kind(rawValue: $0) == nil } ?? true
         return words.count <= 2 && unclassified && appChoice(v, input: input) == nil && !head.contains("?")
     }

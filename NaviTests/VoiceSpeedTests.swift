@@ -93,6 +93,14 @@ struct VoiceSpeedTests {
         }
     }
 
+    @Test func aTailOfNumbersIsNeverATask() {
+        var v = verdict(kind: "do_in_app")
+        v.kind = .init(choice: "do_in_app", probabilities: ["do_in_app": 0.7], confidence: 0.7)
+        guard case .drop = VoiceDecider.act(v, input: input("+34")) else { Issue.record("expected a drop"); return }
+        guard case .drop = VoiceDecider.act(v, input: input("22.")) else { Issue.record("expected a drop"); return }
+        guard case .commit = VoiceDecider.act(v, input: input("open 2048")) else { Issue.record("expected a commit"); return }
+    }
+
     // MARK: Local math
 
     @Test func mathIsAnsweredLocally() {
