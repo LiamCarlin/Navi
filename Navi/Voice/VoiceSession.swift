@@ -152,6 +152,8 @@ final class VoiceSession: ObservableObject {
         // Open the model connections now, so the first decision skips the TLS handshake.
         services.jev.warm()
         services.claude.warm()
+        // And the Chrome bridge: the first spoken web task used to spend 2–5 s "Connecting to Chrome…".
+        UltrafastBridge.prewarm()
         listener.contextualStrings = ["Navi", "Jev"] + AppIndex.shared.entries.prefix(300).map(\.name)
         listener.echoCancellation = settings.voiceEchoCancellation
         listener.onEvent = { [weak self] ev in self?.handle(ev) }
@@ -696,6 +698,7 @@ final class VoiceSession: ObservableObject {
         ctx.recentDone = executor.recent.isEmpty ? Array(segmenter.history.suffix(3)) : Array(executor.recent.suffix(3))
         ctx.appCandidates = VoiceAppMatcher.candidates(in: clause.head, index: AppIndex.shared, running: AppIndex.runningBundleIDs())
         ctx.isPaused = phase == .paused
+        ctx.runningApps = WindowControls.runningAppNames()
         ctx.userUsuallyUses = UserHabits.current?.cachedProfile().flatMap { UserHabits.surfaceHint(task: clause.head, profile: $0) }
         ctx.headMayContinueAppName = !clause.hasBoundary && VoiceAppMatcher.mayContinueAppName(clause.head, index: AppIndex.shared)
         return ctx

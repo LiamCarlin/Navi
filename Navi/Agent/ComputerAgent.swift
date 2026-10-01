@@ -124,6 +124,14 @@ extension ComputerAgent {
 // MARK: - One run
 
 final class AgentRun: @unchecked Sendable {
+    /// One writer read of a stopped screen (`startReview` in the Jev-first loop).
+    struct Review: @unchecked Sendable {
+        var answer: Result<CUWriter.Answer, NaviError>
+        var packet: [String: Any]
+        var png: Data?
+        var ms: Int
+    }
+
     struct Config: Sendable {
         var model: String
         var maxSteps: Int
@@ -290,6 +298,8 @@ final class AgentRun: @unchecked Sendable {
             handle.finish()
         }
         Log.agent.info("Agent run started (\(self.config.driver.rawValue, privacy: .public)): \(self.task.prefix(120), privacy: .private)")
+        let endActivity = AgentActivity.begin()
+        defer { endActivity() }
 
         do {
             // Step 0 — the plan. Usually already answered by `prepare` while the user was typing.
@@ -731,6 +741,16 @@ final class AgentRun: @unchecked Sendable {
         /// Screens already re-read with OCR after Jev stopped on them.
         var ocrRetried = Set<String>()
         var step = 0
+        /// "click on interviewing": the one label whose click is the whole goal (`CUFacts.literalTarget`).
+        let literal = CUFacts.literalTarget(task)
+        /// The literal label was clicked once already: never overrule Jev for it again.
+        var literalTried = false
+        /// The screen before the last action, for `CUDecide.newItems`.
+        var previousLabels: (labels: Set<String>, ocr: Bool)?
+        /// The writer's read of a screen Jev stopped on, started while that screen is re-read with
+        /// OCR and Jev asked again: when Jev stops a second time the answer is (nearly) ready.
+        var prefetchedReview: (page: String, outcome: CURunState.Outcome, task: Task<Review, Never>)?
+        defer { prefetchedReview?.task.cancel() }
 
         func observe(forceOCR: Bool = false) async -> CUScreen {
             var snap = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
@@ -750,9 +770,30 @@ final class AgentRun: @unchecked Sendable {
         let controls = screen.items.filter(\.fromAX).count
         handle.emit(.status("Jev-driven · \(screen.items.count) items on screen (\(controls) controls\(screen.usedOCR ? ", OCR" : "")) · \(Int(Date().timeIntervalSince(t0) * 1000)) ms"))
 
+        // The replay cache (`CUReplay`): what this run did that moved the screen, while it stays
+        // replayable (no typing, app switch or approval yet), in the app it started in.
+        let startBundle = screen.snapshot.bundleID
+        var replaySteps: [CUReplayStep] = []
+        var replayOpen = true
+        var replayUsed = false
+
         func remember() {
+            if !replaySteps.isEmpty {
+                CUReplay.shared.record(bundleID: startBundle, goal: task, steps: replaySteps, complete: replayOpen, replayed: replayUsed)
+            }
             guard !redactedLog.isEmpty else { return }
             AgentExperience.shared.record(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, goal: task, actions: redactedLog)
+        }
+
+        /// After an action ran on `acted`: extend (or close) the trajectory being recorded.
+        func recordReplay(_ action: AgentAction, on acted: CUScreen, itemText: String?, moved: Bool) {
+            guard replayOpen else { return }
+            guard acted.snapshot.bundleID == startBundle, let st = CUReplay.step(for: action, screen: acted, itemText: itemText) else {
+                if action != .wait { replayOpen = false }
+                return
+            }
+            if moved { replaySteps.append(st) }
+            if replaySteps.count >= CUReplay.maxSteps { replayOpen = false }
         }
 
         func writeRun(_ outcome: String) {
@@ -767,11 +808,34 @@ final class AgentRun: @unchecked Sendable {
         func conclude(_ a: CUWriter.Answer, outcome: CURunState.Outcome) {
             writerAnswer = a.text.isEmpty ? nil : a.text
             writeRun(outcome.rawValue)
+            if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
             if a.achieved {
                 remember()
                 handle.emit(.completed(summary: a.text.isEmpty ? Self.summary(humanLog) : a.text))
             } else {
                 handle.emit(.failed(a.text.isEmpty ? "Stopped: \(outcome.told)." : a.text))
+            }
+        }
+
+        /// The writer's read of the screen as it is now, as a task: `handOff` awaits it, and a
+        /// screen Jev stopped on starts it early while the OCR re-read runs (`prefetchedReview`).
+        func startReview(_ outcome: CURunState.Outcome, mayResume: Bool) -> Task<Review, Never> {
+            let packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
+                                               earlier: run.earlierScreens(final: screen.signature), guidance: run.guidance,
+                                               earlierStops: run.earlierStops, canAsk: mayResume, spoken: context.spoken,
+                                               conversation: context.conversation)
+            let (snapshot, target, claude, model) = (screen.snapshot, target, claude, config.model)
+            return Task.detached(priority: .userInitiated) {
+                var png: Data?
+                if screenshots, let wid = await CUOCRReader.windowID(for: snapshot, target: target),
+                   let frame = try? await ScreenCapture.captureWindow(id: wid) {
+                    png = ScreenCapture.pngData(ScreenCapture.downscale(frame.image, maxLongEdge: CUWriter.answerImageEdge).0)
+                }
+                let t = Date()
+                let answer: Result<CUWriter.Answer, NaviError>
+                do { answer = .success(try await CUWriter.composeAnswer(claude: claude, model: model, packet: packet, screenshotPNG: png)) }
+                catch { answer = .failure((error as? NaviError) ?? .other(error.localizedDescription)) }
+                return Review(answer: answer, packet: packet, png: png, ms: Int(Date().timeIntervalSince(t) * 1000))
             }
         }
 
@@ -801,28 +865,26 @@ final class AgentRun: @unchecked Sendable {
             let mayResume = step < config.maxSteps && run.handoffs.count < config.maxClaudeFallbacks && outcome != .stuck
             handle.emit(.status("Jev stopped (\(outcome.rawValue)) — reading the screen"))
             await updateOverlay(step: max(1, actionIndex), status: "Reading the screen")
-            var png: Data?
-            if screenshots, let wid = await CUOCRReader.windowID(for: screen.snapshot, target: target),
-               let frame = try? await ScreenCapture.captureWindow(id: wid) {
-                png = ScreenCapture.pngData(ScreenCapture.downscale(frame.image, maxLongEdge: CUWriter.answerImageEdge).0)
+            let review: Review
+            if let p = prefetchedReview, p.page == screen.signature.page, p.outcome == outcome, mayResume {
+                review = await p.task.value
+            } else {
+                prefetchedReview?.task.cancel()
+                review = await startReview(outcome, mayResume: mayResume).value
             }
-            let packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
-                                               earlier: run.earlierScreens(final: screen.signature), guidance: run.guidance,
-                                               earlierStops: run.earlierStops, canAsk: mayResume, spoken: context.spoken,
-                                               conversation: context.conversation)
-            let t = Date()
+            prefetchedReview = nil
+            let (packet, png, ms) = (review.packet, review.png, review.ms)
             let answer: CUWriter.Answer
-            do {
-                answer = try await CUWriter.composeAnswer(claude: claude, model: config.model, packet: packet, screenshotPNG: png)
-            } catch {
+            switch review.answer {
+            case .success(let a): answer = a
+            case .failure(let error):
                 try checkCancelled()
-                let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
+                let msg = error.errorDescription ?? "\(error)"
                 writeRun(outcome.rawValue)
                 if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
                 else { handle.emit(.failed("Stopped: \(outcome.told), and the screen could not be read (\(msg)).")) }
                 return false
             }
-            let ms = Int(Date().timeIntervalSince(t) * 1000)
             calls.writer(ms: ms)
             lastAnswer = answer
             folder.write(CURunFolder.name(step, "review.json"), json: ["outcome": outcome.rawValue, "ms": ms, "achieved": answer.achieved,
@@ -856,6 +918,48 @@ final class AgentRun: @unchecked Sendable {
         }
         emitThumbnailIfEnabled(handle)
 
+        // The same goal worked here before: replay its steps, each found again in the live tree.
+        // Any step that is not there, not one control, or changes nothing hands over to Jev.
+        if let traj = CUReplay.shared.lookup(bundleID: startBundle, goal: task) {
+            replayUsed = true
+            handle.emit(.status("Replaying what worked last time (\(traj.steps.count) step\(traj.steps.count == 1 ? "" : "s"))"))
+            var replayed = 0
+            for st in traj.steps {
+                try checkCancelled()
+                guard !CUReplay.looksIrreversible(st), let a = CUReplay.resolve(st, on: screen) else {
+                    handle.emit(.status("Replay stopped at \(st.human) — Jev takes over from here"))
+                    break
+                }
+                step += 1
+                actionIndex += 1
+                let human = a.human(in: screen.snapshot, text: nil)
+                handle.emit(.step(index: actionIndex, description: human))
+                let fp = await AXSnapshotter.fingerprint(target: target)
+                do { try await executor.perform(a, text: nil, snapshot: screen.snapshot) } catch {
+                    handle.emit(.status("Replay stopped: \((error as? NaviError)?.errorDescription ?? error.localizedDescription)"))
+                    break
+                }
+                await AXSnapshotter.settle(after: fp, maxMs: a.settleMs, target: target)
+                let acted = screen
+                _ = run.screenMoved(acted.signature)
+                screen = await observe()
+                let moved = !screen.signature.same(as: acted.signature)
+                _ = run.recordAction(st.human + " (replayed)", waiting: false)
+                humanLog.append(human)
+                redactedLog.append(human)
+                if let f = a.elementID.flatMap({ acted.snapshot.element($0)?.frame }) { lastActedFrame = f }
+                recordReplay(a, on: acted, itemText: st.label, moved: moved)
+                replayed += 1
+                if !moved { break }
+            }
+            if replayed == traj.steps.count, traj.complete, !wantsResult {
+                writeRun("done (replayed)")
+                remember()
+                handle.emit(.completed(summary: Self.summary(humanLog)))
+                return
+            }
+        }
+
         while step < config.maxSteps {
             step += 1
             try checkCancelled()
@@ -883,7 +987,8 @@ final class AgentRun: @unchecked Sendable {
                                        playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
                                        conversation: context.conversation, userContext: userContext,
-                                       userMoves: moves.isEmpty ? nil : moves)
+                                       userMoves: moves.isEmpty ? nil : moves,
+                                       previousLabels: previousLabels.flatMap { $0.ocr == screen.usedOCR ? $0.labels : nil })
 
             // The writer starts on the one obvious field while Jev decides; used only if Jev picks it.
             var speculative: (elementID: String, task: Task<CUWriter.Fill?, Never>)?
@@ -916,7 +1021,7 @@ final class AgentRun: @unchecked Sendable {
             }
             try checkCancelled()
             calls.jev(ms: verdict.latencyMs)
-            let decision = CUDecide.decision(verdict, request: request)
+            var decision = CUDecide.decision(verdict, request: request, screen: screen)
             handle.emit(.status(CUDecide.statusLine(decision, latencyMs: verdict.latencyMs)))
             folder.write(CURunFolder.name(step, "payload.json"), json: ["state": request.state, "questions": CURunFolder.questionsJSON(request.questions)])
             folder.write(CURunFolder.name(step, "answers.json"), json: [
@@ -938,17 +1043,39 @@ final class AgentRun: @unchecked Sendable {
             } else {
                 stop = .lowConfidence
             }
+            // A one-click goal ("click on interviewing", "select local") whose label is on screen once:
+            // Jev stopping short of it — unsure, or finding "nothing" — is overruled, and the click is
+            // made (the gate still reads this call's nouls). A sure "done" stands.
+            if let literal, let stopped = stop, !(stopped == .done && (decision?.confidence ?? 0) >= 0.5),
+               !literalTried, let it = CUFacts.literalItem(literal, in: screen.items) {
+                let d = CUDecide.Decision(kind: .clickItem, kindHead: .init(choice: CUDecide.Kind.clickItem.rawValue, probabilities: [:], confidence: 1),
+                                          target: .init(choice: "\(it.index)", probabilities: [:], confidence: 1))
+                if let m = CUDecide.move(d, request: request, screen: screen, browserName: browserName) {
+                    handle.emit(.status("The goal names ‘\(it.text)’ and it is on screen — clicking it (Jev: \(stopped.rawValue))"))
+                    decision = d
+                    move = m
+                    stop = nil
+                }
+            }
             if let stop {
                 // Perception escalates before a model does: a screen Jev could not work out from
                 // the tree alone is read once more with OCR and decided again.
                 if stop != .done, screenshots, !screen.usedOCR, ocrRetried.insert(screen.signature.page + "|\(screen.items.count)").inserted {
                     handle.emit(.status("Jev stopped (\(stop.rawValue)) on what the accessibility tree shows — reading the window with OCR"))
+                    // The writer starts on this screen now; if Jev stops again it answers from here.
+                    if writerAvailable, stop == .lowConfidence || stop == .nothingHelps,
+                       step < config.maxSteps, run.handoffs.count < config.maxClaudeFallbacks {
+                        prefetchedReview?.task.cancel()
+                        prefetchedReview = (screen.signature.page, stop, startReview(stop, mayResume: true))
+                    }
                     screen = await observe(forceOCR: true)
                     continue
                 }
                 if try await handOff(stop, doneConfidence: decision?.confidence ?? 0) { continue } else { return }
             }
             guard let decision, let move else { continue }
+            prefetchedReview?.task.cancel()
+            prefetchedReview = nil
 
             // Resolve the action. use_browser "other" is a site outside the goal's: only the
             // writer can name it, and code rejects anything that is not a clean https URL.
@@ -993,6 +1120,19 @@ final class AgentRun: @unchecked Sendable {
                 }
             }
 
+            // The click (or pop-up choice) a one-click goal names: once it lands, the goal is met.
+            var literalHit = false
+            if let literal {
+                switch action {
+                case .click?, .clickPoint?:
+                    if decision.kind == .clickItem, let i = decision.target.flatMap({ Int($0.choice) }),
+                       let it = screen.items.first(where: { $0.index == i }) { literalHit = CUFacts.matchesLiteral(it.text, literal) }
+                case .select(_, let option)?: literalHit = CUFacts.matchesLiteral(option, literal)
+                default: break
+                }
+            }
+            var literalLanded = false
+            var actionRan = false
             if let action {
                 // Approval gating — JevGate's rules, from the nouls that rode along in the same call.
                 let human = action.human(in: screen.snapshot, text: text) + (submit ? " and press Return" : "")
@@ -1003,6 +1143,7 @@ final class AgentRun: @unchecked Sendable {
                         handle.emit(.failed("You declined ‘\(human)’ and Jev proposed it again — stopping."))
                         return
                     }
+                    replayOpen = false   // never replayed without asking again
                     let id = UUID()
                     handle.emit(.needsApproval(id: id, description: human, risk: risk))
                     await MainActor.run { overlay?.setWaitingForApproval() }
@@ -1072,10 +1213,17 @@ final class AgentRun: @unchecked Sendable {
                         } else {
                             // actions.py `_type_text`: Jev checks the field now holds a sensible value;
                             // under 0.5 only our own write is undone, through the same element.
-                            try? await Task.sleep(for: .milliseconds(300))
-                            let (value, focused) = await ActionExecutor.readBack(field)
+                            // Code decides facts first: the field holding exactly what was typed is
+                            // verified by reading it back (polled, ≤ 300 ms); only a mismatch costs a Jev call.
+                            var (value, focused) = await ActionExecutor.readBack(field)
+                            for _ in 0..<5 where !Self.holdsTyped(value, typed) {
+                                try? await Task.sleep(for: .milliseconds(60))
+                                (value, focused) = await ActionExecutor.readBack(field)
+                            }
                             let state = CUDecide.verifyTypedState(goal: task, field: field, typed: typed, valueNow: value, stillFocused: focused)
-                            if let r = try? await jev.ask(state: JevClient.JSONValue(any: state), questions: CUDecide.verifyTypedQuestion(), cacheable: false) {
+                            if Self.holdsTyped(value, typed) {
+                                line += " (verified: the field holds it)"
+                            } else if let r = try? await jev.ask(state: JevClient.JSONValue(any: state), questions: CUDecide.verifyTypedQuestion(), cacheable: false) {
                                 calls.jev(ms: r.latencyMs)
                                 let p = r["ok"]?.noul ?? 1
                                 if p < 0.5 {
@@ -1115,6 +1263,9 @@ final class AgentRun: @unchecked Sendable {
                 humanLog.append(human)
                 if case .picked(let n)? = recipientOutcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
                 if !failed, !action.isReadOnly { redactedLog.append(action.human(in: screen.snapshot, text: nil)) }
+                literalLanded = literalHit && !failed
+                if literalLanded { literalTried = true }
+                actionRan = !failed
                 if let f = action.elementID.flatMap({ screen.snapshot.element($0)?.frame }) { lastActedFrame = f }
                 switch action {
                 case .click(let id), .press(let id): lastClickedLabel = screen.snapshot.element(id)?.label
@@ -1134,7 +1285,23 @@ final class AgentRun: @unchecked Sendable {
 
             // The next capture is the only witness of what the action did.
             let waiting = action == .wait
+            let before = screen.signature
+            let acted = screen
+            previousLabels = (Set(screen.items.map { CUFacts.plainLabel($0.text) }), screen.usedOCR)
             screen = await observe()
+            if let action, actionRan {
+                let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
+                recordReplay(action, on: acted, itemText: itemText, moved: !screen.signature.same(as: before))
+            }
+            // "Click on interviewing": the item it names was clicked and the screen answered. That is
+            // the goal, whole — no second click on a toggle, and no writer read to say so.
+            if literalLanded, !screen.signature.same(as: before), !Self.openedMenu(clicked: action, before: acted.snapshot, after: screen.snapshot) {
+                _ = run.recordAction(what ?? "", waiting: false)
+                writeRun("done (the click the goal names landed)")
+                remember()
+                handle.emit(.completed(summary: Self.summary(humanLog)))
+                return
+            }
             if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
             if run.recordAction(what ?? "nothing happened", waiting: waiting) {
                 handle.emit(.status("\(CURunState.maxRepeats) actions in a row were already taken on this same screen"))
@@ -1142,6 +1309,21 @@ final class AgentRun: @unchecked Sendable {
             }
         }
         _ = try await handOff(.stepLimit)
+    }
+
+    /// Did the click open a menu rather than do the thing? A pop-up whose title is the label
+    /// ("Local" over a Local/Cloud menu) shows its options after the first click; the goal is the
+    /// option, not the opening.
+    static func openedMenu(clicked action: AgentAction?, before: AXSnapshot, after: AXSnapshot) -> Bool {
+        if let id = action?.elementID, let e = before.element(id), ["AXPopUpButton", "AXMenuButton", "AXComboBox"].contains(e.role) { return true }
+        func menuItems(_ s: AXSnapshot) -> Int { s.elements.filter { $0.role == "AXMenuItem" }.count }
+        return menuItems(after) > menuItems(before)
+    }
+
+    /// The field reads back exactly what was typed (whitespace aside).
+    static func holdsTyped(_ value: String?, _ typed: String) -> Bool {
+        guard let v = value?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return false }
+        return v == typed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// What an action was, in words code wrote, for Jev's `previous_actions` and the

@@ -90,6 +90,7 @@ enum CUDecide {
         ("cmd+n", "New: note, message, email, document or window in the current app"),
         ("cmd+l", "Focus the browser address bar"),
         ("cmd+t", "New browser tab"), ("cmd+w", "Close the current tab or window"),
+        ("cmd+q", "Quit the whole app"), ("cmd+m", "Minimize the window"), ("cmd+h", "Hide the app"),
         ("cmd+f", "Find on page"), ("cmd+a", "Select all"), ("cmd+c", "Copy"), ("cmd+v", "Paste"),
         ("cmd+z", "Undo"), ("cmd+s", "Save"), ("cmd+enter", "Send / submit with Command-Return"),
         ("cmd+shift+t", "Reopen the last closed tab"), ("ctrl+tab", "Next tab"),
@@ -125,7 +126,22 @@ enum CUDecide {
         var userMoves: UserMoves.Hints?
         var today = CUFacts.Day.from(Date())
         var now: [String: Any] = CUFacts.nowContext()
+        /// Labels (`CUFacts.plainLabel`) of the screen before the last action, read the same way
+        /// (tree only, or tree + OCR): items not among them are marked new.
+        var previousLabels: Set<String>?
     }
+
+    /// Navi deviation (browser-use's `is_new`): items that appeared with the last action — the
+    /// menu or pop-up it opened, the row it added — are marked, so the one to pick next stands
+    /// out. Only while most of the screen stayed: on a new page everything is new and the mark
+    /// says nothing.
+    static func newItems(_ input: Input) -> Set<Int> {
+        guard let prev = input.previousLabels, !prev.isEmpty else { return [] }
+        let fresh = input.screen.items.filter { !prev.contains(CUFacts.plainLabel($0.text)) }.map(\.index)
+        guard !fresh.isEmpty, Double(fresh.count) <= Double(input.screen.items.count) * maxNewShare else { return [] }
+        return Set(fresh)
+    }
+    static let maxNewShare = 0.4
 
     struct Request: @unchecked Sendable {
         var state: [String: Any]
@@ -156,6 +172,7 @@ enum CUDecide {
         let hints = CUFacts.dateHints(screen.items, today: input.today)
         let mates = CUFacts.rowMates(screen.items)
         let frame = screen.frame
+        let fresh = newItems(input)
         var state: [String: Any] = [
             "goal": input.goal,
             "now": input.now,
@@ -170,6 +187,7 @@ enum CUDecide {
                 if !it.role.isEmpty { d["role"] = it.role }
                 if let h = hints[it.index] { d["when"] = h }
                 if let m = mates[it.index] { d["beside"] = m }
+                if fresh.contains(it.index) { d["new"] = true }
                 if let n = input.userMoves?.clicks[it.index] { d["user_clicks"] = n }
                 if input.userMoves?.next.contains(it.index) == true { d["user_next"] = true }
                 return d.merging(itemExtras(it, screen: screen)) { a, _ in a }
@@ -198,9 +216,11 @@ enum CUDecide {
         let screen = input.screen
         let hints = CUFacts.dateHints(screen.items, today: input.today)
         let mates = CUFacts.rowMates(screen.items)
+        let fresh = newItems(input)
         var out: [String: String] = [:]
         for it in screen.items {
             var parts = [CUFacts.region(it, in: screen.frame)]
+            if fresh.contains(it.index) { parts.append("new: appeared after the last action") }
             if let h = hints[it.index] { parts.append(h) }
             if let m = mates[it.index] { parts.append("in the row of " + m.map(CUFacts.quoted).joined(separator: ", ")) }
             let extras = itemExtras(it, screen: screen)
@@ -356,15 +376,47 @@ enum CUDecide {
 
     /// nil when the kind answer is missing or names nothing offered, or when the chosen kind's
     /// target question is unanswered: an answer the loop cannot execute is a stop, not a guess.
-    static func decision(_ v: Verdict, request: Request) -> Decision? {
+    /// With `screen`, copies of one item (the same label in the same row: an AX button and the
+    /// OCR line naming it, "Interviewing" and "• Interviewing") count as one target.
+    static func decision(_ v: Verdict, request: Request, screen: CUScreen? = nil) -> Decision? {
         guard let head = v.heads["kind"], let kind = Kind(rawValue: head.choice),
               request.offered["kind"]?.contains(head.choice) == true else { return nil }
         var d = Decision(kind: kind, kindHead: head)
         if let q = kind.targetQuestion {
-            guard let t = v.heads[q], request.offered[q]?.contains(t.choice) == true else { return nil }
+            guard var t = v.heads[q], request.offered[q]?.contains(t.choice) == true else { return nil }
+            if let screen, q == "item" || q == "field" { t = mergeCopies(t, screen: screen) }
             d.target = t
         }
         return d
+    }
+
+    /// Navi deviation (docs/TYPESAFE_CU.md): the item head's probability is split between copies
+    /// of one thing — the tree's button and the OCR line over it, a bullet-prefixed duplicate —
+    /// so Jev, sure *what* to click, read as unsure and the run stopped for a 2–6 s writer read
+    /// (2026-09-29: "click on interviewing", 0.62 + 0.37 on two "Interviewing" lines). Copies
+    /// share a label once bullets and case are dropped and sit in the same row, so three "Buy"
+    /// buttons in three rows stay three targets. The group with the most mass wins; its member
+    /// that is a real control is the one clicked.
+    static func mergeCopies(_ head: Head, screen: CUScreen) -> Head {
+        var groups: [(label: String, y: CGFloat, h: CGFloat, sum: Double, members: [(id: String, p: Double)])] = []
+        for (id, p) in head.probabilities.sorted(by: { $0.key < $1.key }) where p > 0 {
+            guard let i = Int(id), let it = screen.items.first(where: { $0.index == i }) else { continue }
+            let label = CUFacts.plainLabel(it.text)
+            guard !label.isEmpty else { continue }
+            if let g = groups.firstIndex(where: { $0.label == label && abs($0.y - it.center.y) <= max($0.h, it.box.height, 8) / 2 + 4 }) {
+                groups[g].sum += p
+                groups[g].members.append((id, p))
+            } else {
+                groups.append((label, it.center.y, it.box.height, p, [(id, p)]))
+            }
+        }
+        guard let best = groups.max(by: { $0.sum < $1.sum }), best.sum > head.confidence + 1e-9 else { return head }
+        let pick = best.members.max { a, b in
+            let ax = Int(a.id).flatMap { screen.elementForItem[$0] } != nil
+            let bx = Int(b.id).flatMap { screen.elementForItem[$0] } != nil
+            return ax != bx ? !ax : a.p < b.p
+        }!
+        return Head(choice: pick.id, probabilities: head.probabilities, confidence: min(1, best.sum))
     }
 
     /// What executing a decision means. `proposeURL` needs the writer first.

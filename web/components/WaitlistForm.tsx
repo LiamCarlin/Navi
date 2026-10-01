@@ -6,7 +6,7 @@ import { getRef, joined, takeSource } from "@/lib/source";
 type Done = { position: number | null; ref: string | null; status: "created" | "exists" };
 type State = { kind: "idle" } | { kind: "busy" } | { kind: "done"; done: Done } | { kind: "error"; message: string };
 
-const SHARE_TEXT = "I just joined the waitlist for Navi — say it, it’s done.";
+const SHARE_TEXT = "I just joined the waitlist for Navi: ⌘Space, but it does things.";
 
 /**
  * The one waitlist form, used everywhere: hero, sticky bar, mid-page lines, the waitlist section.
@@ -16,12 +16,15 @@ const SHARE_TEXT = "I just joined the waitlist for Navi — say it, it’s done.
 export function WaitlistForm({
   source,
   compact = false,
+  pill = false,
   note = false,
   takePending = false,
   className = "",
 }: {
   source: string;
   compact?: boolean;
+  /** Glass pill for the sky: input and button in one rounded bar. */
+  pill?: boolean;
   note?: boolean;
   takePending?: boolean;
   className?: string;
@@ -60,8 +63,42 @@ export function WaitlistForm({
 
   if (state.kind === "done") return <Share done={state.done} compact={compact} className={className} />;
 
+  if (pill)
+    return (
+      <div className={className}>
+      <form
+        onSubmit={submit}
+        className={`flex items-center gap-1 rounded-full bg-white/85 p-1.5 shadow-[inset_0_1px_0_#fff,0_0_0_1px_rgba(255,255,255,0.7),0_14px_40px_-12px_rgba(20,60,140,0.45)] backdrop-blur-xl`}
+        aria-busy={state.kind === "busy"}
+      >
+        <label className="sr-only" htmlFor={`${id}-email`}>
+          Email
+        </label>
+        <input
+          id={`${id}-email`}
+          name="email"
+          type="email"
+          required
+          autoComplete="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="h-10 min-w-0 flex-1 bg-transparent px-4 text-[15px] text-fg outline-none placeholder:text-fg-dim focus-visible:outline-none"
+        />
+        <button type="submit" disabled={state.kind === "busy"} className="btn-primary !h-10 shrink-0">
+          {state.kind === "busy" ? "Adding…" : "Join the waitlist"}
+        </button>
+      </form>
+      {state.kind === "error" && (
+        <p role="alert" className="mt-2 text-sm font-medium text-white">
+          {state.message}
+        </p>
+      )}
+      </div>
+    );
+
   const field =
-    "h-11 w-full rounded-[12px] border border-line-strong bg-bg-elev px-4 text-[15px] text-fg outline-none transition-colors duration-150 placeholder:text-fg-dim focus:border-accent focus-visible:outline-none";
+    "h-11 w-full rounded-[14px] border border-line-strong bg-white px-4 text-[15px] text-fg outline-none transition-colors duration-150 placeholder:text-fg-dim focus:border-accent focus-visible:outline-none";
 
   return (
     <form onSubmit={submit} className={`${compact ? "flex flex-col gap-2 sm:flex-row" : "flex flex-col gap-3"} ${className}`} aria-busy={state.kind === "busy"}>
@@ -89,7 +126,7 @@ export function WaitlistForm({
             name="note"
             rows={2}
             maxLength={500}
-            placeholder="What would you use it for? (optional)"
+            placeholder="What would you hand off first? (optional)"
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             className={`${field} h-auto resize-none py-3`}
@@ -113,7 +150,7 @@ function Share({ done, compact, className }: { done: Done; compact: boolean; cla
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const url = done.ref ? `${origin}/?ref=${done.ref}` : origin;
   const x = `https://x.com/intent/post?text=${encodeURIComponent(SHARE_TEXT)}&url=${encodeURIComponent(url)}`;
-  const mail = `mailto:?subject=${encodeURIComponent("Navi — say it, it’s done")}&body=${encodeURIComponent(`${SHARE_TEXT}\n${url}`)}`;
+  const mail = `mailto:?subject=${encodeURIComponent("Navi: ⌘Space, but it does things")}&body=${encodeURIComponent(`${SHARE_TEXT}\n${url}`)}`;
 
   async function copy() {
     try {

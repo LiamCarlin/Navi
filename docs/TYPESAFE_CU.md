@@ -107,6 +107,37 @@ below into the Swift file beside it, and its test case into `NaviTests/TypesafeC
 - **Claude drives only when Jev is unreachable** (`claudeTakeover`), or when the user picks the
   Claude-only driver.
 
+### Speed and success (2026-10-01; from 27 logged runs where the writer was 80% of the time)
+
+- **Copies of one target pool their probability** (`CUDecide.mergeCopies`): the tree's button
+  and the OCR line over it, or "Interviewing" and "• Interviewing", split Jev's item head
+  (0.62 + 0.37) and read as unsure. Same label (bullets/case dropped) in the same row = one
+  target; three "Buy" buttons in three rows stay three.
+- **One-click goals** (`CUFacts.literalTarget`: "click on interviewing", "select local", "press
+  the send button"): when Jev stops short and the label is on screen exactly once, the click is
+  made (the gate still reads the call's nouls; a sure `done` stands); once the click the goal
+  names lands and the screen answers, the run is complete — no second click on a toggle, no
+  writer read.
+- **New items are marked** (`CUDecide.newItems`, after browser-use's `is_new`): what appeared
+  with the last action (a menu, a pop-up) carries `new: true` while most of the screen stayed.
+- **Typed text is verified by reading it back**: a field holding exactly what was typed needs
+  no `verify_typed` Jev call (polled ≤ 300 ms instead of a fixed 300 ms sleep).
+- **The writer starts during the OCR re-read**: a screen Jev stopped on (unsure / nothing helps)
+  is read by the writer while OCR and the second Jev call run; if Jev stops again the answer is
+  nearly there. Cancelled when Jev acts.
+- **Replay cache** (`CUReplay`, after Stagehand / Skyvern / workflow-use): a completed run
+  stores the actions that moved the screen as semantic selectors (role, label, path; never
+  typed text) under the app + the goal minus politeness; the same goal there replays them,
+  each control found again in the live tree. Missing, ambiguous or no-op steps hand over to
+  Jev (self-healing), the run's success rewrites the entry, a failure after a replay drops it.
+  Typing, app switches and approved steps end the recording; send/pay/delete-like labels are
+  never replayed. `~/Library/Application Support/Navi/agent-replays.json`.
+- **`cmd+q` / `cmd+m` / `cmd+h` are offered** with the generic shortcuts: the writer's focus
+  "press ⌘Q" used to meet a list without it, and Jev pressed ⌘W five times.
+- Not changed, on evidence: the writer stays on the agent model. Offline A/B on 33 saved stops
+  (`review.json` + `review.png`): Haiku 4.5 answered ~0.7 s faster but disagreed on `achieved`
+  8/33 times, mostly claiming success that had not happened; Sonnet 5 / 5.5 agreed 31/33.
+
 ## Debugging a run
 
 - `~/Library/Logs/Navi/runs/<timestamp>/`: `step-NNN-payload.json` (the exact state and

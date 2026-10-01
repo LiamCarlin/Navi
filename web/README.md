@@ -14,29 +14,22 @@ npm run lint
 
 | Path | What |
 |---|---|
-| `app/page.tsx` | The single landing page: nav, hero (MacBook + island loop), "Spotlight finds. Navi does.", "decides, not chats", voice, background mode, Recall, pricing, FAQ, waitlist, footer |
-| `components/MacBook.tsx` | CSS/SVG 14" MacBook Pro in perspective with pointer tilt. The screen is a container; everything on it is sized in `--u` (see `.screen` in `globals.css`) |
-| `components/HeroLoop.tsx` | The ~12 s hero loop as a pure function of time: island drops from the notch and ticks steps, then the ⌘Space bar shows task / calculator / app |
-| `components/Island.tsx`, `components/Panel.tsx`, `components/Windows.tsx` | The voice island, the ⌘Space bar, and the mini macOS windows/notifications the demos use; all presentational and themed via CSS variables |
-| `components/useLoop.ts` | Drives every looping demo as a pure function of elapsed time: starts in view, pauses off-screen, long rest so it plays once then loops slowly, one static frame under reduced motion, `seek()` for the chips |
-| `components/Does.tsx`, `Decides.tsx`, `Talk.tsx`, `Background.tsx`, `Recall.tsx` | The five numbered story sections, each with its own timeline |
-| `components/Section.tsx` | The 12-column story layout (narrow text column, wide visual, alternating) |
-| `components/SeenOn.tsx`, `lib/seenOn.ts` | The "As seen on" press strip. Every entry ships `enabled: false`, so it renders nothing. **Flip `enabled: true` once Navi is actually posted there.** Logos are Simple Icons (CC0). |
-| `components/WaitlistForm.tsx`, `StickyCTA.tsx`, `MidCTA.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: one form used in the hero, the sticky bar, the mid-page lines and the waitlist section; every CTA sends a `source` (`hero`, `sticky`, `mid-02`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons. |
-| `app/api/waitlist/count/route.ts` | `GET` → `{ count }`, cached 60 s; the page shows it only from 25 up |
-| `components/Photo.tsx`, `public/img/`, `CREDITS.md` | The one photograph on the page and where it came from |
-| `components/Nav.tsx` | Nav with the sun/moon theme toggle; `app/layout.tsx` sets `data-theme` on `<html>` before first paint (stored choice, else `prefers-color-scheme`) |
-| `app/api/waitlist/route.ts` | `POST { email, note?, source?, ref? }` → 201 created · 200 already on the list · 400 bad email · 500 storage error; the body also carries `position` (list size) and `ref` (share id) |
-| `lib/waitlist.ts` | Storage: Supabase when configured, else `web/.waitlist.local.jsonl` (gitignored) |
-| `app/opengraph-image.tsx` | OG image (the MacBook with the island down), generated at build time |
-| `app/icon.tsx`, `app/apple-icon.tsx` | Favicon / touch icon with the ✦ glyph |
-| `app/privacy`, `app/terms` | Placeholder legal pages |
+| `app/page.tsx` | The single landing page, in order: hero (sky + real recording), app strip, "How Navi helps" (type / say), "One bar, seven kinds of answer", stats, "What happens after you press ⏎", voice, background mode, habits, Recall, privacy, pricing, FAQ, waitlist band |
+| `app/globals.css` | One light palette: white page, ink→slate gradient titles, blue pill buttons, pale blue-grey cards (`.card`), a bright blue card (`.card-blue`), light and dark glass, the sunset wallpaper (`--wall`) in Navi's colours |
+| `lib/motion.ts`, `components/motion/*` | The motion system: one curve (`EASE`), three durations, one entrance (`Reveal`: rise + unblur), masked title lines (`Lines`) and the centred section header (`Head`), Lenis smooth scrolling (`SmoothScroll`, off under reduced motion), the read-progress hairline |
+| `components/Sky.tsx`, `components/Hero.tsx` | The hero sky: gradient, sun, drifting clouds, three seeded SVG mountain ranges that part on scroll. `public/video/demo.mp4` (a real screen recording) rises out of it; chips seek the video |
+| `components/bar/Bar.tsx` | The ⌘Space bar drawn from the app's `PanelStyle` plus its bodies: rows, answer, calculator, task steps + approval, scheduler card, reminder card, Recall answer. Sized in `--u` inside a `.stage` |
+| `components/bar/LiveBar.tsx`, `lib/demo.ts` | The typeable bar on the blue card: scripted examples routed on every keystroke; click it and a toy router decides what Navi would do with anything typed. The page says it's a demo |
+| `components/TypeTalk.tsx`, `Kinds.tsx`, `Stats.tsx`, `Anatomy.tsx`, `Voice.tsx`, `Background.tsx`, `Apps.tsx`, `Recall.tsx`, `Privacy.tsx` | The story sections. `Kinds`, `Anatomy` and `Voice` pin and are driven by the scroll; phones get stacked versions where pinning doesn't fit |
+| `components/SeenOn.tsx`, `lib/seenOn.ts` | The "As seen on" press strip. Every entry ships `enabled: false`, so it renders nothing. **Flip `enabled: true` once Navi is actually posted there.** |
+| `components/WaitlistForm.tsx`, `Waitlist.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: the glass pill in the hero and the full form in the closing band; every CTA sends a `source` (`hero`, `waitlist`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons |
+| `app/api/waitlist/route.ts`, `app/api/waitlist/count/route.ts`, `lib/waitlist.ts` | Signup + count; Supabase when configured, else `web/.waitlist.local.jsonl` |
+| `components/Nav.tsx` | Fixed nav: white over the sky, white glass once the hero is behind you |
+| `app/opengraph-image.tsx`, `app/icon.tsx`, `app/apple-icon.tsx` | OG image and icons |
 
-Copy rule: the site never names a model or an AI vendor. It is all "Navi".
-
-Theme: dark and light are two real palettes in `app/globals.css` (`:root` and `[data-theme="light"]`, with a
-`prefers-color-scheme` fallback for no-JS). The MacBook's wallpaper, the bar and the mini windows follow via
-`--wall`, `--panel-*` and `--win-*`; the island stays black because it is the notch.
+Copy rules: the site never names a model or an AI vendor; it is all "Navi". Claims about what is sent off the Mac
+must match `app/privacy/page.tsx`. Type: EB Garamond for the hero headline only, Geist for everything else, Geist
+Mono for timings.
 
 ## Environment
 

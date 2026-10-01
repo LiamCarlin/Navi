@@ -1,149 +1,65 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------
-   Tokens. Dark is the default; light is a real palette (warm off-white,
-   ink text, black hairlines), not an inversion. Both accents clear AA
-   on their background. `data-theme` is set on <html> before first paint
-   by the inline script in layout.tsx; the media query covers no-JS.
+   Tokens. One light palette: white page, ink with a slate fade, sky blue
+   for actions, pale blue-grey cards. Navi's own indigo → purple → pink →
+   orange (PanelStyle.accentColors) lives in the ✦ and the sunset wallpaper
+   the product shots sit on.
    ------------------------------------------------------------------ */
 :root {
-  --bg: #0a0a0b;
-  --bg-elev: #111113;
-  --bg-sunk: #050506;
-  --fg: #f4f4f5;
-  --fg-muted: #a3a3ad;
-  --fg-dim: #85858f;
-  --accent: #8b8cf8;
-  --accent-ink: #0a0a0b;
-  --accent-soft: rgba(139, 140, 248, 0.14);
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.12);
-  --glass: rgba(255, 255, 255, 0.05);
-  --glass-strong: rgba(255, 255, 255, 0.08);
-  --shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.85);
-  /* macOS glass: the ⌘Space bar, Spotlight, mini windows */
-  --panel-bg: rgba(24, 24, 27, 0.82);
-  --panel-fg: #f4f4f5;
-  --panel-muted: #a3a3ad;
-  --panel-dim: #7d7d87;
-  --panel-line: rgba(255, 255, 255, 0.1);
-  --panel-row: rgba(255, 255, 255, 0.07);
-  --win-bg: #1c1c1f;
-  --win-bar: rgba(255, 255, 255, 0.05);
-  --win-line: rgba(255, 255, 255, 0.08);
-  --win-fg: rgba(255, 255, 255, 0.85);
-  --win-muted: rgba(255, 255, 255, 0.5);
-  --win-skel: rgba(255, 255, 255, 0.1);
-  --wall: radial-gradient(75% 65% at 22% 105%, rgba(139, 140, 248, 0.55), transparent 62%),
-    radial-gradient(55% 45% at 88% 10%, rgba(120, 90, 220, 0.35), transparent 60%),
-    linear-gradient(165deg, #1b1b30 0%, #131324 45%, #0c0c16 100%);
-  --menubar: rgba(0, 0, 0, 0.25);
-  --menubar-fg: rgba(255, 255, 255, 0.85);
-  --dock: rgba(255, 255, 255, 0.1);
-  /* MacBook chassis: space black in dark, silver in light */
-  --mb-lid: linear-gradient(180deg, #3a3a3e 0%, #232326 6%, #1b1b1e 94%, #131315 100%);
-  --mb-lid-hi: rgba(255, 255, 255, 0.14);
-  --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.9);
-  --mb-base: linear-gradient(180deg, #3d3d41 0%, #26262a 35%, #1a1a1d 100%);
-  --mb-base-hi: rgba(255, 255, 255, 0.22);
-  --mb-cut: #111113;
-  --mb-shadow: rgba(0, 0, 0, 0.55);
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  color-scheme: dark;
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f7f7f5;
-    --bg-elev: #ffffff;
-    --bg-sunk: #efefec;
-    --fg: #111111;
-    --fg-muted: #5c5c66;
-    --fg-dim: #6f6f78;
-    --accent: #5556e0;
-    --accent-ink: #ffffff;
-    --accent-soft: rgba(85, 86, 224, 0.1);
-    --line: rgba(0, 0, 0, 0.07);
-    --line-strong: rgba(0, 0, 0, 0.1);
-    --glass: rgba(0, 0, 0, 0.03);
-    --glass-strong: rgba(0, 0, 0, 0.05);
-    --shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.25);
-    --panel-bg: rgba(255, 255, 255, 0.72);
-    --panel-fg: #111111;
-    --panel-muted: #5c5c66;
-    --panel-dim: #7a7a84;
-    --panel-line: rgba(0, 0, 0, 0.08);
-    --panel-row: rgba(0, 0, 0, 0.05);
-    --win-bg: #ffffff;
-    --win-bar: #f1f1f0;
-    --win-line: rgba(0, 0, 0, 0.08);
-    --win-fg: #1d1d1f;
-    --win-muted: rgba(0, 0, 0, 0.5);
-    --win-skel: rgba(0, 0, 0, 0.09);
-    --wall: radial-gradient(75% 65% at 22% 105%, rgba(140, 150, 255, 0.55), transparent 62%),
-      radial-gradient(55% 45% at 88% 10%, rgba(255, 190, 210, 0.5), transparent 60%),
-      linear-gradient(165deg, #e6e8f6 0%, #d7dcf3 45%, #c9d0ee 100%);
-    --menubar: rgba(255, 255, 255, 0.45);
-    --menubar-fg: rgba(0, 0, 0, 0.8);
-    --dock: rgba(255, 255, 255, 0.45);
-    --mb-lid: linear-gradient(180deg, #f2f2f4 0%, #d9d9de 5%, #c9c9cf 95%, #b3b3ba 100%);
-    --mb-lid-hi: rgba(255, 255, 255, 0.9);
-    --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.35);
-    --mb-base: linear-gradient(180deg, #ececef 0%, #cfcfd5 40%, #b9b9c0 100%);
-    --mb-base-hi: rgba(255, 255, 255, 0.95);
-    --mb-cut: #a3a3ab;
-    --mb-shadow: rgba(0, 0, 0, 0.28);
-    color-scheme: light;
-  }
-}
-:root[data-theme="light"] {
-  --bg: #f7f7f5;
+  --bg: #ffffff;
   --bg-elev: #ffffff;
-  --bg-sunk: #efefec;
-  --fg: #111111;
-  --fg-muted: #5c5c66;
-  --fg-dim: #6f6f78;
-  --accent: #5556e0;
+  --bg-soft: #f5f7fb;
+  --bg-sunk: #eef1f7;
+  --fg: #19191d;
+  --fg-muted: #5d6270;
+  --fg-dim: #8c929d;
+  --accent: #2563eb;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(85, 86, 224, 0.1);
-  --line: rgba(0, 0, 0, 0.07);
-  --line-strong: rgba(0, 0, 0, 0.1);
-  --glass: rgba(0, 0, 0, 0.03);
-  --glass-strong: rgba(0, 0, 0, 0.05);
-  --shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.25);
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --grad: linear-gradient(90deg, #5e5ce6 0%, #bf5af2 38%, #ff375f 70%, #ff9f0a 100%);
+  --ink-grad: linear-gradient(90deg, #19191d 0%, #626275 100%);
+  --line: rgba(17, 24, 39, 0.08);
+  --line-strong: rgba(17, 24, 39, 0.13);
+  --glass: rgba(17, 24, 39, 0.03);
+  --glass-strong: rgba(17, 24, 39, 0.05);
+  --shadow: 0 24px 60px -24px rgba(30, 41, 80, 0.35);
+  /* Pale blue-grey card, lit from below */
+  --card: radial-gradient(92% 125% at 50% 100%, rgba(221, 226, 238, 0.55) 58%, rgba(187, 197, 221, 0.55) 100%);
+  --card-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.6), 0 1px 2px rgba(30, 41, 80, 0.06);
+  /* Bright blue card */
+  --card-blue: radial-gradient(120% 120% at 80% 0%, rgba(255, 255, 255, 0.18), transparent 60%), linear-gradient(160deg, #6aa5ff 0%, #3c7cf0 45%, #2f62d9 100%);
+  /* The ⌘Space bar and mini windows: light glass, like the app on a light Mac */
   --panel-bg: rgba(255, 255, 255, 0.72);
-  --panel-fg: #111111;
+  --panel-fg: #111114;
   --panel-muted: #5c5c66;
   --panel-dim: #7a7a84;
   --panel-line: rgba(0, 0, 0, 0.08);
   --panel-row: rgba(0, 0, 0, 0.05);
   --win-bg: #ffffff;
-  --win-bar: #f1f1f0;
+  --win-bar: #f3f4f7;
   --win-line: rgba(0, 0, 0, 0.08);
   --win-fg: #1d1d1f;
   --win-muted: rgba(0, 0, 0, 0.5);
-  --win-skel: rgba(0, 0, 0, 0.09);
-  --wall: radial-gradient(75% 65% at 22% 105%, rgba(140, 150, 255, 0.55), transparent 62%),
-    radial-gradient(55% 45% at 88% 10%, rgba(255, 190, 210, 0.5), transparent 60%),
-    linear-gradient(165deg, #e6e8f6 0%, #d7dcf3 45%, #c9d0ee 100%);
-  --menubar: rgba(255, 255, 255, 0.45);
-  --menubar-fg: rgba(0, 0, 0, 0.8);
-  --dock: rgba(255, 255, 255, 0.45);
-  --mb-lid: linear-gradient(180deg, #f2f2f4 0%, #d9d9de 5%, #c9c9cf 95%, #b3b3ba 100%);
-  --mb-lid-hi: rgba(255, 255, 255, 0.9);
-  --mb-lid-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.35);
-  --mb-base: linear-gradient(180deg, #ececef 0%, #cfcfd5 40%, #b9b9c0 100%);
-  --mb-base-hi: rgba(255, 255, 255, 0.95);
-  --mb-cut: #a3a3ab;
-  --mb-shadow: rgba(0, 0, 0, 0.28);
+  --win-skel: rgba(0, 0, 0, 0.07);
+  /* Sunset wallpaper in Navi's colours */
+  --wall: radial-gradient(60% 50% at 78% 18%, rgba(255, 236, 200, 0.95), transparent 60%),
+    radial-gradient(70% 60% at 10% 100%, rgba(110, 108, 240, 0.85), transparent 65%),
+    linear-gradient(180deg, #ffc58f 0%, #ff9a6b 30%, #f26d8f 58%, #b46ad8 80%, #6b6cea 100%);
+  --menubar: rgba(255, 255, 255, 0.28);
+  --menubar-fg: rgba(0, 0, 0, 0.78);
+  --dock: rgba(255, 255, 255, 0.35);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 24px;
+  --r-xl: 32px;
   color-scheme: light;
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-bg-elev: var(--bg-elev);
+  --color-bg-soft: var(--bg-soft);
   --color-bg-sunk: var(--bg-sunk);
   --color-fg: var(--fg);
   --color-fg-muted: var(--fg-muted);
@@ -161,193 +77,345 @@
   --color-win-fg: var(--win-fg);
   --color-win-muted: var(--win-muted);
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: var(--font-garamond), ui-serif, Georgia, serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-sm: var(--r-sm);
   --radius-md: var(--r-md);
   --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
 }
 
-html {
-  scroll-behavior: smooth;
+/* Lenis drives scrolling when motion is allowed; native smooth-scroll would fight it. */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
 }
 
 body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.5;
+  font-size: 16px;
+  line-height: 1.55;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  font-feature-settings: "ss01", "cv11";
-  transition: background-color 200ms, color 200ms;
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: rgba(37, 99, 235, 0.16);
 }
 
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .tnum {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- Type scale: 13 / 15 / 17 / 22 / 32 / 48 / 72 ---------- */
-.h-display {
-  font-size: clamp(3rem, 2.2rem + 3.4vw, 4.5rem);
-  line-height: 1;
-  letter-spacing: -0.03em;
-  font-weight: 600;
-  text-wrap: balance;
-}
-.h-section {
-  font-size: clamp(2rem, 1.6rem + 1.4vw, 3rem);
-  line-height: 1.06;
-  letter-spacing: -0.025em;
-  font-weight: 600;
-  text-wrap: balance;
-}
-.h-card {
-  font-size: 1.375rem;
-  line-height: 1.2;
-  letter-spacing: -0.015em;
-  font-weight: 600;
-}
-.lede {
-  font-size: 1.0625rem;
-  line-height: 1.5;
-  color: var(--fg-muted);
-  max-width: 60ch;
-  text-wrap: pretty;
-}
-.num {
-  font-family: var(--font-sans);
-  font-variant-numeric: tabular-nums;
-  font-size: 0.8125rem;
-  color: var(--fg-dim);
-  letter-spacing: 0.02em;
-}
+/* Component classes sit in a layer so Tailwind utilities (hidden, sm:flex…) can override them. */
+@layer components {
+  /* ---------- Type ---------- */
+  .h-display {
+    font-family: var(--font-serif);
+    font-size: clamp(3rem, 1.6rem + 4.6vw, 5.25rem);
+    line-height: 0.98;
+    letter-spacing: -0.015em;
+    font-weight: 500;
+    text-wrap: balance;
+  }
+  /* Section titles: centred sans, ink fading to slate */
+  .h-section {
+    font-size: clamp(2.2rem, 1.5rem + 2.6vw, 3.5rem);
+    line-height: 1.06;
+    letter-spacing: -0.035em;
+    font-weight: 500;
+    text-wrap: balance;
+    background: var(--ink-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    padding-bottom: 0.06em;
+  }
+  /* Lines() wraps each line in a masked span: the gradient has to sit on the moving span itself */
+  .h-section > span > span {
+    background: var(--ink-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    padding-bottom: 0.08em;
+  }
+  .h-card {
+    font-size: 1.5rem;
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+    font-weight: 500;
+    text-wrap: balance;
+  }
+  .sub {
+    font-size: 1.125rem;
+    line-height: 1.5;
+    color: var(--fg-dim);
+    text-wrap: pretty;
+  }
+  .lede {
+    font-size: 1.125rem;
+    line-height: 1.55;
+    color: var(--fg-muted);
+    max-width: 56ch;
+    text-wrap: pretty;
+  }
+  .body {
+    font-size: 0.97rem;
+    line-height: 1.6;
+    color: var(--fg-muted);
+    text-wrap: pretty;
+  }
+  .label {
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
 
-/* ---------- Surfaces ---------- */
-.card {
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-}
-.glass {
-  background: var(--panel-bg);
-  color: var(--panel-fg);
-  border: 1px solid var(--panel-line);
-  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-}
-.win {
-  background: var(--win-bg);
-  color: var(--win-fg);
-  border: 1px solid var(--win-line);
-  box-shadow: var(--shadow);
-}
+  /* ---------- Surfaces ---------- */
+  .card {
+    background: var(--card);
+    box-shadow: var(--card-ring);
+    border-radius: var(--r-xl);
+  }
+  .card-white {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.85), #f9fafb);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: 0 1px 2px rgba(30, 41, 80, 0.05);
+  }
+  .card-blue {
+    background: var(--card-blue);
+    color: #fff;
+    border-radius: var(--r-xl);
+    box-shadow:
+      inset 1.9px 1.8px 8px rgba(255, 255, 255, 0.18),
+      inset -1px -1px 6px rgba(0, 0, 0, 0.06),
+      0 30px 60px -30px rgba(37, 99, 235, 0.55);
+  }
+  .glass {
+    background: var(--panel-bg);
+    color: var(--panel-fg);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow:
+      0 24px 60px -20px rgba(30, 30, 60, 0.35),
+      0 0 0 0.5px rgba(0, 0, 0, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(28px) saturate(1.7);
+    -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  }
+  /* Dark glass, for overlays on the product shots */
+  .glass-dark {
+    background: linear-gradient(rgba(24, 23, 28, 0.78), rgba(24, 23, 28, 0.84));
+    color: #fff;
+    box-shadow:
+      0 0 0 1px rgba(207, 226, 255, 0.24),
+      0 -0.5px 0 rgba(255, 255, 255, 0.8),
+      0 24px 50px -20px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+  .win {
+    background: var(--win-bg);
+    color: var(--win-fg);
+    border: 1px solid var(--win-line);
+    box-shadow: var(--shadow);
+  }
 
-/* Keycap: light face, darker bottom lip. */
-.keycap {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  height: 1.375rem;
-  padding: 0 0.4rem;
-  border-radius: 6px;
-  border: 1px solid var(--line-strong);
-  background: linear-gradient(180deg, var(--glass-strong), var(--glass));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 1px 0 var(--line-strong);
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--fg-muted);
-  line-height: 1;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
+  /* Keycap */
+  .keycap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    height: 1.5rem;
+    min-width: 1.5rem;
+    padding: 0 0.45rem;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: linear-gradient(180deg, #ffffff, #eef0f4);
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 1px 0 rgba(17, 24, 39, 0.12);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+    line-height: 1;
+    white-space: nowrap;
+    vertical-align: 0.1em;
+  }
+  /* Glass keycaps set inside the white hero headline */
+  .keycap-hero {
+    display: inline-flex;
+    align-items: center;
+    height: 0.9em;
+    padding: 0 0.2em;
+    border-radius: 0.18em;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.14));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.7),
+      inset 0 -0.06em 0 rgba(255, 255, 255, 0.12),
+      0 0 0 1px rgba(255, 255, 255, 0.45),
+      0 0.12em 0.3em -0.08em rgba(10, 40, 100, 0.35);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    font-family: var(--font-sans);
+    font-size: 0.58em;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    vertical-align: 0.14em;
+    line-height: 1;
+  }
 
-.btn-primary,
-.btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 2.75rem;
-  padding: 0 1.25rem;
-  border-radius: 999px;
-  font-size: 0.9375rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.btn-primary {
-  background: var(--fg);
-  color: var(--bg);
-  transition: opacity 150ms;
-}
-.btn-primary:hover {
-  opacity: 0.88;
-}
-.btn-primary:disabled {
-  opacity: 0.6;
-}
-.btn-secondary {
-  border: 1px solid var(--line-strong);
-  color: var(--fg);
-  transition: border-color 150ms;
-}
-.btn-secondary:hover {
-  border-color: var(--fg-dim);
-}
+  /* The blue pill: the one primary action */
+  .btn-primary,
+  .btn-secondary,
+  .btn-dark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.75rem;
+    padding: 0 1.25rem;
+    border-radius: 999px;
+    font-size: 0.97rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    transition:
+      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 200ms,
+      filter 160ms,
+      border-color 160ms;
+  }
+  .btn-primary {
+    color: #fff;
+    background: linear-gradient(180deg, #4b8dff 0%, #2563eb 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+      0 0 0 1px rgba(29, 78, 216, 0.6),
+      0 8px 24px -6px rgba(37, 99, 235, 0.65);
+  }
+  .btn-primary:hover {
+    filter: brightness(1.06);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+      0 0 0 1px rgba(29, 78, 216, 0.6),
+      0 12px 32px -6px rgba(37, 99, 235, 0.75);
+  }
+  .btn-dark {
+    color: #fff;
+    background: #19191d;
+  }
+  .btn-primary:active,
+  .btn-secondary:active,
+  .btn-dark:active {
+    transform: scale(0.97);
+  }
+  .btn-primary:disabled {
+    opacity: 0.6;
+  }
+  .btn-secondary {
+    border: 1px solid var(--line-strong);
+    background: #fff;
+    color: var(--fg);
+  }
+  .btn-secondary:hover {
+    border-color: var(--fg-dim);
+  }
 
-/* Nav links: animated underline, one property on hover. */
-.navlink {
-  position: relative;
-  padding: 0.25rem 0;
-  color: var(--fg-muted);
-  transition: color 150ms;
-}
-.navlink::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: currentColor;
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.navlink:hover {
-  color: var(--fg);
-}
-.navlink:hover::after {
-  transform: scaleX(1);
+  /* Links */
+  .navlink {
+    position: relative;
+    padding: 0.25rem 0;
+    transition: opacity 150ms, color 150ms;
+  }
+  .navlink:hover {
+    opacity: 0.7;
+  }
 }
 
 /* ---------- Hero entrance: CSS only, so the fold renders before hydration ---------- */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(18px);
+    filter: blur(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+.rise {
+  animation: rise 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--rise-delay, 0ms);
+}
+@keyframes frame-up {
+  from {
+    opacity: 0;
+    transform: translateY(80px) scale(0.96);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-.rise {
-  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+.frame-up {
+  animation: frame-up 1.3s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--rise-delay, 0ms);
+}
+
+/* Clouds drift; keycaps float */
+@keyframes drift {
+  from {
+    transform: translateX(-6%);
+  }
+  to {
+    transform: translateX(6%);
+  }
+}
+.drift {
+  animation: drift var(--drift, 40s) ease-in-out infinite alternate;
+}
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: translateY(-12px) rotate(calc(var(--rot, 0deg) + 3deg));
+  }
+}
+.bob {
+  animation: bob var(--bob, 6s) ease-in-out infinite;
 }
 
 /* ---------- Caret, waveform, spinner ---------- */
@@ -369,7 +437,6 @@ body {
     visibility: hidden;
   }
 }
-
 @keyframes bar {
   0%,
   100% {
@@ -386,7 +453,6 @@ body {
 .voice-bar-idle {
   transform: scaleY(0.3);
 }
-
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -396,37 +462,55 @@ body {
   animation: spin 0.9s linear infinite;
 }
 
-/* ---------- The MacBook screen coordinate system ----------
-   Everything drawn on the screen is sized in "u", a unit derived from the
-   screen's own width so the UI scales with the laptop and stays crisp.
-   --L is the logical screen width in u: 880 on desktop, 600 on phones so
-   the island and the bar stay legible when the laptop is small. */
-.screen {
+/* Infinite marquee (app names). Two copies of the track, translated by half. */
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee var(--marquee-dur, 60s) linear infinite;
+}
+.marquee-rev {
+  animation-direction: reverse;
+}
+.marquee-wrap:hover .marquee {
+  animation-play-state: paused;
+}
+.fade-x {
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+
+/* ---------- Screen coordinate systems ----------
+   Everything drawn on a stage is sized in "u", a unit derived from the
+   container's own width so the UI scales and stays crisp. */
+.stage {
   container-type: inline-size;
-  --L: 880;
+  --L: 680;
   --u: calc(100cqw / var(--L));
 }
-@media (max-width: 767px) {
-  .screen {
-    --L: 600;
+@media (max-width: 639px) {
+  .stage {
+    --L: 440;
   }
 }
 
 /* ---------- Motion preferences ---------- */
 @media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
   .caret,
   .voice-bar,
   .spin,
-  .rise {
+  .rise,
+  .frame-up,
+  .drift,
+  .bob,
+  .marquee {
     animation: none;
   }
   .voice-bar {
     transform: scaleY(0.6);
-  }
-  .navlink::after {
-    transition: none;
   }
 }

@@ -50,6 +50,8 @@ final class CaptureScheduler: @unchecked Sendable {
         /// Privacy: another user's session has the screen, a private browser window, an
         /// excluded site, or a password field / secure input is active.
         case otherUserActive, privateWindow, excludedSite, secureInput
+        /// A computer-use run is driving the screen (`AgentActivity`).
+        case agentRunning
     }
 
     init(store: MemoryStore, jev: JevClient, updateStatus: @escaping StatusUpdate) {
@@ -107,6 +109,7 @@ final class CaptureScheduler: @unchecked Sendable {
     func tick(_ cfg: CaptureConfig, now: Date = Date()) async -> Skip? {
         guard cfg.enabled else { return .disabled }
         guard !cfg.paused else { return .paused }
+        if AgentActivity.isBusy { return .agentRunning }
         if FrameCapture.isScreenLocked { return .screenLocked }
         if FrameCapture.isDisplayAsleep { return .displayAsleep }
         if FrameCapture.isScreensaverRunning { return .screensaver }
