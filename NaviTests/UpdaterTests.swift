@@ -123,14 +123,26 @@ struct UpdaterTests {
     }
 
     @Test func feedURLDefaultsAndOverride() {
-        let d = UserDefaults.standard
+        let d = UserDefaults.navi
         let before = d.string(forKey: "updateFeedURL")
         defer { d.set(before, forKey: "updateFeedURL") }
         d.removeObject(forKey: "updateFeedURL")
-        #expect(NaviSettings.updateFeedURL.absoluteString == "https://navi.app/appcast.json")
+        // The build's Info.plist key (project.yml), else the GitHub Releases default.
+        let plist = Bundle.main.object(forInfoDictionaryKey: "NaviUpdateFeedURL") as? String
+        #expect(NaviSettings.updateFeedURL.absoluteString == (plist ?? NaviSettings.defaultUpdateFeedURL.absoluteString))
         d.set("http://localhost:8765/appcast.json", forKey: "updateFeedURL")
         #expect(NaviSettings.updateFeedURL.port == 8765)
-        d.set("not a url", forKey: "updateFeedURL")
-        #expect(NaviSettings.updateFeedURL.host == "navi.app")
+    }
+
+    @Test func feedURLResolution() {
+        let def = NaviSettings.defaultUpdateFeedURL
+        #expect(def.absoluteString == "https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json")
+        #expect(NaviSettings.resolveUpdateFeedURL(override: nil, infoPlist: nil) == def)
+        #expect(NaviSettings.resolveUpdateFeedURL(override: "", infoPlist: "  ") == def)
+        #expect(NaviSettings.resolveUpdateFeedURL(override: "not a url", infoPlist: nil) == def)
+        #expect(NaviSettings.resolveUpdateFeedURL(override: "ftp://x/appcast.json", infoPlist: nil) == def)
+        #expect(NaviSettings.resolveUpdateFeedURL(override: nil, infoPlist: "https://navi.app/appcast.json").host == "navi.app")
+        #expect(NaviSettings.resolveUpdateFeedURL(override: "http://localhost:8000/appcast.json",
+                                                  infoPlist: "https://navi.app/appcast.json").port == 8000)
     }
 }

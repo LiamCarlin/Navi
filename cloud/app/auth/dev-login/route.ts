@@ -5,6 +5,7 @@ import { env } from "@/lib/env";
 import { clientIp, handle, HttpError, json, rateLimited, readJson } from "@/lib/http";
 import { authIpLimiter } from "@/lib/ratelimit";
 import { getSessionProvider, memoryUserForEmail } from "@/lib/sessions";
+import { finishSignIn, jsonWithCookies, parseFlow } from "@/lib/signin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,16 +19,18 @@ function secretMatches(given: string | null): boolean {
 }
 
 /**
- * POST /auth/dev-login { email }  (header `x-dev-login-secret: $DEV_LOGIN_SECRET`)
- * → { accessToken, refreshToken, expiresAt }
- * Exists only while DEV_LOGIN_SECRET is set. Never set it on production.
+ * POST /auth/dev-login { email, trial?, redirect? }  (header `x-dev-login-secret: $DEV_LOGIN_SECRET`)
+ *   no `redirect`          → { accessToken, refreshToken, expiresAt }   (scripts/smoke.sh)
+ *   redirect: "account"    → { ok, redirect: "/account" } + the web session cookie
+ *   redirect: "navi"       → { ok, redirect: "navi://auth/callback?code=…" }  (exercises /auth/exchange)
+ * Exists only while DEV_LOGIN_SECRET is set, and never on a production deployment.
  */
 export const POST = handle(async (req) => {
-  if (!env.devLoginSecret) return new Response("Not found", { status: 404 });
-  const rl = authIpLimiter.hit(clientIp(req));
+  if (!env.devLoginSecret || env.isProduction) return new Response("Not found", { status: 404 });
+  const rl = await authIpLimiter.hit(clientIp(req));
   if (!rl.ok) throw rateLimited(rl.retryAfterSeconds);
 
-  const body = await readJson<{ email?: unknown; secret?: unknown; trial?: unknown }>(req);
+  const body = await readJson<{ email?: unknown; secret?: unknown; trial?: unknown; redirect?: unknown }>(req);
   const given = req.headers.get("x-dev-login-secret") ?? (typeof body.secret === "string" ? body.secret : null);
   if (!secretMatches(given)) throw new HttpError(403, { error: "forbidden", message: "Bad dev login secret." });
 
@@ -41,5 +44,10 @@ export const POST = handle(async (req) => {
   await db.ensureProfile(user.id, user.email || email, new Date());
   // `trial: false` skips the 7-day Pro trial so a smoke test can exercise Free-tier limits.
   if (body.trial === false) await db.updateProfile(user.id, { trialEndsAt: null });
+
+  if (typeof body.redirect === "string") {
+    const done = await finishSignIn(parseFlow(body.redirect), tokens, db);
+    return jsonWithCookies({ ok: true, redirect: done.location }, 200, done.setCookies);
+  }
   return json(tokens);
 });

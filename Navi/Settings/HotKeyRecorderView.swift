@@ -63,7 +63,7 @@ struct HotKeyRecorderView: View {
     private func start() {
         recording = true
         hint = "Use at least one modifier. ⎋ cancels."
-        AppDelegate.shared?.hotKey.unregister()
+        AppDelegate.shared?.hotKey?.unregister()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { ev in
             if ev.keyCode == UInt16(kVK_Escape) {
                 MainActor.assumeIsolated { stop() }
@@ -88,7 +88,7 @@ struct HotKeyRecorderView: View {
     private func stop() {
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         recording = false
-        AppDelegate.shared?.hotKey.register(settings: settings)
+        AppDelegate.shared?.hotKey?.register(settings: settings)
     }
 
     /// Cocoa flags → Carbon mask (cmdKey=256, shiftKey=512, optionKey=2048, controlKey=4096).

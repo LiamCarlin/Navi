@@ -5,6 +5,11 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "./Glyph";
 import { ScrollProgress } from "./motion/ScrollProgress";
 
+/** Navi Cloud (sign-in, /account). Unset → the site stays in waitlist mode with no account links. */
+const CLOUD = process.env.NEXT_PUBLIC_NAVI_CLOUD_URL?.replace(/\/+$/, "");
+/** Flip to 1 at launch: the main CTA becomes "Get Navi" (sign up → account → download) instead of the waitlist. */
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "1" && Boolean(CLOUD);
+
 const links = [
   { href: "#what", label: "What it does" },
   { href: "#how", label: "How it works" },
@@ -50,9 +55,22 @@ export function Nav() {
             </a>
           ))}
         </nav>
-        <a href="#waitlist" className="btn-primary !h-9 !px-4 !text-[14px]">
-          Join the waitlist
-        </a>
+        <div className="flex items-center gap-4">
+          {CLOUD && (
+            <a href={`${CLOUD}/auth/start?redirect=account`} className="navlink hidden text-[14px] font-medium sm:inline">
+              Sign in
+            </a>
+          )}
+          {SIGNUPS_OPEN ? (
+            <a href={`${CLOUD}/auth/start?redirect=account`} className="btn-primary !h-9 !px-4 !text-[14px]">
+              Get Navi
+            </a>
+          ) : (
+            <a href="#waitlist" className="btn-primary !h-9 !px-4 !text-[14px]">
+              Join the waitlist
+            </a>
+          )}
+        </div>
       </div>
     </header>
   );

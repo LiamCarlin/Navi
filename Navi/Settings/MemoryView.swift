@@ -11,7 +11,7 @@ struct MemoryView: View {
     @State private var cleanupBusy = false
     @State private var cleanupMessage: String?
 
-    private var memory: MemoryServicing? { AppDelegate.shared?.services.memory }
+    private var memory: MemoryServicing? { AppDelegate.shared?.services?.memory }
     /// Recall gate (account workstream): the toggle is replaced by the upsell without the entitlement.
     private var entitled: Bool { account.entitlements.recall }
 

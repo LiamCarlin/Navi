@@ -4,8 +4,8 @@ import AppKit
 enum Onboarding {
     static let key = "hasCompletedOnboarding"
     static var hasCompleted: Bool {
-        get { UserDefaults.standard.bool(forKey: key) }
-        set { UserDefaults.standard.set(newValue, forKey: key) }
+        get { UserDefaults.navi.bool(forKey: key) }
+        set { UserDefaults.navi.set(newValue, forKey: key) }
     }
 }
 

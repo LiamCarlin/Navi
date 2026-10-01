@@ -153,6 +153,7 @@ final class VoiceCommandExecutor {
         case .openURL, .webSearch, .browser: lastWasBrowser = true
         case .task(_, let surface, _, _, _): lastWasBrowser = surface == .browser
         case .openApp, .openAppNamed, .system: lastWasBrowser = false
+        case .window(let w, _): if w.verb == .quit { lastWasBrowser = false }
         case .answer, .control: break
         }
         let result: String
@@ -226,6 +227,15 @@ final class VoiceCommandExecutor {
                 lastApp = (app.bundleIdentifier, app.localizedName ?? "the browser")
             }
             return Task.isCancelled ? .cancelled : .done(done)
+        case .window(let w, _):
+            switch await WindowControls.perform(w, fallbackApp: lastApp?.bundleID ?? lastApp?.name, input: input) {
+            case .success(let done):
+                if w.verb == .quit || w.verb == .hide, let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != AgentTarget.selfPID {
+                    lastApp = (f.bundleIdentifier, f.localizedName ?? "the app")
+                }
+                return .done(done)
+            case .failure(let e): return .failed(e.errorDescription ?? "\(e)")
+            }
         }
     }
 
@@ -253,6 +263,48 @@ final class VoiceCommandExecutor {
         return continues || lastWasBrowser || TaskSurface.isPageAction(goal)
     }
 
+    /// Two or more instructions in one goal — "open chrome, find the newest Patriots score, and
+    /// text it to Jack" — when the segmenter kept them together. Run as one step, the whole
+    /// sentence used to be typed into Google; these get the planner's steps (and the found
+    /// score carried into the text). A goal that dictates text ("text mom open the garage")
+    /// is one instruction, whatever verbs the text holds.
+    nonisolated static func isCompound(_ goal: String) -> Bool {
+        let lower = " " + goal.lowercased() + " "
+        let parts = lower.replacingOccurrences(of: #"\s+(and then|and also|after that|then|and)\s+|[,;]"#, with: "|", options: .regularExpression)
+            .split(separator: "|")
+            .map { $0.split(separator: " ").map { String($0).trimmingCharacters(in: .punctuationCharacters) }.filter { !$0.isEmpty } }
+            .filter { !$0.isEmpty }
+        var instructions = 0
+        for words in parts {
+            let first = words.drop { UtteranceSegmenter.leadingFillers.contains($0) || ["can", "you", "please", "i", "want", "to"].contains($0) }.first
+            guard let first, UtteranceSegmenter.imperativeVerbs.contains(first) else { continue }
+            instructions += 1
+            // Text being dictated swallows everything after it.
+            if UtteranceSegmenter.dictationVerbs.contains(first) { break }
+        }
+        return instructions >= 2
+    }
+
+    /// Where a spoken task the decider sent to the browser really runs. One that names a page
+    /// or asks for something to be found stays a web task; anything else ("change it to
+    /// cloud", "select local") is about what is on screen: the open tab when a browser is in
+    /// front, otherwise the app in front — never a Google search for the sentence.
+    nonisolated static func voiceSurface(goal: String, surface: TaskSurface.Surface, frontmostBundle: String?,
+                             namesPage: (String) -> Bool) -> (surface: TaskSurface.Surface, currentTab: Bool) {
+        guard surface == .browser, !namesPage(goal) else { return (surface, false) }
+        let lower = goal.lowercased()
+        let wantsWeb = AgentRun.isLookup(goal)
+            || lower.range(of: #"\b(search|google|look up|lookup|find|browse|website|web|online|internet|site|page|tab|link|url)\b"#, options: .regularExpression) != nil
+        if wantsWeb { return (surface, false) }
+        if let b = frontmostBundle, AXSnapshotter.isBrowser(b) { return (.browser, true) }
+        return (.nativeApp, false)
+    }
+
+    static func namesPage(_ goal: String) -> Bool {
+        !TextCandidates.urls(in: goal).isEmpty || UltrafastBridge.knownSiteURL(in: goal) != nil || AppSkills.startURL(for: goal) != nil
+            || UserKnowledge.liveStartURL(for: goal) != nil
+    }
+
     /// A freshly launched app takes a moment to come forward and put up a
     /// window; a follow-up like "make the title hello" must not run against
     /// whatever was in front before.
@@ -275,12 +327,20 @@ final class VoiceCommandExecutor {
     private func runTask(_ item: Item, goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, continues: Bool) async -> Outcome {
         var context = self.context()
         var task = goal
+        let compound = Self.isCompound(goal) && services.claude.isConfigured
+        var surface = surface
+        var useCurrentTab = useCurrentTab
+        if !compound, !useCurrentTab {
+            let r = Self.voiceSurface(goal: goal, surface: surface, frontmostBundle: context.frontmostApp, namesPage: Self.namesPage)
+            surface = r.surface
+            useCurrentTab = r.currentTab
+        }
         // "Look up Matt Armstrong" right after "go to YouTube": the page in front is
         // where it happens. Jev's start_from head is not always asked (no URL yet
         // when the words arrived), so decide locally too: a browser is in front,
         // the previous instruction was on the web or this one continues it, and
         // no other site or URL is named.
-        let useCurrentTab = useCurrentTab || Self.continuesOnCurrentTab(goal: goal, surface: surface, frontmostApp: context.frontmostApp,
+        useCurrentTab = useCurrentTab || Self.continuesOnCurrentTab(goal: goal, surface: surface, frontmostApp: context.frontmostApp,
                                                                         continues: continues, lastWasBrowser: lastWasBrowser)
         // A follow-up meant for the app the previous instruction used, when that app isn't in front (background mode).
         if continues, let last = lastApp, let bid = last.bundleID, context.frontmostApp != bid,
@@ -292,7 +352,7 @@ final class VoiceCommandExecutor {
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
         let options = ComputerAgent.RunOptions(background: !foreground, showOverlay: false, maxSteps: maxSteps,
-                                               planWithClaude: false, surface: surface, useCurrentTab: useCurrentTab,
+                                               planWithClaude: compound, surface: surface, useCurrentTab: useCurrentTab,
                                                maxClaudeFallbacks: Self.voiceClaudeFallbacks)
         let handle = services.agent.run(task: task, context: context, options: options)
         currentRun = handle
@@ -333,6 +393,12 @@ final class VoiceCommandExecutor {
     }
 
     private func answer(_ item: Item, question: String, wantsMemory: Bool) async -> Outcome {
+        // Math and conversions need no model: the answer is ready before the island finishes animating.
+        if !wantsMemory, let r = VoiceDecider.localMath(question) {
+            let line = r.kind == .arithmetic ? "\(r.expression.trimmingCharacters(in: CharacterSet(charactersIn: "=? "))) = \(r.answer)" : r.answer
+            onEvent?(.answer(item, delta: line))
+            return .done(line)
+        }
         var hits: [MemoryHit] = []
         if wantsMemory { hits = await services.memory.search(query: question, limit: 6) }
         let stream = services.answers.streamAnswer(query: question, context: context(), memory: hits)

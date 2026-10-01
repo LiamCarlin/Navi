@@ -65,18 +65,18 @@ final class KeychainTokenStore: CloudTokenStore, @unchecked Sendable {
     var accessToken: String? { Keychain.get(.naviAccess) }
     var refreshToken: String? { Keychain.get(.naviRefresh) }
     var accessExpiresAt: Date? {
-        let t = UserDefaults.standard.double(forKey: Self.expiresKey)
+        let t = UserDefaults.navi.double(forKey: Self.expiresKey)
         return t > 0 ? Date(timeIntervalSince1970: t) : nil
     }
     func store(access: String, refresh: String?, expiresAt: Date?) {
         Keychain.set(.naviAccess, value: access)
         if let refresh { Keychain.set(.naviRefresh, value: refresh) }
-        UserDefaults.standard.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
+        UserDefaults.navi.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
     }
     func clear() {
         Keychain.set(.naviAccess, value: nil)
         Keychain.set(.naviRefresh, value: nil)
-        UserDefaults.standard.removeObject(forKey: Self.expiresKey)
+        UserDefaults.navi.removeObject(forKey: Self.expiresKey)
     }
 }
 
@@ -125,7 +125,20 @@ final class CloudTransport: @unchecked Sendable {
         return CloudTransport()
     }()
 
-    static let defaultBaseURL = "https://api.navi.app"
+    /// The production API when the build names none (project.yml `NaviCloudBaseURL`).
+    static let fallbackBaseURL = "https://api.navi.app"
+    /// The build's `NaviCloudBaseURL` Info.plist key (set in project.yml, like the update
+    /// feed), else `fallbackBaseURL`. The `cloudBaseURL` default still overrides it.
+    static let defaultBaseURL: String = resolveDefaultBaseURL(
+        infoPlist: Bundle.main.object(forInfoDictionaryKey: "NaviCloudBaseURL") as? String)
+
+    static func resolveDefaultBaseURL(infoPlist: String?) -> String {
+        guard var s = infoPlist?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
+              let u = URL(string: s), let scheme = u.scheme?.lowercased(), ["https", "http"].contains(scheme), u.host != nil
+        else { return fallbackBaseURL }
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
     static let baseURLKey = "cloudBaseURL"
     static let useCloudKey = "useCloud"
     /// Sent on every cloud request so the server can refuse builds it no longer serves (426).
@@ -146,7 +159,7 @@ final class CloudTransport: @unchecked Sendable {
             cfg.timeoutIntervalForRequest = 600     // streaming answers and agent turns
             cfg.waitsForConnectivity = false
             cfg.httpAdditionalHeaders = ["User-Agent": "Navi/\(Self.appVersion) (macOS)"]
-            self.session = URLSession(configuration: cfg)
+            self.session = URLSession(configuration: TestHost.guarded(cfg))
         }
         self.baseURLOverride = baseURL
         self.tokens = tokens
@@ -169,7 +182,7 @@ final class CloudTransport: @unchecked Sendable {
     /// at a mock server.
     var baseURL: URL {
         if let baseURLOverride { return baseURLOverride }
-        if let s = UserDefaults.standard.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let s = UserDefaults.navi.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !s.isEmpty, let u = URL(string: s.hasSuffix("/") ? String(s.dropLast()) : s) {
             return u
         }
@@ -178,7 +191,7 @@ final class CloudTransport: @unchecked Sendable {
 
     /// `NaviSettings.useCloud` (default true), read off the main actor.
     var useCloud: Bool {
-        UserDefaults.standard.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.standard.bool(forKey: Self.useCloudKey)
+        UserDefaults.navi.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.navi.bool(forKey: Self.useCloudKey)
     }
 
     /// A session exists (tokens in the store).
@@ -494,6 +507,29 @@ final class CloudTransport: @unchecked Sendable {
         let t = try Self.decodeTokens(data)
         tokens.store(access: t.accessToken, refresh: t.refreshToken, expiresAt: t.expiresAt)
         Log.app.info("cloud: session established")
+    }
+
+    /// True when a token expiring at `expiresAt` would lapse within `lifetime`. An unknown
+    /// expiry is trusted (a 401 is the backstop).
+    static func needsRefresh(expiresAt: Date?, validFor lifetime: TimeInterval, now: Date = Date()) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt.timeIntervalSince(now) < lifetime
+    }
+
+    /// An access token that stays valid for at least `lifetime`, for a process that cannot
+    /// refresh one itself (the bundled browser runner never sees the refresh token). When the
+    /// current token would lapse sooner it is refreshed first, through the same single-flight
+    /// refresher every request uses. A refresh that fails on the network still yields a token
+    /// that has not expired; nil when signed out (an auth failure on refresh signs out).
+    func accessToken(validFor lifetime: TimeInterval, now: Date = Date()) async -> String? {
+        let current = tokens.accessToken.flatMap { $0.isEmpty ? nil : $0 }
+        if let current, !Self.needsRefresh(expiresAt: tokens.accessExpiresAt, validFor: lifetime, now: now) { return current }
+        if let refresh = tokens.refreshToken, !refresh.isEmpty {
+            _ = await refresher.refresh(using: self, replacing: current)
+        }
+        guard let token = tokens.accessToken, !token.isEmpty else { return nil }
+        if let exp = tokens.accessExpiresAt, exp <= now { return nil }
+        return token
     }
 
     /// `POST /auth/refresh { refreshToken }`. Returns false (and signs out) when the session is gone.

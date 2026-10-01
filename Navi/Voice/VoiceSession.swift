@@ -152,6 +152,8 @@ final class VoiceSession: ObservableObject {
         // Open the model connections now, so the first decision skips the TLS handshake.
         services.jev.warm()
         services.claude.warm()
+        // And the Chrome bridge: the first spoken web task used to spend 2–5 s "Connecting to Chrome…".
+        UltrafastBridge.prewarm()
         listener.contextualStrings = ["Navi", "Jev"] + AppIndex.shared.entries.prefix(300).map(\.name)
         listener.echoCancellation = settings.voiceEchoCancellation
         listener.onEvent = { [weak self] ev in self?.handle(ev) }
@@ -634,11 +636,13 @@ final class VoiceSession: ObservableObject {
             if isAnswer { answerText = ""; isAnswering = true } else if !answerText.isEmpty { answerText = "" }
             lastOutcome = nil
         case .progress(_, let text):
-            activity?.detail = text
+            // Engine diagnostics (model names, confidences, latencies) stay out of the island.
+            if DeveloperMode.isEnabled { activity?.detail = text }
+            else if !PanelWording.isDiagnostic(text) { activity?.detail = PanelWording.userFacing(text) }
         case .answer(_, let delta):
             answerText += delta
         case .needsApproval(_, let d, let r):
-            approval = (d, r)
+            approval = DeveloperMode.isEnabled ? (d, r) : (PanelWording.userFacing(d), PanelWording.userFacing(r))
             VoiceSounds.play(.attention)
         case .approvalResolved:
             approval = nil
@@ -654,7 +658,7 @@ final class VoiceSession: ObservableObject {
                 if case .answer = item.command { showOutcome("", ok: true) } else { showOutcome(s, ok: true) }
                 VoiceSounds.play(.done)
             case .failed(let m):
-                showOutcome(m, ok: false)
+                showOutcome(DeveloperMode.isEnabled ? m : PanelWording.userFacing(m), ok: false)
                 VoiceSounds.play(.failed)
             case .cancelled:
                 showOutcome("Stopped", ok: true)
@@ -694,6 +698,7 @@ final class VoiceSession: ObservableObject {
         ctx.recentDone = executor.recent.isEmpty ? Array(segmenter.history.suffix(3)) : Array(executor.recent.suffix(3))
         ctx.appCandidates = VoiceAppMatcher.candidates(in: clause.head, index: AppIndex.shared, running: AppIndex.runningBundleIDs())
         ctx.isPaused = phase == .paused
+        ctx.runningApps = WindowControls.runningAppNames()
         ctx.userUsuallyUses = UserHabits.current?.cachedProfile().flatMap { UserHabits.surfaceHint(task: clause.head, profile: $0) }
         ctx.headMayContinueAppName = !clause.hasBoundary && VoiceAppMatcher.mayContinueAppName(clause.head, index: AppIndex.shared)
         return ctx

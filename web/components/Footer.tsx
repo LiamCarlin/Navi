@@ -1,5 +1,16 @@
 import { Wordmark } from "./Glyph";
 
+const CLOUD = process.env.NEXT_PUBLIC_NAVI_CLOUD_URL?.replace(/\/+$/, "");
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "1" && Boolean(CLOUD);
+
+/** Account links appear once Navi Cloud is live; Download once sign-ups are open (the DMG lives on /account). */
+const accountLinks = CLOUD
+  ? [
+      ...(SIGNUPS_OPEN ? [{ href: `${CLOUD}/account#download`, label: "Download" }] : []),
+      { href: `${CLOUD}/account`, label: "Account" },
+    ]
+  : [];
+
 const columns = [
   {
     title: "Product",
@@ -9,6 +20,7 @@ const columns = [
       { href: "/#voice", label: "Voice" },
       { href: "/#recall", label: "Recall" },
       { href: "/#pricing", label: "Pricing" },
+      ...accountLinks,
     ],
   },
   {

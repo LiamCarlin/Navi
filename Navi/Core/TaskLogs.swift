@@ -21,12 +21,14 @@ enum TaskLogs {
     static let knownFiles = ["agent-last-run.log", "agent-runs.log", "agent-runs.1.log", "ultrafast-last-run.jsonl", "debug.log"]
 
     static var directory: URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi", isDirectory: true)
+        // Under the test host a scratch dir, so nothing in a test can purge the user's logs.
+        let home = TestHost.isActive ? TestHost.scratchDirectory : URL(fileURLWithPath: NSHomeDirectory())
+        return home.appendingPathComponent("Library/Logs/Navi", isDirectory: true)
     }
     static var runsDirectory: URL { directory.appendingPathComponent("runs", isDirectory: true) }
 
     /// Whether task logs are written at all. Read off the main actor (UserDefaults).
-    static var isEnabled: Bool { isEnabled(defaults: .standard) }
+    static var isEnabled: Bool { isEnabled(defaults: .navi) }
 
     static func isEnabled(defaults: UserDefaults, debugBuild: Bool = isDebugBuild) -> Bool {
         if defaults.bool(forKey: DeveloperMode.defaultsKey) { return true }

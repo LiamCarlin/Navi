@@ -14,6 +14,10 @@ const PLANS: Plan[] = [
   { id: "pro-recall", name: "Pro + Recall", blurb: "Pro, plus a memory of your screen.", monthly: 30, yearly: 288 },
 ];
 
+/** Navi Cloud; with NEXT_PUBLIC_SIGNUPS_OPEN=1 the buttons start sign-up instead of the waitlist. */
+const CLOUD = process.env.NEXT_PUBLIC_NAVI_CLOUD_URL?.replace(/\/+$/, "");
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "1" && Boolean(CLOUD);
+
 type Cell = boolean | string;
 const ROWS: [string, Cell, Cell, Cell][] = [
   ["Apps, files, settings, calculator", true, true, true],
@@ -49,11 +53,17 @@ export function Pricing() {
     </div>
   );
 
-  const cta = (p: Plan) => (
-    <a href="#waitlist" onClick={() => setSource(`pricing-${p.id}`)} className={`${p.id === "pro" ? "btn-primary" : "btn-secondary"} !h-10 w-full`}>
-      Join the waitlist
-    </a>
-  );
+  const cta = (p: Plan) =>
+    SIGNUPS_OPEN ? (
+      // Everyone starts on the 7-day Pro trial; plans are picked on /account.
+      <a href={`${CLOUD}/auth/start?redirect=account`} className={`${p.id === "pro" ? "btn-primary" : "btn-secondary"} !h-10 w-full`}>
+        {p.monthly === 0 ? "Get started" : "Start free trial"}
+      </a>
+    ) : (
+      <a href="#waitlist" onClick={() => setSource(`pricing-${p.id}`)} className={`${p.id === "pro" ? "btn-primary" : "btn-secondary"} !h-10 w-full`}>
+        Join the waitlist
+      </a>
+    );
 
   return (
     <section id="pricing" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">

@@ -3,19 +3,26 @@
 # no PYTHON* environment — the way it will on someone else's Mac.
 #
 #   1. --version / --selftest: every dependency imports from the bundled interpreter
-#   2. a real one-step browser task against the user's Chrome (needs the Jev key in the
-#      Keychain and Chrome with remote debugging allowed; skipped with --no-task)
+#   2. a real one-step browser task against the user's Chrome (Chrome with remote debugging
+#      allowed; skipped with --no-task). Credentials, as a customer's Mac has them:
+#        --cloud <url> --token <access token>   through Navi Cloud (no vendor keys), e.g. the
+#                                               local cloud: cd cloud && MOCK_UPSTREAM=1
+#                                               DEV_LOGIN_SECRET=dev npm run dev, token from
+#                                               POST /auth/dev-login (docs/RELEASE.md)
+#        otherwise the developer's Jev key (env or Navi's Keychain item)
 #
 # Usage: scripts/dev/runtime-smoke.sh [Navi.app] [--no-task] [--goal "…"] [--url https://…]
 #   default app: build/release/Navi.app, then /tmp/NaviDist/Navi.app, then /Applications/Navi.app
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-APP=""; TASK=1; GOAL="read the page title"; URL="https://example.com"
+APP=""; TASK=1; GOAL="read the page title"; URL="https://example.com"; CLOUD=""; TOKEN=""
 while (( $# )); do
   case "$1" in
     --no-task) TASK=0; shift ;;
     --goal) GOAL="$2"; shift 2 ;;
     --url) URL="$2"; shift 2 ;;
+    --cloud) CLOUD="$2"; shift 2 ;;
+    --token) TOKEN="$2"; shift 2 ;;
     *) APP="$1"; shift ;;
   esac
 done
@@ -51,6 +58,14 @@ echo
 
 (( TASK )) || { echo "▸ 3/3 task skipped (--no-task)"; exit 0; }
 echo "▸ 3/3 one-step task: \"$GOAL\" on $URL (background tab, closed afterwards)"
+[[ "$DOCTOR" == "ready" ]] || { echo "    Chrome is not reachable ($DOCTOR) — open Chrome and allow remote debugging (chrome://inspect/#remote-debugging)"; exit 1; }
+if [[ -n "$CLOUD" ]]; then
+  # What UltrafastBridge passes a signed-in user: no vendor key at all.
+  [[ -n "$TOKEN" ]] || { echo "    --cloud needs --token <access token>"; exit 1; }
+  echo "    via Navi Cloud $CLOUD (no vendor keys)"
+  CREDS=(NAVI_JEV_TRANSPORT=navi NAVI_CLOUD_URL="$CLOUD" NAVI_CLOUD_TOKEN="$TOKEN" NAVI_CLOUD_FEATURE=task
+         NAVI_CLOUD_RUN="$(uuidgen | tr 'A-Z' 'a-z')")
+else
 # Keys: the environment first (no Keychain prompt), else Navi's Keychain item (may prompt once).
 JEV="${TYPESAFE_API_KEY:-}"; ANTH="${ANTHROPIC_API_KEY:-}"
 if [[ -z "$JEV" ]]; then
@@ -58,9 +73,10 @@ if [[ -z "$JEV" ]]; then
   JEV="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("TYPESAFE_API_KEY",""))' 2>/dev/null || true)"
   [[ -n "$ANTH" ]] || ANTH="$(printf '%s' "$KEYS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ANTHROPIC_API_KEY",""))' 2>/dev/null || true)"
 fi
-[[ -n "$JEV" ]] || { echo "    no TYPESAFE_API_KEY (Keychain or env) — cannot run a task"; exit 1; }
-[[ "$DOCTOR" == "ready" ]] || { echo "    Chrome is not reachable ($DOCTOR) — open Chrome and allow remote debugging (chrome://inspect/#remote-debugging)"; exit 1; }
-"${CLEAN[@]}" TYPESAFE_API_KEY="$JEV" ANTHROPIC_API_KEY="${ANTH:-${ANTHROPIC_API_KEY:-}}" TYPESAFE_MODEL=jev-latest \
+[[ -n "$JEV" ]] || { echo "    no TYPESAFE_API_KEY (Keychain or env) and no --cloud — cannot run a task"; exit 1; }
+CREDS=(TYPESAFE_API_KEY="$JEV" ANTHROPIC_API_KEY="${ANTH:-${ANTHROPIC_API_KEY:-}}")
+fi
+"${CLEAN[@]}" "${CREDS[@]}" TYPESAFE_MODEL=jev-latest \
   NAVI_TEXT_MODEL=claude-haiku-4-5 NAVI_BACKGROUND_TAB=1 NAVI_TAB_POLICY=close \
   "$PY" -I -B -u "$RT/navi_runner.py" --url "$URL" --goal "$GOAL" --max-steps 3 2>"$TMPDIR/navi-smoke-stderr.log" \
   | python3 -c '

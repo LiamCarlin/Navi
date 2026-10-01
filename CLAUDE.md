@@ -24,6 +24,10 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 - Ad-hoc code signing, no sandbox (needed for Accessibility, ScreenCaptureKit, AppleScript).
 - **No third-party Swift packages.** Everything is URLSession / Foundation / AppKit /
   SwiftUI / Vision / ScreenCaptureKit / SQLite3 (C API). Keep it dependency-free.
+- Tests run hosted inside Navi.app, which detects it (`Core/TestHost`) and starts nothing:
+  settings go to a throwaway suite (`UserDefaults.navi` — **use it, never `.standard`**),
+  Keychain is in-memory, data dirs are scratch, network is off. Network tests take
+  `.needsNetwork` and run with `NAVI_TEST_NETWORK=1 scripts/test.sh` (keys from env).
 - When building concurrently with other agents, pass a private derived-data
   dir: `scripts/build.sh Debug build/DerivedData-<yourname>`.
 - `scripts/install.sh` is guarded (`scripts/install-guard.sh`, test:
@@ -129,6 +133,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     conversation with mikey" went to a group chat 3/3 without it, "Mikey Ku" 3/3 with.
     After each digest `MemoryService` rewrites the vault's `Navi/How you work.md`.
     `scripts/axprobe` takes `AXPROBE_CONTEXT='[…]'` for the per-step A/B.
+  - **Speed rules** (docs/TYPESAFE_CU.md "Speed and success"): copies of one target pool Jev's
+    probability (`CUDecide.mergeCopies`); one-click goals ("click on X", "select Y") click the
+    one matching label when Jev stops short and end when that click lands (`CUFacts.literalTarget`);
+    items that just appeared are marked `new`; a typed field that reads back what was typed needs
+    no verify call; the writer starts while a stopped screen is re-read with OCR; completed runs
+    are replayed for the same goal in the same app (`CUReplay`, self-healing, never typing or
+    send/pay/delete). The writer stays Sonnet: Haiku was 0.7 s faster but wrong on `achieved`
+    8/33 in an offline A/B on saved stops. Screen-memory capture pauses while a run drives the
+    screen (`AgentActivity`).
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
@@ -249,7 +262,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     transcript to catch up, then any 3-word run it shares (one misheard word allowed) drops
     the clause *whole* — trimming kept misheard video words and ran them as a task — and a
     ≤ 2-word tail right after such a drop goes too, control words excepted. Commands
-    run serially in `VoiceCommandExecutor`: apps launch directly, tasks go to
+    run serially in `VoiceCommandExecutor`: apps launch directly; "quit Messages" / "close out
+    of this" / "hide Slack" / "minimize it" are `WindowControls` (terminate, the window's close
+    button, ⌘W on a browser tab — a quarter of logged spoken tasks, all failed in the agent);
+    math and conversions are answered by `Calculator` (`VoiceDecider.localMath`); a goal with
+    two instructions ("open chrome, find the score, and text it to Jack") gets the planner
+    (`isCompound`); a browser-bound goal that names no page and asks for no search runs on the
+    app/tab in front instead of Googling the sentence (`voiceSurface`); tasks go to
     `ComputerAgent.run(options:)` with `planWithClaude: false` and Jev's surface
     (no planner round trip, no overlay pill), questions stream from Claude into the
     island; "stop", "undo", "yes/no", "pause", "stop listening" are `control_navi`.

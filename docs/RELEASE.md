@@ -48,13 +48,29 @@ beyond `/usr/bin/python3` for JSON.
    release signed with the *old* key whose binary carries the *new* public key; only then
    switch signing to the new key.
 
-4. **Hosting** — `appcast.json` at `https://navi.app/appcast.json` and DMGs under
-   `https://navi.app/downloads/`. With the `web/` Next.js deploy: put both in `web/public/`
-   (`web/public/appcast.json`, `web/public/downloads/Navi-<v>.dmg`) and deploy. The DMG can
-   instead live on a GitHub Release; then pass `NAVI_DOWNLOAD_BASE` (below) so the appcast
-   URL points there. The feed URL is fixed in the app (`NaviSettings.updateFeedURL`).
+4. **Hosting — GitHub Releases (default, nothing to set up).** `LiamCarlin/Navi` is public,
+   so release assets are downloadable by anyone, served from GitHub's CDN, with no domain,
+   no bandwidth bill and no 100 MB-per-file deploy limit to worry about:
 
-5. Tools on the release Mac: Xcode 26, `brew install xcodegen uv`.
+   | What | URL |
+   |---|---|
+   | DMG of a version (the appcast's `url`) | `https://github.com/LiamCarlin/Navi/releases/download/v<version>/Navi-<version>.dmg` |
+   | Update feed (compiled into the app as `NaviUpdateFeedURL`, project.yml) | `https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json` |
+   | **Download button on the website** (always the newest) | `https://github.com/LiamCarlin/Navi/releases/latest/download/Navi.dmg` |
+
+   `/releases/latest/` only ever resolves to a *published*, non-prerelease release, so a draft
+   is invisible to installed copies until you press Publish. `scripts/publish-release.sh`
+   uploads all three files as a draft. Another repo: `NAVI_RELEASE_REPO=owner/name` for both
+   scripts (and change `NaviUpdateFeedURL` in project.yml).
+
+   **Later, on the website** (once `web/` has a domain): serve the feed from the site —
+   either copy `appcast.json` into `web/public/appcast.json` on each release, or (better, no
+   redeploy per release) add a redirect in `web/next.config.ts` from `/appcast.json` and
+   `/download` to the GitHub `latest/download/…` URLs. Then set `NaviUpdateFeedURL` to
+   `https://<domain>/appcast.json` in project.yml. Keep the DMGs on GitHub either way —
+   Vercel deployments are a poor place for 30–70 MB binaries.
+
+5. Tools on the release Mac: Xcode 26, `brew install xcodegen uv gh`, `gh auth login`.
 
 ## Cutting a release
 
@@ -64,21 +80,29 @@ beyond `/usr/bin/python3` for JSON.
 2. Write `RELEASE_NOTES.txt` (plain text; it is shown verbatim in the update window).
 3. Run:
    ```
-   NAVI_DOWNLOAD_BASE=https://navi.app/downloads scripts/release.sh --notes RELEASE_NOTES.txt
+   scripts/release.sh --notes RELEASE_NOTES.txt
    ```
    Add `--universal` for Intel Macs (cross-installs the x86_64 Python tree with uv).
-   Takes a few minutes; most of it is notarization (`--wait`).
-4. Upload `build/release/Navi-<v>.dmg` and `build/release/appcast.json` to the hosting
-   location. Check `curl -s https://navi.app/appcast.json | python3 -m json.tool`.
+   Takes a few minutes; most of it is notarization (`--wait`). It ends with either
+   "Shippable." or a list of exactly what is missing (certificate, notary profile, update
+   key, notarization).
+4. Upload: `scripts/publish-release.sh` → a **draft** release `v<version>` with
+   `Navi-<v>.dmg`, `Navi.dmg` (same file, for the stable download link) and `appcast.json`.
+   It refuses a build that is not notarized or an unsigned appcast. Open the draft on GitHub,
+   check it, press **Publish release** (or rerun with `--publish`). Then:
+   `curl -sL https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json | python3 -m json.tool`
 5. Verify from a *different* user account or Mac: download the DMG in Safari, drag to
    /Applications, open — no Gatekeeper warning beyond the standard "downloaded from the
    internet" dialog. `spctl --assess --type execute -vv /Applications/Navi.app` says
-   `accepted source=Notarized Developer ID`.
-6. Tag: `git tag v<version> && git push --tags`.
+   `accepted source=Notarized Developer ID`. Then the smoke tests in
+   `docs/LAUNCH_CHECKLIST.md` § 6.
+6. Tag: `git tag v<version> && git push --tags` (the release already created the tag on
+   GitHub; `git fetch --tags` is enough if you prefer).
 
 Environment knobs: `NAVI_SIGN_IDENTITY` (default `Developer ID Application`),
 `NAVI_NOTARY_PROFILE` (default `navi`), `NAVI_UPDATE_KEY` (default
-`~/.config/navi-release/update-key.pem`), `NAVI_DOWNLOAD_BASE`.
+`~/.config/navi-release/update-key.pem`), `NAVI_RELEASE_REPO` (default `LiamCarlin/Navi`),
+`NAVI_DOWNLOAD_BASE` (default `https://github.com/$NAVI_RELEASE_REPO/releases/download/v<version>`).
 
 ### Dry run (no certificate, no notary)
 
@@ -87,9 +111,49 @@ scripts/release.sh --dry-run
 ```
 Signs ad-hoc (or with whatever the keychain has), skips notarization, still produces the
 DMG and a signed `appcast.json` — the same artifacts, minus Gatekeeper acceptance on other
-Macs. `scripts/install.sh --release` runs this and installs the app out of the DMG, so the
-bundled browser runtime gets exercised locally. `scripts/dev/runtime-smoke.sh` then proves
-the runtime works with the repo checkout hidden.
+Macs — and lists what is missing for a real release. Verified 2026-10-01 on this Mac (no
+Developer ID certificate): Release build → 30 MB DMG with the bundled runtime → appcast
+signed with the key that matches `Updater.swift`. `scripts/install.sh --release` runs this
+and installs the app out of the DMG, so the bundled browser runtime gets exercised locally.
+`scripts/publish-release.sh --dry-run --allow-unsigned` shows what would be uploaded.
+
+`scripts/dev/runtime-smoke.sh` proves the bundled runtime works with the repo checkout
+hidden — and, with `--cloud <url> --token <access token>`, that it works the way a
+customer's Mac runs it, with no vendor key at all:
+
+```
+cd cloud && MOCK_UPSTREAM=1 DEV_LOGIN_SECRET=dev npm run dev        # terminal 1
+TOKEN=$(curl -s -X POST localhost:3100/auth/dev-login -H 'content-type: application/json' \
+        -H 'x-dev-login-secret: dev' -d '{"email":"smoke@example.com","trial":false}' \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["accessToken"])')
+scripts/dev/runtime-smoke.sh build/release/Navi.app --cloud http://localhost:3100 --token "$TOKEN" \
+  --url 'data:text/html,<title>Navi smoke</title><button>A</button><button>B</button>'
+```
+(`scripts/dev/mock-cloud.py --port 8787` instead logs every request's feature/run/bearer.)
+The canned mock answers click the first button until the step limit — the point is that
+every `/v1/jev` and `/v1/claude` call arrives with the bearer, `X-Navi-Feature: task` and
+one `X-Navi-Run`, and `/v1/me` counts exactly one task.
+
+## Browser runner credentials (Navi Cloud)
+
+The bundled runner never sees a vendor key on a customer's Mac. `UltrafastBridge` passes it:
+
+| Variable | Value |
+|---|---|
+| `NAVI_JEV_TRANSPORT` | `navi` |
+| `NAVI_CLOUD_URL` | `CloudTransport.baseURL` (`cloudBaseURL` default, else the build's `NaviCloudBaseURL` Info.plist key, else `https://api.navi.app`) |
+| `NAVI_CLOUD_TOKEN` | `CloudTransport.accessToken(validFor: 20 min)` — refreshed first through the shared single-flight refresher if it would lapse sooner (the refresh token stays in the app) |
+| `NAVI_CLOUD_FEATURE` / `NAVI_CLOUD_RUN` | the task's `CloudRun` (`task`, or `voice` for spoken tasks) — the runner's calls are metered as part of that one task |
+
+and strips `TYPESAFE_API_KEY`, `AI_GATEWAY_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`
+and `TEXT_MODEL_*` from the environment. The runner (`scripts/ultrafast/navi_runner.py`,
+adaptation 20 — the vendored `jev-ultrafast` is untouched) posts the exact TypeSafe body to
+`/v1/jev` and Messages bodies to `/v1/claude`. A 401/402/403/503 from the proxy comes back as
+`{"event":"error","code":"signed_out"|"quota_exceeded"|"not_entitled"|…}` and the panel shows
+Navi's own message. Developer mode (signed out, keys in Navi → Developer) keeps the old
+bring-your-own-key variables. Tests: `NaviTests/RunnerCredentialsTests.swift`,
+`scripts/ultrafast/test_navi_cloud.py` (run with any interpreter that has the runtime's
+deps, e.g. `build/runtime/aarch64/python/bin/python3.12`).
 
 ## What ships inside the app
 
@@ -129,7 +193,8 @@ Debug builds skip the runtime phase and keep using `vendor/jev-ultrafast/.venv`
 
 ## In-app updater (`Navi/App/Updater.swift`)
 
-- 30 s after launch and every 24 h: `GET appcast.json`. Menu bar → "Check for Updates…"
+- 30 s after launch and every 24 h: `GET appcast.json` from `NaviUpdateFeedURL` (redirects
+  followed — GitHub's `latest/download` is a 302 to its CDN). Menu bar → "Check for Updates…"
   forces a check and also reports "up to date".
 - `version` newer than the running `CFBundleShortVersionString` (semantic compare) and not
   skipped → floating "Navi X is available" window with the notes.
@@ -146,7 +211,9 @@ Debug builds skip the runtime phase and keep using `vendor/jev-ultrafast/.venv`
 Updates are pull-based, so rolling back is publishing an older-but-higher version:
 1. Re-run `scripts/release.sh` from the last good commit with a **bumped** version
    (e.g. `0.2.1` → the good `0.2.0` code as `0.2.2`); installed apps only move forward.
-2. Or, faster: replace `appcast.json` with the previous one — nobody who has not yet
-   updated will be offered the bad build (those who did keep it until step 1 ships).
-3. The DMG of every release stays under `downloads/`; never overwrite a version's file —
-   its SHA-256 and signature are in the appcast that people already fetched.
+2. Or, faster: on GitHub, edit the bad release and tick **Set as a pre-release** (or delete
+   it): `/releases/latest/` falls back to the previous release, so its `appcast.json` is
+   served again — nobody who has not yet updated is offered the bad build (those who did
+   keep it until step 1 ships).
+3. Every release's DMG stays on its own release; never re-upload a version's file — its
+   SHA-256 and signature are in the appcast that people already fetched.

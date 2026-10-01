@@ -67,7 +67,38 @@ export const env = {
   /** HS256 secret used to mint tokens when no Supabase JWT secret is configured (memory driver). */
   get devJwtSecret() { return str("DEV_JWT_SECRET") ?? "navi-dev-jwt-secret-change-me"; },
 
+  // Admin console (/admin) — see lib/admin/*, lib/keys.ts, lib/config.ts
+  /** Comma-separated emails that may open /admin (in addition to rows in the `admins` table). */
+  get adminEmails(): string[] {
+    return (str("ADMIN_EMAILS") ?? "").split(",").map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"));
+  },
+  /** Encrypts vendor keys stored from the console (AES-256-GCM). Unset ⇒ the console refuses to store keys. */
+  get keysSecret() { return str("NAVI_KEYS_SECRET"); },
+  /** Optional: signs the admin session cookie (else derived from another server secret). */
+  get adminSessionSecret() { return str("ADMIN_SESSION_SECRET"); },
+  /** Optional Vercel AI Gateway key: Jev goes through the gateway when no TypeSafe key is set. */
+  get aiGatewayApiKey() { return str("AI_GATEWAY_API_KEY"); },
+  get aiGatewayEvalUrl() { return str("AI_GATEWAY_EVAL_URL") ?? "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"; },
+
   get isProduction() { return process.env.NODE_ENV === "production" && Boolean(str("VERCEL_ENV") === "production"); },
+
+  // MARK: account — sign-in, /account portal, cron
+  /** Latest Navi DMG, shown as "Download Navi" on /account. Unset → "coming soon". */
+  get downloadUrl() { return str("NAVI_DOWNLOAD_URL"); },
+  /** Vercel Cron sends `Authorization: Bearer $CRON_SECRET` to /auth/purge. Unset → the route is off. */
+  get cronSecret() { return str("CRON_SECRET"); },
+  /**
+   * Which "Continue with …" buttons /auth/start shows: comma list of `google`, `apple`.
+   * Unset → asked from Supabase's public `/auth/v1/settings` (what is enabled there).
+   */
+  get authProviders(): string[] | undefined {
+    const v = str("AUTH_PROVIDERS");
+    return v === undefined ? undefined : v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  },
+  /** The marketing site (web/), for Privacy / Terms links on the hosted pages. */
+  get siteUrl() { return str("NAVI_SITE_URL"); },
+  /** Cookies are `Secure` whenever the public URL is https. */
+  get secureCookies() { return env.baseUrl.startsWith("https://"); },
 };
 
 export type Env = typeof env;

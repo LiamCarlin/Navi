@@ -430,9 +430,9 @@ struct AccountErrorPresentationTests {
     }
 
     @Test func missingVendorKeyReadsAsSignInOutsideDeveloperMode() {
-        let wasDev = UserDefaults.standard.bool(forKey: "developerMode")
-        UserDefaults.standard.set(false, forKey: "developerMode")
-        defer { UserDefaults.standard.set(wasDev, forKey: "developerMode") }
+        let wasDev = UserDefaults.navi.bool(forKey: "developerMode")
+        UserDefaults.navi.set(false, forKey: "developerMode")
+        defer { UserDefaults.navi.set(wasDev, forKey: "developerMode") }
         let e = NaviError.missingAPIKey(.anthropic)
         #expect(e.errorDescription == "Sign in to Navi to keep going.")
         #expect(PanelViewModel.accountPresentation(for: e, quotas: Quotas())?.actionTitle == "Sign in")
