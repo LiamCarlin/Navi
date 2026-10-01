@@ -139,7 +139,6 @@ export default async function OpenGraphImage() {
             boxShadow: "0 30px 80px rgba(20,40,90,0.45)",
           }}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={posterSrc} width={720} height={450} alt="" style={{ objectFit: "cover" }} />
         </div>
       </div>
