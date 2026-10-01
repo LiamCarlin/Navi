@@ -125,7 +125,20 @@ final class CloudTransport: @unchecked Sendable {
         return CloudTransport()
     }()
 
-    static let defaultBaseURL = "https://api.navi.app"
+    /// The production API when the build names none (project.yml `NaviCloudBaseURL`).
+    static let fallbackBaseURL = "https://api.navi.app"
+    /// The build's `NaviCloudBaseURL` Info.plist key (set in project.yml, like the update
+    /// feed), else `fallbackBaseURL`. The `cloudBaseURL` default still overrides it.
+    static let defaultBaseURL: String = resolveDefaultBaseURL(
+        infoPlist: Bundle.main.object(forInfoDictionaryKey: "NaviCloudBaseURL") as? String)
+
+    static func resolveDefaultBaseURL(infoPlist: String?) -> String {
+        guard var s = infoPlist?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
+              let u = URL(string: s), let scheme = u.scheme?.lowercased(), ["https", "http"].contains(scheme), u.host != nil
+        else { return fallbackBaseURL }
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
     static let baseURLKey = "cloudBaseURL"
     static let useCloudKey = "useCloud"
     /// Sent on every cloud request so the server can refuse builds it no longer serves (426).
@@ -494,6 +507,29 @@ final class CloudTransport: @unchecked Sendable {
         let t = try Self.decodeTokens(data)
         tokens.store(access: t.accessToken, refresh: t.refreshToken, expiresAt: t.expiresAt)
         Log.app.info("cloud: session established")
+    }
+
+    /// True when a token expiring at `expiresAt` would lapse within `lifetime`. An unknown
+    /// expiry is trusted (a 401 is the backstop).
+    static func needsRefresh(expiresAt: Date?, validFor lifetime: TimeInterval, now: Date = Date()) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt.timeIntervalSince(now) < lifetime
+    }
+
+    /// An access token that stays valid for at least `lifetime`, for a process that cannot
+    /// refresh one itself (the bundled browser runner never sees the refresh token). When the
+    /// current token would lapse sooner it is refreshed first, through the same single-flight
+    /// refresher every request uses. A refresh that fails on the network still yields a token
+    /// that has not expired; nil when signed out (an auth failure on refresh signs out).
+    func accessToken(validFor lifetime: TimeInterval, now: Date = Date()) async -> String? {
+        let current = tokens.accessToken.flatMap { $0.isEmpty ? nil : $0 }
+        if let current, !Self.needsRefresh(expiresAt: tokens.accessExpiresAt, validFor: lifetime, now: now) { return current }
+        if let refresh = tokens.refreshToken, !refresh.isEmpty {
+            _ = await refresher.refresh(using: self, replacing: current)
+        }
+        guard let token = tokens.accessToken, !token.isEmpty else { return nil }
+        if let exp = tokens.accessExpiresAt, exp <= now { return nil }
+        return token
     }
 
     /// `POST /auth/refresh { refreshToken }`. Returns false (and signs out) when the session is gone.

@@ -45,8 +45,14 @@ final class AgentOverlay {
     func update(step: Int, maxSteps: Int, status: String? = nil) {
         model.waitingForApproval = false
         model.outcome = nil
-        if let status, !status.isEmpty {
-            model.text = "\(status) · \(step)/\(maxSteps)"
+        // The panel hides engine diagnostics from users (`PanelWording`); so does the pill.
+        let shown = status.flatMap { s -> String? in
+            if s.isEmpty { return nil }
+            if DeveloperMode.isEnabled { return s }
+            return PanelWording.isDiagnostic(s) ? nil : PanelWording.userFacing(s)
+        }
+        if let shown {
+            model.text = "\(shown) · \(step)/\(maxSteps)"
         } else {
             model.text = "\(working) step \(step)/\(maxSteps)"
         }
@@ -59,7 +65,8 @@ final class AgentOverlay {
         guard panel != nil else { return }
         model.waitingForApproval = false
         model.outcome = outcome
-        let one = text.replacingOccurrences(of: "\n", with: " ")
+        var one = text.replacingOccurrences(of: "\n", with: " ")
+        if !DeveloperMode.isEnabled { one = PanelWording.userFacing(one) }
         model.text = one.count > 90 ? String(one.prefix(90)) + "…" : one
         hideTask?.cancel()
         hideTask = Task { [weak self] in
