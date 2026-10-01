@@ -114,6 +114,18 @@ struct BrandingTests {
         #expect(SettingsSection.providers.title == "Developer")
     }
 
+    @Test func sidebarListsAccountAndUsesOneNamePerFeature() {
+        let listed = SettingsSection.allCases
+        #expect(listed.contains(.account))
+        #expect(!listed.contains(.usage))          // folded into Account
+        #expect(!listed.contains(.developer))      // alias of .providers
+        #expect(Set(listed).count == listed.count)
+        #expect(SettingsSection.memory.title == "Recall")
+        #expect(SettingsSection.usage.canonical == .account)
+        #expect(SettingsSection.developer.canonical == .providers)
+        #expect(SettingsSection.general.canonical == .general)
+    }
+
     // MARK: Usage counters
 
     @Test func usageCountersCountAnswersAndTasksAndRollOverMonthly() {

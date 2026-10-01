@@ -7,7 +7,6 @@ struct MemoryView: View {
     @ObservedObject private var account = NaviAccount.shared
     @State private var status = MemoryStatus()
     @State private var digesting = false
-    @State private var newBundleID = ""
     @State private var cleanupPlan: PersonalDataCleanup.Plan?
     @State private var cleanupBusy = false
     @State private var cleanupMessage: String?
@@ -17,11 +16,11 @@ struct MemoryView: View {
     private var entitled: Bool { account.entitlements.recall }
 
     var body: some View {
-        FormPage(title: "Recall", subtitle: "Snapshots → on-device text → a private journal Navi can answer from.") {
+        FormPage(title: "Recall", subtitle: "A private journal of what you do on your Mac, so you can ask \u{201C}what was I doing yesterday?\u{201D}") {
             if entitled {
                 Section {
                     Toggle(isOn: $settings.memoryCaptureEnabled) {
-                        ExplainedRow(title: "Remember what I see", explanation: settings.memoryCaptureEnabled ? "Capturing in the background." : "Off. Nothing is captured.") { EmptyView() }
+                        ExplainedRow(title: "Remember what I see", explanation: settings.memoryCaptureEnabled ? "Navi takes a snapshot of your screen every so often and writes what mattered into your journal." : "Off. Nothing is captured.") { EmptyView() }
                     }
                     .toggleStyle(.switch)
                     if settings.memoryCaptureEnabled {
@@ -36,86 +35,68 @@ struct MemoryView: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("Status") {
-                statusGrid
-                HStack {
-                    Button {
-                        Task { await digestNow() }
-                    } label: {
-                        if digesting { ProgressView().controlSize(.small).frame(width: 70) } else { Text("Digest now") }
-                    }
-                    .disabled(digesting || memory == nil)
-                    Spacer()
-                    if let err = status.lastError {
-                        Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                            .lineLimit(2).textSelection(.enabled)
-                    }
-                }
-            }
-
-            Section("Capture") {
-                Picker("Snapshot every", selection: $settings.memoryCaptureIntervalSeconds) {
-                    Text("15 s").tag(15); Text("30 s").tag(30); Text("60 s").tag(60); Text("2 min").tag(120)
-                }
-                Picker("Digest every", selection: $settings.memoryDigestIntervalMinutes) {
-                    Text("5 min").tag(5); Text("10 min").tag(10); Text("30 min").tag(30)
-                }
-                Picker("Keep raw frames for", selection: $settings.memoryRetentionDays) {
-                    Text("7 days").tag(7); Text("14 days").tag(14); Text("30 days").tag(30); Text("90 days").tag(90)
-                }
-                Toggle("Keep screenshots (not just text)", isOn: $settings.memoryKeepScreenshots)
-            }
-
-            Section("Vault") {
-                HStack(spacing: 8) {
-                    Image(systemName: "folder").foregroundStyle(.secondary)
-                    Text(displayPath(settings.memoryVaultPath)).font(.callout).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button("Choose…", action: chooseVault).controlSize(.small)
-                }
-                HStack(spacing: 8) {
-                    Button("Open in Obsidian", action: openInObsidian)
-                    Button("Reveal in Finder") { revealVault() }
-                    Spacer()
-                }
-            }
-
-            Section {
-                ForEach(settings.memoryExcludedBundleIDs, id: \.self) { bid in
+            if entitled {
+                Section("Status") {
+                    statusGrid
                     HStack {
-                        AppIconView(bundleID: bid)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(appName(for: bid))
-                            Text(bid).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
                         Button {
-                            settings.memoryExcludedBundleIDs.removeAll { $0 == bid }
-                        } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                            Task { await digestNow() }
+                        } label: {
+                            if digesting { ProgressView().controlSize(.small).frame(width: 70) } else { Text("Summarize now") }
+                        }
+                        .disabled(digesting || memory == nil)
+                        Spacer()
+                        if let err = status.lastError {
+                            Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                                .lineLimit(2).textSelection(.enabled)
+                        }
                     }
                 }
-                HStack(spacing: 8) {
-                    TextField("Bundle identifier, e.g. com.apple.Passwords", text: $newBundleID)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(addTypedBundleID)
-                    Button("Add", action: addTypedBundleID).disabled(newBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Button("Choose App…", action: chooseApp)
+
+                Section("Capture") {
+                    Picker("Snapshot every", selection: $settings.memoryCaptureIntervalSeconds) {
+                        Text("15 s").tag(15); Text("30 s").tag(30); Text("60 s").tag(60); Text("2 min").tag(120)
+                    }
+                    Picker("Summarize every", selection: $settings.memoryDigestIntervalMinutes) {
+                        Text("5 min").tag(5); Text("10 min").tag(10); Text("30 min").tag(30)
+                    }
+                    Toggle("Keep screenshots, not just their text", isOn: $settings.memoryKeepScreenshots)
                 }
-            } header: {
-                Text("Never capture these apps")
-            } footer: {
-                Text("Frames from excluded apps are dropped before any text is read. Navi also drops any frame it judges sensitive (passwords, one-time codes, and the personal information you block below), and password fields are never stored.")
-            }
 
-            personalDataSection
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        Text(displayPath(settings.memoryVaultPath)).font(.callout).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button("Choose…", action: chooseVault).controlSize(.small)
+                    }
+                    HStack(spacing: 8) {
+                        Button("Open in Obsidian", action: openInObsidian)
+                        Button("Show in Finder") { revealVault() }
+                        Spacer()
+                    }
+                } header: {
+                    Text("Journal")
+                } footer: {
+                    Text("Your journal is a folder of linked Markdown notes — open it in Obsidian to browse it as a graph.")
+                }
 
-            Section {
-                Label {
-                    Text("Everything is stored on this Mac: raw frames and their text in ~/Library/Application Support/Navi, summaries in your vault. To triage and summarise, screen text is sent to Jev and the summary model you chose; only the moments Navi judges important are summarised, and only the summary is written to your journal.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } icon: {
-                    Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                Section {
+                    ExplainedRow(title: "Privacy & Data",
+                                 explanation: "How long memories are kept, apps and sites Recall never captures, what leaves this Mac, and deleting everything.") {
+                        Button("Open") { SettingsNavigator.shared.go(.privacy) }
+                    }
+                }
+
+                personalDataSection
+
+                Section {
+                    Label {
+                        Text("Snapshots and their text stay on this Mac (in ~/Library/Application Support/Navi); summaries go to your journal folder. To decide what matters, each snapshot's screen text goes to Navi's AI services; the important ones are summarized from their text and up to two small screenshots, and only the summary is kept in your journal.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } icon: {
+                        Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -150,7 +131,7 @@ struct MemoryView: View {
                 }
                 Spacer()
                 if cleanupBusy { ProgressView().controlSize(.small) }
-                Button("Remove blocked details already saved…") { Task { await planCleanup() } }
+                Button("Remove Blocked Details Already Saved…") { Task { await planCleanup() } }
                     .disabled(cleanupBusy || settings.personalDataPolicy.blocked.isEmpty || memory as? MemoryService == nil)
             }
             .controlSize(.small)
@@ -160,13 +141,13 @@ struct MemoryView: View {
         } header: {
             Text("Personal information Navi may remember")
         } footer: {
-            Text("On = kept in your journal. Off = the screen is kept as an app-and-time stub and the detail is redacted from summaries and notes. Passwords and one-time codes are never kept. Blocked details Navi recognises are dropped on this Mac before anything is sent to Jev or the summary model; allowed ones are stored locally and travel with the screen text to Jev and the summary model (Gemini or Claude) when a moment is triaged and summarised.")
+            Text("On: Navi may keep it in your journal. Off: Navi keeps only the app and the time of that screen and leaves the detail out of summaries. Blocked details are removed on this Mac before anything is sent; allowed ones are stored locally and travel with the screen text to Navi's AI services when a moment is checked and summarized. Passwords and one-time codes are never kept.")
         }
         .confirmationDialog(cleanupTitle, isPresented: Binding(get: { cleanupPlan != nil }, set: { if !$0 { cleanupPlan = nil } })) {
             Button("Redact", role: .destructive) { Task { await applyCleanup() } }
             Button("Cancel", role: .cancel) { cleanupPlan = nil }
         } message: {
-            Text("Matching snapshots keep only the app and time; summaries, key facts, links and screenshots in your vault are rewritten. This can't be undone.")
+            Text("Matching snapshots keep only the app and time; summaries, key facts, links and screenshots in your journal are rewritten. This can't be undone.")
         }
     }
 
@@ -212,8 +193,11 @@ struct MemoryView: View {
                 Spacer()
                 Button("Resume") { settings.memoryPausedUntil = nil }
             } else {
-                StatusDot(level: .ok)
-                Text("Capturing")
+                StatusDot(level: status.isRunning ? .ok : .warn)
+                Text(status.isRunning ? "Capturing" : "Not running yet — Recall needs Screen Recording")
+                if !status.isRunning {
+                    Button("Permissions") { SettingsNavigator.shared.go(.permissions) }.buttonStyle(.link)
+                }
                 Spacer()
                 Button("Pause 1 hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
                 Button("Pause until tomorrow") {
@@ -227,15 +211,13 @@ struct MemoryView: View {
     private var statusGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
             GridRow {
-                stat("Service", status.isRunning ? "Running" : (settings.memoryIsPaused ? "Paused" : "Stopped"),
-                     status.isRunning ? .ok : (settings.memoryIsPaused ? .warn : .off))
-                stat("Frames today", "\(status.framesToday)", nil)
-                stat("Notes in vault", "\(status.vaultNoteCount)", nil)
+                stat("Snapshots today", "\(status.framesToday)", nil)
+                stat("Last snapshot", status.lastCaptureAt?.relativeDescription ?? "—", nil)
+                stat("Journal notes", "\(status.vaultNoteCount)", nil)
             }
             GridRow {
-                stat("Last capture", status.lastCaptureAt?.relativeDescription ?? "—", nil)
-                stat("Last digest", status.lastDigestAt?.relativeDescription ?? "—", nil)
-                stat("Digested frames", "\(settings.usageDigestFrames)", nil)
+                stat("Snapshots summarized", "\(settings.usageDigestFrames)", nil)
+                stat("Last summary", status.lastDigestAt?.relativeDescription ?? "—", nil)
             }
         }
     }
@@ -264,7 +246,7 @@ struct MemoryView: View {
     private func chooseVault() {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
-        p.prompt = "Use as Vault"
+        p.prompt = "Use as Journal"
         p.directoryURL = URL(fileURLWithPath: settings.memoryVaultPath).deletingLastPathComponent()
         if p.runModal() == .OK, let url = p.url { settings.memoryVaultPath = url.path }
     }
@@ -287,37 +269,9 @@ struct MemoryView: View {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    private func addTypedBundleID() {
-        let id = newBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { return }
-        if !settings.memoryExcludedBundleIDs.contains(id) { settings.memoryExcludedBundleIDs.append(id) }
-        newBundleID = ""
-    }
-
-    private func chooseApp() {
-        let p = NSOpenPanel()
-        p.canChooseDirectories = false; p.canChooseFiles = true; p.allowsMultipleSelection = true
-        p.allowedContentTypes = [.applicationBundle]
-        p.directoryURL = URL(fileURLWithPath: "/Applications")
-        p.prompt = "Exclude"
-        guard p.runModal() == .OK else { return }
-        for url in p.urls {
-            if let bid = Bundle(url: url)?.bundleIdentifier, !settings.memoryExcludedBundleIDs.contains(bid) {
-                settings.memoryExcludedBundleIDs.append(bid)
-            }
-        }
-    }
-
     private func displayPath(_ p: String) -> String {
         let home = NSHomeDirectory()
         return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
-    }
-
-    private func appName(for bundleID: String) -> String {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
-        }
-        return bundleID.split(separator: ".").last.map(String.init)?.capitalized ?? bundleID
     }
 }
 
