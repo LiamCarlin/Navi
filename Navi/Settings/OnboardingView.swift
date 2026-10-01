@@ -132,8 +132,9 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 9) {
                     bullet("text.bubble", "Answers, tasks and voice control run on your Navi account — that's where the thinking happens.")
                     bullet("creditcard", "One subscription covers everything: no API keys, nothing to set up. 7-day free trial of Pro, no card to start.")
-                    bullet("bolt.fill", "Apps, files, math and system commands work right away, with or without an account.")
-                    bullet("lock.fill", "Your screen stays on this Mac; Recall only ever sends short summaries.")
+                    bullet("bolt.fill", "Apps, files, math and Mac controls work right away, with or without an account.")
+                    bullet("waveform", "Talk to it: press \(HotKeyManager.describe(keyCode: settings.voiceHotKeyCode, modifiers: settings.voiceHotKeyModifiers)) and say what you want — in any app, in any browser.")
+                    bullet("clock.arrow.circlepath", "Recall turns your day into a private journal, kept on this Mac, that you can ask about.")
                 }
                 .font(.callout)
                 SignInButton(account: account)
@@ -155,7 +156,7 @@ struct OnboardingView: View {
     private var permissions: some View {
         Form {
             Section {
-                Text("Grant these now or later from Permissions. Only Accessibility and Screen Recording are needed for tasks; Screen Memory also needs Screen Recording.")
+                Text("Grant these now or later under Permissions. Tasks need Accessibility and Screen Recording; Recall needs Screen Recording.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section { PermissionsList() }
@@ -167,11 +168,11 @@ struct OnboardingView: View {
     private var shortcut: some View {
         Form {
             Section {
-                Text("Navi wants ⌘Space. macOS gives that shortcut to Spotlight by default, so Spotlight has to release it — or pick a different combo for Navi.")
+                Text("Navi works best on ⌘Space. macOS gives that shortcut to Spotlight, so Spotlight has to let it go — or pick a different shortcut for Navi.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("Navi hotkey") {
-                ExplainedRow(title: "Open Navi", explanation: "Click and press a new combo to change it.") { HotKeyRecorderView() }
+                ExplainedRow(title: "Open Navi", explanation: "Click, then press a new shortcut to change it.") { HotKeyRecorderView() }
             }
             Section("Spotlight") { SpotlightFixView() }
         }
@@ -187,7 +188,7 @@ struct OnboardingView: View {
             }
             Section {
                 PermissionRow(title: "Microphone",
-                              explanation: "Recognised on this Mac by Apple's on-device model. Audio never leaves the machine.",
+                              explanation: "Recognized on this Mac by Apple's on-device model. Audio never leaves your Mac.",
                               state: voicePerms.microphone,
                               request: { Task { _ = await Permissions.requestMicrophone(); await voicePerms.refresh() } },
                               open: { Permissions.openSettings(.microphone) })
@@ -197,20 +198,24 @@ struct OnboardingView: View {
                 }
             }
             Section {
-                Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto mode").font(.headline)
-                        Text("Navi carries out every step itself and only stops to ask before sending, paying or deleting. Turn it off to approve each action.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
+                Picker("Ask me", selection: $settings.agentApprovalMode) {
+                    ForEach(ApprovalMode.allCases) { Text(AgentSettingsView.label(for: $0)).tag($0) }
                 }
+                Text(AgentSettingsView.explanation(for: settings.agentApprovalMode))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("When Navi does things for you")
+            } footer: {
+                Text("Applies to typed and spoken tasks. You can change it later under Tasks.")
+            }
+            Section {
                 Button {
                     finishSoftly()
                     AppDelegate.shared?.toggleVoice()
                 } label: { Label("Try voice control now", systemImage: "waveform") }
                 .disabled(voicePerms.microphone == .denied)
             } footer: {
-                Text("Say “stop” to abort, “undo” for ⌘Z, “stop listening” to close the island.")
+                Text("Say “stop” to cancel, “undo” to undo the last step, and “stop listening” when you’re done.")
             }
         }
         .formStyle(.grouped)

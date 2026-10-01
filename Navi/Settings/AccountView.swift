@@ -47,7 +47,7 @@ struct AccountView: View {
                 Section("Developer") {
                     Toggle(isOn: $settings.useCloud) {
                         ExplainedRow(title: "Use Navi Cloud",
-                                     explanation: settings.useCloud ? "Calls go through your account." : "Off: the keys under AI Providers are used directly and nothing is metered.") { EmptyView() }
+                                     explanation: settings.useCloud ? "Calls go through your account." : "Off: the keys under Developer are used directly and nothing is metered.") { EmptyView() }
                     }
                     .toggleStyle(.switch)
                     HStack {
@@ -100,6 +100,7 @@ struct AccountView: View {
                 Label("Developer mode: your own keys are in use and every feature is on. Sign in to switch to your Navi plan.",
                       systemImage: "hammer")
                     .font(.callout).foregroundStyle(.secondary)
+                LocalUsageRow()
             }
         }
     }
@@ -223,8 +224,9 @@ struct AccountView: View {
                 usageRow(title: "Tasks", used: account.usage.tasksThisMonth, cap: account.quotas.tasksPerMonth, period: "this month",
                          available: account.isAvailable(.task))
             }
+            LocalUsageRow()
             featureRow("Voice control", on: account.entitlements.voice, available: account.isAvailable(.voice))
-            featureRow("Recall (screen memory)", on: account.entitlements.recall, available: account.isAvailable(.recallDigest))
+            featureRow("Recall", on: account.entitlements.recall, available: account.isAvailable(.recallDigest))
             if let r = account.usage.resetsAt {
                 Text("Counters reset \(r.formatted(date: .abbreviated, time: .shortened)).").font(.caption).foregroundStyle(.tertiary)
             }
@@ -370,7 +372,7 @@ private struct DeleteAccountSheet: View {
             if canEraseLocalData {
                 Toggle("Also erase Navi's data on this Mac (Recall, journal, history)", isOn: $eraseLocalData)
             } else {
-                Text("What Recall saved on this Mac stays here; you can clear it from Screen Memory.")
+                Text("What Recall saved on this Mac stays here; you can clear it under Recall.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text("Want a copy first? Use Export my data before you continue.")
