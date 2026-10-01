@@ -109,8 +109,8 @@ final class NaviServices: @unchecked Sendable {
         let agent = ComputerAgent(jev: jev, claude: claude)
         // Browser tasks run on browser-use/jev-ultrafast (vendored) via the Python bridge.
         ComputerAgent.browserRunner = { task, startURL, handle, background, attach in
-            let maxSteps = UserDefaults.standard.integer(forKey: "agentMaxSteps")
-            let shots = UserDefaults.standard.bool(forKey: "ultrafastScreenshots")
+            let maxSteps = UserDefaults.navi.integer(forKey: "agentMaxSteps")
+            let shots = UserDefaults.navi.bool(forKey: "ultrafastScreenshots")
             return await UltrafastBridge.run(task: task, startURL: startURL, handle: handle, maxSteps: maxSteps, screenshots: shots,
                                              background: background, attachToCurrentTab: attach)
         }
@@ -122,6 +122,7 @@ final class NaviServices: @unchecked Sendable {
     @MainActor
     func startBackgroundServices() {
         if NaviSettings.shared.memoryCaptureEnabled { memory.start() }
+        PrivacyMaintenance.start(memory: memory)   // privacy workstream: daily retention (Core/PrivacyData.swift)
         // Settings toggles and account changes (sign-in, upgrade, sign-out) both
         // re-evaluate capture: `MemoryService.start()` refuses without `recall`.
         for name in [Notification.Name.naviSettingsChanged, .naviAccountChanged] {

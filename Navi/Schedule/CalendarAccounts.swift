@@ -91,19 +91,19 @@ enum CalendarPreferences {
     }
 
     static var overrides: [String: Bool] {
-        UserDefaults.standard.dictionary(forKey: busyOverridesKey) as? [String: Bool] ?? [:]
+        UserDefaults.navi.dictionary(forKey: busyOverridesKey) as? [String: Bool] ?? [:]
     }
 
     static func setCountsAsBusy(_ on: Bool, for id: String) {
         var all = overrides
         all[id] = on
-        UserDefaults.standard.set(all, forKey: busyOverridesKey)
+        UserDefaults.navi.set(all, forKey: busyOverridesKey)
     }
 
     /// The calendar new meetings go to; nil = Calendar's own default.
     static var bookingCalendarID: String? {
-        get { UserDefaults.standard.string(forKey: bookingCalendarKey).flatMap { $0.isEmpty ? nil : $0 } }
-        set { UserDefaults.standard.set(newValue ?? "", forKey: bookingCalendarKey) }
+        get { UserDefaults.navi.string(forKey: bookingCalendarKey).flatMap { $0.isEmpty ? nil : $0 } }
+        set { UserDefaults.navi.set(newValue ?? "", forKey: bookingCalendarKey) }
     }
 
     /// A published calendar link as Calendar subscribes to it: "https://…/calendar.ics"

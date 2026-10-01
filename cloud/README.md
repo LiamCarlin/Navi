@@ -10,12 +10,14 @@ Navi.app ──(Bearer <navi session>)──▶ Navi Cloud
    │   POST /v1/jev       → api.typesafe.ai/v1/systemone      (server key, metered, JSON passthrough)
    │   POST /v1/claude    → api.anthropic.com/v1/messages      (server key, metered, SSE streamed through)
    │   POST /v1/digest    → Claude or Gemini                   (requires `recall`)
-   │   GET  /v1/me        → tier, entitlements, quotas, usage, resetsAt
+   │   GET  /v1/me        → tier, entitlements, quotas, usage, resetsAt, config (switches, notice, versions)
    │   /auth/*            → Supabase Auth (email link + 6-digit code, Google, Apple) → navi://auth/callback?code=…
    │   /account           → web portal: plan, usage, billing, download, devices, export, delete
    │   /v1/account*       → GET export · DELETE account (Bearer or the /account cookie)
    │   /billing/*         → Stripe Checkout / Portal / webhook → profiles.tier
    └── POST /waitlist     → waitlist table (also used by web/)
+
+Liam ──(browser)──▶ /admin  → admin console: users, vendor keys, product config, waitlist, audit
 ```
 
 ## Quick start (no services needed)
@@ -43,7 +45,7 @@ vendor keys. `POST /auth/dev-login` only exists while `DEV_LOGIN_SECRET` is set.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/v1/me` | Bearer | `{ user, tier, trialEndsAt?, entitlements, quotas, usage }` |
+| GET | `/v1/me` | Bearer | `{ user, tier, trialEndsAt?, entitlements, quotas, usage, config }` — `config` below. Never 426 (an old app must still learn it is old); 403 `account_disabled` when disabled. |
 | POST | `/v1/jev` | Bearer | Body = exact TypeSafe `/v1/systemone` body. JSON passthrough. |
 | POST | `/v1/claude` | Bearer | Body = exact Anthropic `/v1/messages` body. `stream:true` → SSE piped through unbuffered. Client `anthropic-version` / `anthropic-beta` headers are forwarded. |
 | POST | `/v1/digest` | Bearer | Same as `/v1/claude`, needs the `recall` entitlement (403 `not_entitled`). With `GEMINI_API_KEY` set and body `provider:"gemini"`, forwards `{model?, ...generateContent body}` to Gemini instead. |
@@ -64,7 +66,8 @@ vendor keys. `POST /auth/dev-login` only exists while `DEV_LOGIN_SECRET` is set.
 | POST | `/billing/webhook` | Stripe sig | `checkout.session.completed`, `customer.subscription.{created,updated,deleted}`, `invoice.payment_failed` |
 | GET | `/billing/return?status=` | – | Bridge page → `navi://billing/success` or `navi://billing/cancel` |
 | POST | `/waitlist` | – | `{ email, source?, note? }` → 201 new / 200 already listed |
-| GET | `/healthz` | – | Which driver / vendors / mock mode are active |
+| GET | `/healthz` | – | Which driver / vendors / mock mode are active (vendors = env vars only) |
+| GET | `/admin` … | admin cookie | The admin console (see below). 404 for anyone who isn't a signed-in admin. |
 
 ### Headers the app sends on `/v1/*`
 
@@ -74,6 +77,25 @@ vendor keys. `POST /auth/dev-login` only exists while `DEV_LOGIN_SECRET` is set.
   (default per route: jev→`route`, claude→`answer`, digest→`recall_digest`).
 - `X-Navi-Run: <uuid>` — one usage unit per distinct run per feature, however many calls the
   run makes. Missing → each call is its own run.
+- `X-Navi-Version: <short version>` (e.g. `1.2.0`) — on every request. Below the console's
+  `minAppVersion` → 426 on `/v1/jev|claude|digest` (never on `/v1/me`). A missing or non-numeric
+  header is let through (curl, scripts, builds from before the header).
+
+### `GET /v1/me` → `config`
+
+```json
+"config": {
+  "features": { "answers": true, "tasks": true, "voice": true, "recall": true },
+  "notice": { "id": "1bd17969122e", "message": "…", "level": "info|warning|critical", "url": "https://…" },
+  "minAppVersion": "1.2.0",
+  "latestVersion": "1.3.0",
+  "downloadURL": "https://navi.app/download"
+}
+```
+
+`features` is always present; the other keys only when set. `notice.id` is a content hash —
+it changes whenever the text, level or link changes, so the app can remember dismissals.
+`quotas` in `/v1/me` already include the console's per-tier overrides.
 
 Responses carry `X-Navi-Tier`, `X-Navi-Feature`, `X-Navi-Run` for debugging.
 
@@ -84,9 +106,16 @@ Responses carry `X-Navi-Tier`, `X-Navi-Feature`, `X-Navi-Run` for debugging.
 | 401 | `{ error: "unauthenticated" }` |
 | 402 | `{ error: "quota_exceeded", feature, tier, resetsAt }` |
 | 403 | `{ error: "not_entitled", feature, tier }` |
+| 403 | `{ error: "account_disabled", message }` — admin disabled the account (all `/v1/*`, including `/v1/me`) |
+| 426 | `{ error: "upgrade_required", minAppVersion, downloadURL?, message }` — `X-Navi-Version` below `minAppVersion` |
 | 429 | `{ error: "rate_limited", retryAfterSeconds }` + `Retry-After` |
+| 503 | `{ error: "feature_disabled", feature: "answers"\|"tasks"\|"voice"\|"recall", message }` — kill switch off |
 | 503 | `{ error: "upstream_unconfigured" \| "billing_unconfigured" }` |
 | 4xx/5xx from the vendor | passed through with the vendor's status and body |
+
+Order on a metered call: 401 → 429 → 403 `account_disabled` → 426 → 503 `feature_disabled` →
+403 `not_entitled` → 402. Kill switches map `answer`→answers, `task`→tasks, `voice`→voice,
+`recall_*`→recall; `route` (typing-time Jev routing) has no switch.
 
 ## Tiers, entitlements, quotas — `lib/plans.ts`
 
@@ -107,6 +136,8 @@ Responses carry `X-Navi-Tier`, `X-Navi-Feature`, `X-Navi-Run` for debugging.
   tokens × `lib/pricing.ts`), including streamed responses (the SSE is tallied in passing).
 
 Manual grants (comps, beta testers) go in the `entitlements` table and are OR-ed with the tier.
+An admin **tier override** (`profiles.tier_override`) wins over the paid tier and the trial; the
+console's **per-tier quota overrides** (`app_config`) replace the numbers above.
 
 ## Tables — `supabase/migrations/0001_init.sql`
 
@@ -122,6 +153,20 @@ Manual grants (comps, beta testers) go in the `entitlements` table and are OR-ed
 RLS is on for all five; users can `select` their own profile/entitlements/usage; everything
 else is service-role only. `add_usage_cost()` is a `security definer` RPC.
 
+`supabase/migrations/0002_admin.sql` (admin console; re-runnable — `if not exists` / `or replace`):
+
+| Table / change | Purpose |
+|---|---|
+| `profiles` + `tier_override, disabled_at, disabled_reason, quota_reset` | Override, disable (403), "reset today's quota" offsets (usage rows — the cost history — are never deleted). |
+| `waitlist` + `invited_at` | Invites from the console. |
+| `admins(email, added_by)` | Admins besides `ADMIN_EMAILS`. |
+| `vendor_keys(provider, ciphertext, last4, rotated_at/by, last_used_at, last_test_*)` | AES-256-GCM ciphertext; `ciphertext` null = metadata for an env-var key. |
+| `app_config(key, value jsonb)` | Row `product` = the product config (`lib/config.ts`). |
+| `admin_audit(actor, action, target, details jsonb, at)` | Every admin action. |
+| `admin_usage_daily()`, `admin_active_users()`, `admin_usage_by_feature()`, `admin_sign_out_user()` | Service-role-only SQL functions so the console never pulls raw usage rows. |
+
+All new tables: RLS on, no policies (service role only).
+
 ## Setting up for real
 
 ### 1. Supabase
@@ -129,10 +174,10 @@ else is service-role only. `add_usage_cost()` is a `security definer` RPC.
 1. Create a project. Copy **Project URL**, **anon key**, **service_role key** and
    (Settings → API) the **JWT Secret** into the env vars below.
 2. Apply the schema: `supabase link --project-ref <ref> && supabase db push`
-   (or paste `supabase/migrations/0001_init.sql` into the SQL editor).
+   (or paste `supabase/migrations/0001_init.sql`, then `0002_admin.sql`, into the SQL editor).
 3. Auth → URL configuration: **Site URL** = `https://api.navi.app`, add
-   `https://api.navi.app/auth/callback` (and `http://localhost:3100/auth/callback`) to
-   **Redirect URLs**.
+   `https://api.navi.app/auth/callback` and `https://api.navi.app/admin/auth/callback`
+   (and the `http://localhost:3100/…` twins) to **Redirect URLs**.
 4. Auth → Providers → Email: enabled. The default magic-link template works with the PKCE flow
    used by `/auth/start`. Optionally Google: paste the OAuth client id/secret there, and set
    `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` here so the button shows.
@@ -167,7 +212,10 @@ Project root `cloud/`. Environment variables (see `.env.example` for all of them
 ```
 NAVI_CLOUD_BASE_URL=https://api.navi.app
 SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET
-TYPESAFE_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY
+TYPESAFE_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY   (or store them in /admin → Keys)
+AI_GATEWAY_API_KEY                                (optional: Jev via Vercel AI Gateway)
+ADMIN_EMAILS=liam@…                               (who may open /admin)
+NAVI_KEYS_SECRET=$(openssl rand -base64 48)        (encrypts keys stored from /admin; ≥ 32 chars)
 STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_PRO_MONTH, STRIPE_PRICE_PRO_YEAR,
 STRIPE_PRICE_PRO_RECALL_MONTH, STRIPE_PRICE_PRO_RECALL_YEAR
 GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET            (optional)
@@ -184,6 +232,35 @@ fails open onto memory if the database errors.
 
 **The full go-live runbook — every env var, Supabase auth + email template, Google/Apple, Stripe,
 domain, smoke, data inventory — is [`DEPLOY.md`](DEPLOY.md).**
+
+## Admin console — `/admin`
+
+Where Liam runs Navi as a product. Server-rendered (Next.js server components + server
+actions), no client JS beyond the sign-in form and confirm prompts; dark, dense.
+
+**Sign in.** `/admin/login` → Supabase magic link or Google (lands on `/admin/auth/callback`),
+or in development the `DEV_LOGIN_SECRET` dev login. An **admin** is an email in `ADMIN_EMAILS`
+or a row in `admins` (manage it on *Product config*). The console then sets its own cookie
+`navi_admin` (HS256, audience `navi-admin`, 12 h, `HttpOnly; SameSite=Lax; Path=/admin`), signed
+with a key derived from `ADMIN_SESSION_SECRET` (or `NAVI_KEYS_SECRET` / the Supabase secrets).
+Admin status is re-checked on every request; every page, server action and route handler checks
+it server-side and answers **404** to anyone else.
+
+| Page | What it does |
+|---|---|
+| Overview | Signups today/7d/30d, active users today/7d, tier mix (as served), trials running, paying subs + MRR estimate (paying = `active`/`past_due` × monthly list price), vendor cost per day vs revenue run-rate (inline SVG), waitlist size. |
+| Users | Search by email/id. Detail: profile, served tier, trial, Stripe customer (dashboard link) + status, entitlement grants, quota now, usage by feature with cost to date. Actions: tier override, grant/revoke entitlement with expiry, extend trial, reset today's quota / this month's tasks, disable/enable (→ 403 `account_disabled`), sign out all sessions (revokes refresh tokens; access tokens live out ≤ 1 h), delete (retype the email; cascades). |
+| Keys | TypeSafe, Anthropic, Gemini, AI Gateway: source (database / env / none), masked last 4, last rotated, last used, last test. **Test** makes the cheapest real call (Anthropic/Gemini model list, one Jev noul) and shows OK/latency/error. **Store/Rotate** encrypts with AES-256-GCM (`NAVI_KEYS_SECRET`; refuses without it). **Remove** falls back to the env var. `lib/keys.ts` `getVendorKey()` = database key (60 s in-process cache) then env — what the proxy uses. |
+| Product config | Kill switches (answers, tasks, voice, recall), in-app notice, `minAppVersion` / `latestVersion` / `downloadURL`, per-tier quota overrides, model per feature (answer / task / digest; empty = pass the app's `model` through), admins. `app_config` row `product`, cached 30 s per instance. |
+| Waitlist | Search, CSV export (formula-safe), Invite (Supabase invite email → `downloadURL`) / Mark invited. |
+| Audit log | Every admin action: actor, action, target, metadata (`admin_audit`). |
+
+**Privacy.** The console shows metadata only. Navi Cloud never stores request or response
+bodies; usage rows are (user, feature, run id, day, cost). Keys never reach the browser (only
+`••••last4`), are never logged, and vendor error text is scrubbed of the key before display.
+
+Locally: `MOCK_UPSTREAM=1 DEV_LOGIN_SECRET=dev ADMIN_EMAILS=you@example.com NAVI_KEYS_SECRET=$(openssl rand -base64 48) npm run dev`
+→ http://localhost:3100/admin/login.
 
 ## Smoke walkthrough — `scripts/smoke.sh`
 
@@ -226,7 +303,12 @@ lib/proxy.ts    auth → rate limit → meter → upstream/mock → cost; SSE pa
 lib/db.ts       Db interface + memory driver; lib/db-supabase.ts the Postgres driver
 lib/auth.ts     JWT verify (HS256 secret or cached JWKS); lib/sessions.ts issue/refresh
 lib/mock.ts     canned Jev / Claude (JSON + SSE) / Gemini responses
+lib/keys.ts     vendor keys: AES-256-GCM at rest, DB first then env, masked status, Test
+lib/config.ts   product config: kill switches, notice, version gate, quota + model overrides
+lib/admin/      console auth (cookie, guard), ops (+ audit), overview stats, Jev-via-gateway
+app/admin/      the console (pages, server actions, /admin/auth/*)
 supabase/migrations/0001_init.sql   schema + RLS + trigger + RPCs
+supabase/migrations/0002_admin.sql  admin console tables + aggregates
 scripts/smoke.sh                    the curl walkthrough
 tests/                              vitest
 ```

@@ -31,7 +31,7 @@ enum ChromeDebugApproval {
         guard monitor == nil else { return }
         monitor = Task.detached(priority: .utility) {
             while !Task.isCancelled {
-                let defaults = UserDefaults.standard
+                let defaults = UserDefaults.navi
                 let hideBar = defaults.object(forKey: "agentHideChromeAutomationBar") as? Bool ?? true
                 if AXIsProcessTrusted(), !NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundleID).isEmpty {
                     if defaults.object(forKey: "agentAutoApproveChrome") as? Bool ?? true,

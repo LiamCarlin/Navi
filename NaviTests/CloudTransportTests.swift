@@ -430,9 +430,9 @@ struct AccountErrorPresentationTests {
     }
 
     @Test func missingVendorKeyReadsAsSignInOutsideDeveloperMode() {
-        let wasDev = UserDefaults.standard.bool(forKey: "developerMode")
-        UserDefaults.standard.set(false, forKey: "developerMode")
-        defer { UserDefaults.standard.set(wasDev, forKey: "developerMode") }
+        let wasDev = UserDefaults.navi.bool(forKey: "developerMode")
+        UserDefaults.navi.set(false, forKey: "developerMode")
+        defer { UserDefaults.navi.set(wasDev, forKey: "developerMode") }
         let e = NaviError.missingAPIKey(.anthropic)
         #expect(e.errorDescription == "Sign in to Navi to keep going.")
         #expect(PanelViewModel.accountPresentation(for: e, quotas: Quotas())?.actionTitle == "Sign in")
@@ -449,7 +449,7 @@ struct NaviAccountTests {
         let account = NaviAccount(cloud: cloud)
         let handled = account.handle(url: URL(string: "navi://auth/callback?error=sign_in_failed&message=Link%20expired")!)
         #expect(handled)
-        #expect(account.lastError == "Sign-in failed: Link expired")
+        #expect(account.lastError == "Couldn't sign you in: link expired. Try again.")
         #expect(!account.isSignedIn && !account.isSigningIn)
         #expect(StubProtocol.requests(host: "acct-fail.test").isEmpty)   // no /auth/exchange
         #expect(!account.handle(url: URL(string: "navi://voice")!))

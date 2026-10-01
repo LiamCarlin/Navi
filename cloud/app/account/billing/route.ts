@@ -3,6 +3,7 @@ import { getStripe, INTERVALS, PLANS_FOR_SALE, priceIdFor, stripeConfigured, typ
 import { getDb } from "@/lib/db";
 import { env } from "@/lib/env";
 import { badRequest, handle, HttpError, json, rateLimited, readJson } from "@/lib/http";
+import { ACCOUNT_DISABLED_MESSAGE } from "@/lib/metering";
 import { perUserLimiter } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -34,6 +35,8 @@ export const POST = handle(async (req) => {
   }
 
   if (body.action !== "checkout") throw badRequest("action must be checkout or portal");
+  // Disabled accounts may still open the portal (to cancel), but not start a new subscription.
+  if (profile.disabledAt) throw new HttpError(403, { error: "account_disabled", message: ACCOUNT_DISABLED_MESSAGE });
   const plan = body.plan as Plan;
   const interval = (body.interval ?? "month") as Interval;
   if (!PLANS_FOR_SALE.includes(plan)) throw badRequest(`plan must be one of ${PLANS_FOR_SALE.join(", ")}`);

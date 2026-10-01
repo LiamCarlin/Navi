@@ -60,7 +60,7 @@ final class PanelController {
     func toggle() { isVisible ? hide() : show() }
 
     func show(prefill: String? = nil, submit: Bool = false) {
-        Log.panel.info("show(prefill: \(prefill ?? "-", privacy: .public), submit: \(submit))")
+        Log.panel.info("show(prefill: \(prefill ?? "-", privacy: .private), submit: \(submit))")
         #if DEBUG
         DebugTrace.log("show prefill=\(prefill ?? "-") submit=\(submit)")
         #endif

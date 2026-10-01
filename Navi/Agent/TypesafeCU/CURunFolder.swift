@@ -12,9 +12,14 @@ import Foundation
 ///
 /// Local only, never uploaded; the newest `keep` runs are kept. Typed text is in the payloads
 /// exactly as the writer wrote it — the folder lives next to the other agent logs for that reason.
+///
+/// Privacy (`TaskLogs`): nothing is written unless task logs are on (opt-in, Developer mode or a
+/// Debug build); strings pass through `TaskLogs.redact`; folders age out after 7 days / 200 MB.
 final class CURunFolder: @unchecked Sendable {
     static let keep = 30
     let url: URL
+    /// False ⇒ every write is a no-op and no folder exists (`TaskLogs.isEnabled`).
+    let isEnabled: Bool
     private let queue = DispatchQueue(label: "navi.cu.runfolder", qos: .utility)
 
     init(goal: String) {
@@ -23,8 +28,11 @@ final class CURunFolder: @unchecked Sendable {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd'T'HHmmss.SSS"
         url = root.appendingPathComponent(f.string(from: Date()))
+        isEnabled = TaskLogs.isEnabled
+        guard isEnabled else { return }
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         Self.prune(root)
+        TaskLogs.purge(directory: root.deletingLastPathComponent())
         write("goal.txt", text: goal)
     }
 
@@ -37,18 +45,21 @@ final class CURunFolder: @unchecked Sendable {
     static func name(_ step: Int, _ suffix: String) -> String { String(format: "step-%03d-%@", step, suffix) }
 
     func write(_ file: String, json: Any) {
+        guard isEnabled else { return }
         queue.async { [url] in
-            let clean = Self.jsonSafe(json)
+            let clean = TaskLogs.redactJSON(Self.jsonSafe(json))
             guard let data = try? JSONSerialization.data(withJSONObject: clean, options: [.prettyPrinted, .sortedKeys]) else { return }
             try? data.write(to: url.appendingPathComponent(file))
         }
     }
 
     func write(_ file: String, text: String) {
-        queue.async { [url] in try? Data(text.utf8).write(to: url.appendingPathComponent(file)) }
+        guard isEnabled else { return }
+        queue.async { [url] in try? Data(TaskLogs.redact(text).utf8).write(to: url.appendingPathComponent(file)) }
     }
 
     func write(_ file: String, data: Data) {
+        guard isEnabled else { return }
         queue.async { [url] in try? data.write(to: url.appendingPathComponent(file)) }
     }
 

@@ -44,8 +44,15 @@ final class AgentExperience: @unchecked Sendable {
     }
 
     static var defaultFileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Navi/agent-experience.json")
+        NaviSettings.dataDirectory.appendingPathComponent("agent-experience.json")
+    }
+
+    // MARK: Privacy hook (Settings → Privacy & Data)
+
+    /// Forgets everything and deletes the file ("Delete everything Navi has stored").
+    func removeAll() {
+        lock.lock(); entries = []; lock.unlock()
+        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
     }
 
     // MARK: Record / recall

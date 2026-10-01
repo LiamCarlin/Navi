@@ -62,7 +62,7 @@ struct CalendarSettingsView: View {
             if !writable.isEmpty {
                 Section {
                     Picker("Book new meetings in", selection: $bookingID) {
-                        Text("Calendar's default").tag("")
+                        Text("Default calendar").tag("")
                         ForEach(writable) { cal in
                             Text(cal.menuTitle).tag(cal.id)
                         }
@@ -94,6 +94,7 @@ struct CalendarSettingsView: View {
                     }
                 } header: {
                     Label(account.kind == .other || account.kind == .local || account.kind == .subscribed
+                          || account.title.caseInsensitiveCompare(account.kind.label) == .orderedSame
                           ? account.kind.label : "\(account.kind.label) · \(account.title)",
                           systemImage: account.kind.symbol)
                 } footer: {

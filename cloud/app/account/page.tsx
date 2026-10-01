@@ -81,7 +81,11 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
 
   const now = new Date();
   const db = await getDb();
-  const me = (await meBody(db, user, now)) as {
+  // A disabled account (admin console) still gets this page: export, delete and billing are rights.
+  const ensured = await db.ensureProfile(user.id, user.email, now);
+  const disabled = Boolean(ensured.disabledAt);
+  const email = ensured.email || user.email;
+  const me = disabled ? null : (await meBody(db, user, now)) as {
     user: { id: string; email: string };
     tier: Tier;
     trialEndsAt?: string;
@@ -102,7 +106,15 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
     <Shell right={<SignOutButton />}>
       <main className="nv-wide">
         <h1 className="nv-h1">Your account</h1>
-        <p className="nv-lede">{me.user.email}</p>
+        <p className="nv-lede">{email}</p>
+
+        {disabled && (
+          <div className="nv-banner nv-banner-warn" role="alert">
+            <strong>This account is disabled</strong>
+            Navi can’t be used with it right now. You can still export or delete your data
+            {profile?.stripeCustomerId ? ", and manage or cancel billing" : ""}. Questions: hello@navi.app.
+          </div>
+        )}
 
         {billingParam === "success" && (
           <div className="nv-banner nv-banner-ok" role="status">
@@ -127,6 +139,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
           </div>
         )}
 
+        {me && (
         <section className="nv-card" aria-labelledby="plan-h">
           <div className="nv-card-head">
             <h2 className="nv-h2" id="plan-h">
@@ -169,7 +182,20 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
             }}
           />
         </section>
+        )}
 
+        {disabled && profile?.stripeCustomerId && billingOn && (
+          <section className="nv-card" aria-labelledby="bill-h">
+            <div className="nv-card-head">
+              <h2 className="nv-h2" id="bill-h">
+                Billing
+              </h2>
+            </div>
+            <AccountActions billingEnabled hasCustomer hasSubscription paidTier={paidTier} available={{ pro: { month: false, year: false }, pro_recall: { month: false, year: false } }} />
+          </section>
+        )}
+
+        {me && (
         <section className="nv-card" id="download" aria-labelledby="dl-h">
           <div className="nv-card-head">
             <h2 className="nv-h2" id="dl-h">
@@ -190,6 +216,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
             </p>
           )}
         </section>
+        )}
 
         <section className="nv-card" aria-labelledby="dev-h">
           <div className="nv-card-head">
@@ -233,7 +260,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
           </div>
         </section>
 
-        <DangerZone email={me.user.email} hasSubscription={hasSubscription} />
+        <DangerZone email={email} hasSubscription={hasSubscription} />
         <Foot />
       </main>
     </Shell>

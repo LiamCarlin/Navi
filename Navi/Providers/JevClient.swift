@@ -69,7 +69,7 @@ final class JevClient: @unchecked Sendable {
         cfg.timeoutIntervalForRequest = 8
         cfg.waitsForConnectivity = false
         cfg.httpAdditionalHeaders = ["User-Agent": "Navi/0.1 (macOS)"]
-        session = URLSession(configuration: cfg)
+        session = URLSession(configuration: TestHost.guarded(cfg))
     }
 
     // MARK: - JSON values (structured state / instructions / criteria)
@@ -194,7 +194,7 @@ final class JevClient: @unchecked Sendable {
 
     /// Thread-safe read of the Settings preference (callers run off the main actor).
     private static var preference: JevProvider {
-        JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
+        JevProvider(rawValue: UserDefaults.navi.string(forKey: "jevProvider") ?? "") ?? .auto
     }
 
     /// Ask Jev one or more questions about a plain-text `state`. Throws `NaviError`.

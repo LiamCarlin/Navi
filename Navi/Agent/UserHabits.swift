@@ -74,12 +74,9 @@ final class UserHabits: @unchecked Sendable {
     }
 
     /// The live instance, or nil when memory has no store or the user turned the feature off.
-    /// Unit tests run hosted inside Navi.app, whose memory service opens the real
-    /// store: without this, planner/start-URL tests would depend on the tester's history.
-    private static let isUnderTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-
+    /// Never under the test host: planner/start-URL tests must not depend on the tester's history.
     static var current: UserHabits? {
-        guard !isUnderTests, UserDefaults.standard.object(forKey: "agentUsesScreenHabits") as? Bool ?? true else { return nil }
+        guard !TestHost.isActive, UserDefaults.navi.object(forKey: "agentUsesScreenHabits") as? Bool ?? true else { return nil }
         lock.lock(); defer { lock.unlock() }
         return installed
     }

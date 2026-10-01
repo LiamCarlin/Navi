@@ -17,6 +17,7 @@ import { getStripe, stripeConfigured } from "./billing";
 import type { Db, DeletedCounts, EntitlementGrant, UsageRecord, WaitlistRecord } from "./db";
 import { env } from "./env";
 import { HttpError } from "./http";
+import { pseudonym } from "./db";
 import { meBody } from "./metering";
 import type { DeviceSession, SessionProvider } from "./sessions";
 
@@ -38,8 +39,12 @@ export interface AccountExport {
     stripeCustomerId: string | null;
     stripeSubscriptionId: string | null;
     createdAt: string;
+    /** Set by support: a plan that wins over the paid tier and the trial. */
+    tierOverride: string | null;
+    /** Set when the account was disabled (export and delete keep working). */
+    disabledAt: string | null;
   } | null;
-  /** The plan as served right now: effective tier, entitlements, quotas, usage this period. */
+  /** The plan as served right now: effective tier, entitlements, quotas, usage this period. Null while disabled. */
   current: Record<string, unknown> | null;
   entitlementGrants: EntitlementGrant[];
   usage: UsageRecord[];
@@ -66,7 +71,15 @@ export async function exportAccount(deps: AccountDeps, user: AuthUser): Promise<
   const email = (await deps.db.getProfile(user.id))?.email || user.email;
   const raw = await deps.db.exportUserData(user.id, email);
   const devices = await deps.sessions.listSessions(user.id);
-  const current = raw.profile ? await meBody(deps.db, { id: user.id, email }, now) : null;
+  // meBody refuses a disabled account (403 account_disabled); export is a right, so it still runs.
+  let current: Record<string, unknown> | null = null;
+  if (raw.profile && !raw.profile.disabledAt) {
+    try {
+      current = await meBody(deps.db, { id: user.id, email }, now);
+    } catch (e) {
+      if (!(e instanceof HttpError)) throw e;
+    }
+  }
   return {
     format: EXPORT_FORMAT,
     exportedAt: now.toISOString(),
@@ -80,6 +93,8 @@ export async function exportAccount(deps: AccountDeps, user: AuthUser): Promise<
           stripeCustomerId: raw.profile.stripeCustomerId,
           stripeSubscriptionId: raw.profile.stripeSubscriptionId,
           createdAt: raw.profile.createdAt,
+          tierOverride: raw.profile.tierOverride ?? null,
+          disabledAt: raw.profile.disabledAt ?? null,
         }
       : null,
     current,
@@ -96,7 +111,12 @@ export interface DeleteResult {
   billingCancelled: boolean;
 }
 
-export async function deleteAccount(deps: AccountDeps, user: AuthUser): Promise<DeleteResult> {
+/**
+ * Deletes everything about `user`. Used by DELETE /v1/account (`by: "self"`) and by the admin
+ * console's "Delete user" (lib/admin/ops.ts, which writes its own audit entry). Works for a
+ * disabled account: erasure is a right, not a feature.
+ */
+export async function deleteAccount(deps: AccountDeps, user: AuthUser, by: "self" | "admin" = "self"): Promise<DeleteResult> {
   const profile = await deps.db.getProfile(user.id);
   const email = profile?.email || user.email;
 
@@ -122,6 +142,12 @@ export async function deleteAccount(deps: AccountDeps, user: AuthUser): Promise<
 
   const deleted = await deps.db.deleteUserData(user.id, email);
   await deps.sessions.deleteUser(user.id);
+  if (by === "self") {
+    // The admin console sees that an account went, never whose: no email in the entry.
+    await deps.db
+      .adminWriteAudit({ actor: "self", action: "account.delete", target: pseudonym(user.id), details: { billingCancelled }, at: (deps.now ?? new Date()).toISOString() })
+      .catch(() => undefined);
+  }
   return { deleted, billingCancelled };
 }
 

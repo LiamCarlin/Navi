@@ -2,19 +2,26 @@
  * The metered vendor proxy behind /v1/jev, /v1/claude and /v1/digest.
  *
  *   request ─▶ bearer auth ─▶ per-user rate limit ─▶ feature/run headers
- *           ─▶ authorize (403 / 402) ─▶ upstream (or mock) ─▶ cost ─▶ passthrough
+ *           ─▶ authorize (403 disabled / 426 / 503 / 403 / 402) ─▶ upstream (or mock) ─▶ cost ─▶ passthrough
+ *
+ * Vendor keys come from lib/keys.ts (console-managed database key first, then env).
+ * The admin console's product config (lib/config.ts) may switch a feature off, require
+ * a newer app (`X-Navi-Version`) or force the model per feature.
  *
  * Bodies pass through byte-for-byte. Claude streams (`stream: true`) are piped
  * unbuffered through a TransformStream that only *reads* the SSE to tally usage.
  */
 
 import { randomUUID } from "node:crypto";
+import { fromGatewayResponse, GATEWAY_HEADERS, toGatewayBody } from "./admin/jev-gateway";
 import { requireUser, type AuthUser } from "./auth";
+import { getConfig, modelOverride, type ProductConfig } from "./config";
 import { getDb, type Db } from "./db";
 import { env } from "./env";
 import { badRequest, HttpError, json, parseJson, rateLimited } from "./http";
 import { authorize, recordCost, type Authorization } from "./metering";
 import { mockClaudeMessage, mockClaudeStream, mockGeminiResponse, mockJevResponse } from "./mock";
+import { getVendorKey, noteKeyUsed } from "./keys";
 import { isFeature, type Feature } from "./plans";
 import { anthropicCostUsd, anthropicUsageFromMessage, geminiCostUsd, geminiUsageFromResponse, JEV_FLAT_USD } from "./pricing";
 import { perUserLimiter } from "./ratelimit";
@@ -27,6 +34,7 @@ interface Ctx {
   db: Db;
   user: AuthUser;
   auth: Authorization;
+  config: ProductConfig;
 }
 
 /** Validates `X-Navi-Feature`; /v1/digest only ever meters as a recall feature. */
@@ -64,8 +72,9 @@ export async function handleMeteredProxy(req: Request, upstream: Upstream): Prom
   const body = parseJson<Record<string, unknown>>(bodyText);
 
   const db = await getDb();
-  const auth = await authorize(db, user, feature, runId, new Date());
-  const ctx: Ctx = { db, user, auth };
+  const config = await getConfig(db);
+  const auth = await authorize(db, user, feature, runId, new Date(), { config, appVersion: req.headers.get("x-navi-version") });
+  const ctx: Ctx = { db, user, auth, config };
 
   let res: Response;
   switch (upstream) {
@@ -76,7 +85,7 @@ export async function handleMeteredProxy(req: Request, upstream: Upstream): Prom
       res = await proxyClaude(bodyText, body, req.headers, ctx);
       break;
     case "digest":
-      res = body.provider === "gemini" && (env.geminiApiKey || env.mockUpstream)
+      res = body.provider === "gemini" && (env.mockUpstream || (await getVendorKey("gemini", db)))
         ? await proxyGemini(body, ctx)
         : await proxyClaude(stripKeys(bodyText, body, ["provider"]), body, req.headers, ctx);
       break;
@@ -105,8 +114,12 @@ async function proxyJev(bodyText: string, body: unknown, ctx: Ctx): Promise<Resp
     await recordCost(ctx.db, ctx.auth, ctx.user.id, JEV_FLAT_USD);
     return json(mockJevResponse(body));
   }
-  const key = env.typesafeApiKey;
-  if (!key) throw unconfigured("Jev");
+  const key = await getVendorKey("typesafe", ctx.db);
+  if (!key) {
+    const gatewayKey = await getVendorKey("ai_gateway", ctx.db);
+    if (gatewayKey) return proxyJevViaGateway(body, gatewayKey, ctx);
+    throw unconfigured("Jev");
+  }
   const up = await fetch(env.typesafeUrl, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
@@ -114,8 +127,27 @@ async function proxyJev(bodyText: string, body: unknown, ctx: Ctx): Promise<Resp
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
   const text = await up.text();
-  if (up.ok) await recordCost(ctx.db, ctx.auth, ctx.user.id, JEV_FLAT_USD);
+  if (up.ok) {
+    noteKeyUsed("typesafe", ctx.db);
+    await recordCost(ctx.db, ctx.auth, ctx.user.id, JEV_FLAT_USD);
+  }
   return new Response(text, { status: up.status, headers: { "content-type": up.headers.get("content-type") ?? "application/json" } });
+}
+
+/** Jev through the Vercel AI Gateway (no TypeSafe key, gateway key set): TypeSafe shape in and out. */
+async function proxyJevViaGateway(body: unknown, key: string, ctx: Ctx): Promise<Response> {
+  const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+  const up = await fetch(env.aiGatewayEvalUrl, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json", ...GATEWAY_HEADERS },
+    body: JSON.stringify(toGatewayBody(b)),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+  const text = await up.text();
+  if (!up.ok) return new Response(text, { status: up.status, headers: { "content-type": up.headers.get("content-type") ?? "application/json" } });
+  noteKeyUsed("ai_gateway", ctx.db);
+  await recordCost(ctx.db, ctx.auth, ctx.user.id, JEV_FLAT_USD);
+  return json(fromGatewayResponse(safeJson(text), typeof b.model === "string" ? b.model : "jev-latest"));
 }
 
 // MARK: - Claude
@@ -124,6 +156,12 @@ const SSE_HEADERS = { "content-type": "text/event-stream; charset=utf-8", "cache
 
 async function proxyClaude(bodyText: string, body: Record<string, unknown>, reqHeaders: Headers, ctx: Ctx): Promise<Response> {
   const stream = body.stream === true;
+  // The console may pin the model per feature; otherwise the app's choice passes through.
+  const forced = modelOverride(ctx.config, ctx.auth.feature, "anthropic");
+  if (forced && body.model !== forced) {
+    body = { ...body, model: forced };
+    bodyText = JSON.stringify(body);
+  }
   const model = typeof body.model === "string" ? body.model : undefined;
 
   if (env.mockUpstream) {
@@ -137,7 +175,7 @@ async function proxyClaude(bodyText: string, body: Record<string, unknown>, reqH
     return json(msg);
   }
 
-  const key = env.anthropicApiKey;
+  const key = await getVendorKey("anthropic", ctx.db);
   if (!key) throw unconfigured("Claude");
   const headers: Record<string, string> = {
     "x-api-key": key,
@@ -155,6 +193,7 @@ async function proxyClaude(bodyText: string, body: Record<string, unknown>, reqH
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
+  if (up.ok) noteKeyUsed("anthropic", ctx.db);
   if (!up.ok || !stream || !up.body) {
     const text = await up.text();
     if (up.ok) {
@@ -225,14 +264,14 @@ export function usageTally(onDone: (u: { input: number; output: number }) => Pro
 // MARK: - Gemini (digest only)
 
 async function proxyGemini(body: Record<string, unknown>, ctx: Ctx): Promise<Response> {
-  const model = typeof body.model === "string" ? body.model : env.geminiDefaultModel;
+  const model = modelOverride(ctx.config, ctx.auth.feature, "gemini") ?? (typeof body.model === "string" ? body.model : env.geminiDefaultModel);
   if (env.mockUpstream) {
     const res = mockGeminiResponse();
     const u = geminiUsageFromResponse(res);
     await recordCost(ctx.db, ctx.auth, ctx.user.id, geminiCostUsd(model, u.input, u.output));
     return json(res);
   }
-  const key = env.geminiApiKey;
+  const key = await getVendorKey("gemini", ctx.db);
   if (!key) throw unconfigured("Gemini");
   const payload = { ...body };
   delete payload.provider;
@@ -245,6 +284,7 @@ async function proxyGemini(body: Record<string, unknown>, ctx: Ctx): Promise<Res
   });
   const text = await up.text();
   if (up.ok) {
+    noteKeyUsed("gemini", ctx.db);
     const u = geminiUsageFromResponse(safeJson(text));
     await recordCost(ctx.db, ctx.auth, ctx.user.id, geminiCostUsd(model, u.input, u.output));
   }

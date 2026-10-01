@@ -65,18 +65,18 @@ final class KeychainTokenStore: CloudTokenStore, @unchecked Sendable {
     var accessToken: String? { Keychain.get(.naviAccess) }
     var refreshToken: String? { Keychain.get(.naviRefresh) }
     var accessExpiresAt: Date? {
-        let t = UserDefaults.standard.double(forKey: Self.expiresKey)
+        let t = UserDefaults.navi.double(forKey: Self.expiresKey)
         return t > 0 ? Date(timeIntervalSince1970: t) : nil
     }
     func store(access: String, refresh: String?, expiresAt: Date?) {
         Keychain.set(.naviAccess, value: access)
         if let refresh { Keychain.set(.naviRefresh, value: refresh) }
-        UserDefaults.standard.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
+        UserDefaults.navi.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
     }
     func clear() {
         Keychain.set(.naviAccess, value: nil)
         Keychain.set(.naviRefresh, value: nil)
-        UserDefaults.standard.removeObject(forKey: Self.expiresKey)
+        UserDefaults.navi.removeObject(forKey: Self.expiresKey)
     }
 }
 
@@ -107,19 +107,36 @@ final class MemoryTokenStore: CloudTokenStore, @unchecked Sendable {
 ///
 /// Errors: 401 → refresh the session once and retry; a second 401 (or a failed
 /// refresh) signs the account out and throws `NaviError.signedOut`. 402/403
-/// decode `{error, feature, tier, resetsAt}` into `.quotaExceeded` / `.notEntitled`.
+/// decode `{error, feature, tier, resetsAt}` into `.quotaExceeded` / `.notEntitled`;
+/// 403 `account_disabled`, 426 `upgrade_required` and 503 `feature_disabled` map to
+/// `.accountDisabled` / `.upgradeRequired` / `.featureDisabled` and are remembered
+/// (`block`, `disabledFeatures`) so later calls fail fast until `/v1/me` says otherwise.
+/// Every request carries `X-Navi-Version`.
 final class CloudTransport: @unchecked Sendable {
-    static let shared = CloudTransport()
+    static let shared: CloudTransport = {
+        #if DEBUG
+        if let dev = DevCloud.current {
+            // A Debug run pointed at a local cloud keeps its session in memory, so it
+            // never writes the installed app's Keychain item (see `DevCloud`).
+            return CloudTransport(baseURL: dev.baseURL,
+                                  tokens: MemoryTokenStore(access: dev.accessToken, refresh: dev.refreshToken))
+        }
+        #endif
+        return CloudTransport()
+    }()
 
     static let defaultBaseURL = "https://api.navi.app"
     static let baseURLKey = "cloudBaseURL"
     static let useCloudKey = "useCloud"
+    /// Sent on every cloud request so the server can refuse builds it no longer serves (426).
+    static let versionHeader = "X-Navi-Version"
 
     let session: URLSession
     let tokens: CloudTokenStore
     private let baseURLOverride: URL?
     private let refresher = Refresher()
     private let lastUse = LastUse()
+    private let gate = Gate()
 
     init(session: URLSession? = nil, baseURL: URL? = nil, tokens: CloudTokenStore = KeychainTokenStore()) {
         if let session {
@@ -129,14 +146,20 @@ final class CloudTransport: @unchecked Sendable {
             cfg.timeoutIntervalForRequest = 600     // streaming answers and agent turns
             cfg.waitsForConnectivity = false
             cfg.httpAdditionalHeaders = ["User-Agent": "Navi/\(Self.appVersion) (macOS)"]
-            self.session = URLSession(configuration: cfg)
+            self.session = URLSession(configuration: TestHost.guarded(cfg))
         }
         self.baseURLOverride = baseURL
         self.tokens = tokens
     }
 
-    private static var appVersion: String {
+    /// `CFBundleShortVersionString`, the value of `X-Navi-Version`.
+    static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1"
+    }
+
+    /// Every request — proxy, auth, billing, account, warm-up — says which build sent it.
+    static func stamp(_ req: inout URLRequest) {
+        req.setValue(appVersion, forHTTPHeaderField: versionHeader)
     }
 
     // MARK: Selection
@@ -146,7 +169,7 @@ final class CloudTransport: @unchecked Sendable {
     /// at a mock server.
     var baseURL: URL {
         if let baseURLOverride { return baseURLOverride }
-        if let s = UserDefaults.standard.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let s = UserDefaults.navi.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !s.isEmpty, let u = URL(string: s.hasSuffix("/") ? String(s.dropLast()) : s) {
             return u
         }
@@ -155,7 +178,7 @@ final class CloudTransport: @unchecked Sendable {
 
     /// `NaviSettings.useCloud` (default true), read off the main actor.
     var useCloud: Bool {
-        UserDefaults.standard.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.standard.bool(forKey: Self.useCloudKey)
+        UserDefaults.navi.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.navi.bool(forKey: Self.useCloudKey)
     }
 
     /// A session exists (tokens in the store).
@@ -196,6 +219,7 @@ final class CloudTransport: @unchecked Sendable {
     /// Sends an authenticated request. Refreshes the session once on 401.
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var req = request
+        try preflight(req)
         let used = try await attachBearer(&req)
         var (data, http) = try await perform(req)
         if http.statusCode == 401 {
@@ -205,7 +229,7 @@ final class CloudTransport: @unchecked Sendable {
             (data, http) = try await perform(req)
             if http.statusCode == 401 { await signOutLocally(); throw NaviError.signedOut }
         }
-        try Self.check(http, body: data, path: req.url?.path ?? "")
+        try checkNoting(http, body: data, path: req.url?.path ?? "")
         noteTier(in: http)
         return (data, http)
     }
@@ -215,6 +239,7 @@ final class CloudTransport: @unchecked Sendable {
     /// decided before the first byte of a successful stream.
     func bytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
         var req = request
+        try preflight(req)
         let used = try await attachBearer(&req)
         var (bytes, http) = try await performStream(req)
         if http.statusCode == 401 {
@@ -227,7 +252,7 @@ final class CloudTransport: @unchecked Sendable {
         if !(200..<300).contains(http.statusCode) {
             var text = ""
             for try await line in bytes.lines { text += line }
-            try Self.check(http, body: Data(text.utf8), path: req.url?.path ?? "")
+            try checkNoting(http, body: Data(text.utf8), path: req.url?.path ?? "")
         }
         noteTier(in: http)
         return (bytes, http)
@@ -240,18 +265,22 @@ final class CloudTransport: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: json)
         let (data, http) = try await perform(req)
-        try Self.check(http, body: data, path: path)
+        try checkNoting(http, body: data, path: path)
         return (data, http)
     }
 
-    private func perform(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var req = request
+        Self.stamp(&req)
         let (data, resp) = try await session.data(for: req)
         await lastUse.touch()
         guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response from Navi Cloud") }
         return (data, http)
     }
 
-    private func performStream(_ req: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+    private func performStream(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+        var req = request
+        Self.stamp(&req)
         let (bytes, resp) = try await session.bytes(for: req)
         await lastUse.touch()
         guard let http = resp as? HTTPURLResponse else { throw NaviError.other("No HTTP response from Navi Cloud") }
@@ -287,8 +316,11 @@ final class CloudTransport: @unchecked Sendable {
     // MARK: Errors
 
     /// The proxy's error body: `{error, feature, tier, resetsAt}` on 402/403,
+    /// `{error:"account_disabled", message}` on 403,
+    /// `{error:"upgrade_required", minAppVersion, downloadURL}` on 426,
     /// `{error:"rate_limited", retryAfterSeconds}` on 429,
-    /// `{error:"upstream_unconfigured"|"billing_unconfigured"}` on 503.
+    /// `{error:"upstream_unconfigured"|"billing_unconfigured"}` or
+    /// `{error:"feature_disabled", feature, message}` on 503.
     struct ErrorBody: Decodable {
         var error: String?
         var message: String?
@@ -296,8 +328,12 @@ final class CloudTransport: @unchecked Sendable {
         var tier: String?
         var resetsAt: Date?
         var retryAfterSeconds: Double?
+        var minAppVersion: String?
+        var downloadURL: URL?
 
-        private enum CodingKeys: String, CodingKey { case error, message, feature, tier, resetsAt, retryAfterSeconds }
+        private enum CodingKeys: String, CodingKey {
+            case error, message, feature, tier, resetsAt, retryAfterSeconds, minAppVersion, downloadURL
+        }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             error = try? c.decodeIfPresent(String.self, forKey: .error)
@@ -306,6 +342,9 @@ final class CloudTransport: @unchecked Sendable {
             tier = try? c.decodeIfPresent(String.self, forKey: .tier)
             resetsAt = try c.decodeLenientDateIfPresent(forKey: .resetsAt)
             retryAfterSeconds = try? c.decodeIfPresent(Double.self, forKey: .retryAfterSeconds)
+            minAppVersion = try? c.decodeIfPresent(String.self, forKey: .minAppVersion)
+            let rawURL: String? = (try? c.decodeIfPresent(String.self, forKey: .downloadURL)) ?? nil
+            downloadURL = rawURL.flatMap(URL.init(string:))
         }
     }
 
@@ -321,9 +360,18 @@ final class CloudTransport: @unchecked Sendable {
         case 402:
             Log.app.info("cloud: quota exceeded (\(parsed?.feature ?? "?", privacy: .public), \(parsed?.tier ?? "?", privacy: .public))")
             throw NaviError.quotaExceeded(feature: parsed?.feature ?? "", tier: parsed?.tier ?? "", resetsAt: parsed?.resetsAt)
+        case 403 where parsed?.error == "account_disabled":
+            Log.app.error("cloud: account disabled")
+            throw NaviError.accountDisabled(message: parsed?.message)
         case 403:
             Log.app.info("cloud: not entitled (\(parsed?.feature ?? "?", privacy: .public), \(parsed?.tier ?? "?", privacy: .public))")
             throw NaviError.notEntitled(feature: parsed?.feature ?? "", tier: parsed?.tier ?? "")
+        case 426:
+            Log.app.error("cloud: upgrade required (this build \(appVersion, privacy: .public), min \(parsed?.minAppVersion ?? "?", privacy: .public))")
+            throw NaviError.upgradeRequired(minAppVersion: parsed?.minAppVersion, downloadURL: parsed?.downloadURL)
+        case 503 where parsed?.error == "feature_disabled":
+            Log.app.info("cloud: feature disabled (\(parsed?.feature ?? "?", privacy: .public))")
+            throw NaviError.featureDisabled(feature: parsed?.feature ?? "", message: parsed?.message)
         case 429:
             let wait = parsed?.retryAfterSeconds.map { max(1, Int($0.rounded(.up))) }
             Log.app.info("cloud: rate limited (retry after \(wait ?? 0)s)")
@@ -335,6 +383,83 @@ final class CloudTransport: @unchecked Sendable {
         default:
             Log.app.error("cloud: HTTP \(http.statusCode) on \(path, privacy: .public): \(text.prefix(300))")
             throw NaviError.http(status: http.statusCode, body: parsed?.message ?? parsed?.error ?? text)
+        }
+    }
+
+    /// `check`, plus remembering the errors that change what later calls may do:
+    /// a disabled account or a too-old build stops proxy calls; a feature the
+    /// operator switched off stops that feature until the next `/v1/me`.
+    private func checkNoting(_ http: HTTPURLResponse, body: Data, path: String) throws {
+        do { try Self.check(http, body: body, path: path) }
+        catch let e as NaviError { note(e); throw e }
+    }
+
+    // MARK: Blocks and kill switches
+
+    /// A reason the cloud won't serve this app at all right now.
+    enum Block: Equatable, Sendable {
+        case accountDisabled(message: String?)
+        case upgradeRequired(minAppVersion: String?, downloadURL: URL?)
+
+        var error: NaviError {
+            switch self {
+            case .accountDisabled(let m): return .accountDisabled(message: m)
+            case .upgradeRequired(let v, let u): return .upgradeRequired(minAppVersion: v, downloadURL: u)
+            }
+        }
+    }
+
+    /// The current block, if any (set by a 403 `account_disabled` / 426, or by `/v1/me.config`).
+    var block: Block? { gate.read { $0.block } }
+
+    /// `config.features` keys that are switched off ("answers", "tasks", …).
+    var disabledFeatures: Set<String> { gate.read { $0.disabled } }
+
+    /// Proxy calls stop while blocked; `/v1/me` (to notice the block lifting),
+    /// `/v1/account*` (export, delete) and auth/billing always go through.
+    static func isBlockable(path: String) -> Bool {
+        guard let r = path.range(of: "/v1/") else { return false }
+        let rest = path[r.upperBound...]
+        return rest != "me" && !rest.hasPrefix("account")
+    }
+
+    /// Refuses, without a network round trip, what the cloud would refuse anyway.
+    func preflight(_ req: URLRequest) throws {
+        if let block, Self.isBlockable(path: req.url?.path ?? "") { throw block.error }
+        if let raw = req.value(forHTTPHeaderField: "X-Navi-Feature"), let f = CloudFeature(rawValue: raw),
+           let key = CloudConfig.Features.key(for: f), disabledFeatures.contains(key) {
+            throw NaviError.featureDisabled(feature: key, message: nil)
+        }
+    }
+
+    /// A successful `/v1/me` is the server's word: the account is enabled, the
+    /// kill switches are what `config` says, and the build is too old only if
+    /// `config.minAppVersion` says so.
+    func apply(_ info: AccountInfo) {
+        let config = info.config ?? CloudConfig()
+        let block: Block? = config.requiresUpdate(currentVersion: Self.appVersion)
+            ? .upgradeRequired(minAppVersion: config.minAppVersion, downloadURL: config.downloadURL) : nil
+        gate.write { $0.block = block; $0.disabled = config.features.disabled }
+    }
+
+    /// Sign-in / sign-out start from a clean slate.
+    func clearBlocks() { gate.write { $0.block = nil; $0.disabled = [] } }
+
+    private func note(_ error: NaviError) {
+        switch error {
+        case .accountDisabled(let m):
+            gate.write { $0.block = .accountDisabled(message: m) }
+        case .upgradeRequired(let v, let u):
+            gate.write { $0.block = .upgradeRequired(minAppVersion: v, downloadURL: u) }
+        case .featureDisabled(let f, _):
+            let key = CloudFeature(rawValue: f).flatMap(CloudConfig.Features.key(for:)) ?? f
+            guard !key.isEmpty else { return }
+            gate.write { $0.disabled.insert(key) }
+        default:
+            return
+        }
+        Task { @MainActor in
+            NotificationCenter.default.post(name: .naviCloudBlocked, object: nil, userInfo: ["error": error])
         }
     }
 
@@ -400,6 +525,7 @@ final class CloudTransport: @unchecked Sendable {
     func signOutLocally() async {
         guard isSignedIn else { return }
         tokens.clear()
+        clearBlocks()
         Log.app.info("cloud: signed out")
         await MainActor.run {
             NotificationCenter.default.post(name: .naviAccountChanged, object: nil, userInfo: ["signedOut": true])
@@ -409,7 +535,22 @@ final class CloudTransport: @unchecked Sendable {
     /// `GET /v1/me`.
     func me() async throws -> AccountInfo {
         let (data, _) = try await send(get(path: "/v1/me"))
-        return try AccountInfo.decode(data)
+        let info = try AccountInfo.decode(data)
+        apply(info)
+        return info
+    }
+
+    /// `GET /v1/account/export` → everything the cloud holds about the account, as JSON.
+    func exportAccount() async throws -> Data {
+        let (data, _) = try await send(get(path: "/v1/account/export"))
+        return data
+    }
+
+    /// `DELETE /v1/account` → 204. The caller signs out locally afterwards.
+    func deleteAccount() async throws {
+        var req = URLRequest(url: url("/v1/account"))
+        req.httpMethod = "DELETE"
+        _ = try await send(req)
     }
 
     /// `POST /billing/checkout` / `/billing/portal` → the URL to open.
@@ -439,6 +580,7 @@ final class CloudTransport: @unchecked Sendable {
             var req = URLRequest(url: baseURL)
             req.httpMethod = "HEAD"
             req.timeoutInterval = 5
+            Self.stamp(&req)
             let start = Date()
             _ = try? await session.data(for: req)
             await lastUse.touch()
@@ -474,9 +616,46 @@ final class CloudTransport: @unchecked Sendable {
             return Date().timeIntervalSince(at) > seconds
         }
     }
+
+    /// Block + kill switches, read on whatever thread a request is built on.
+    private final class Gate: @unchecked Sendable {
+        struct State { var block: Block?; var disabled: Set<String> = [] }
+        private let lock = NSLock()
+        private var state = State()
+        func read<T>(_ f: (State) -> T) -> T { lock.withLock { f(state) } }
+        func write(_ f: (inout State) -> Void) { lock.withLock { f(&state) } }
+    }
 }
 
+#if DEBUG
+/// Debug-only: run a build against a local Navi Cloud without touching the
+/// installed app's account. Launch the Debug binary with
+/// `NAVI_DEV_CLOUD=http://localhost:3100` (optionally `NAVI_DEV_ACCESS_TOKEN` /
+/// `NAVI_DEV_REFRESH_TOKEN` from `POST /auth/dev-login`): the session lives in
+/// memory, the Keychain is neither read nor written, and the account snapshot
+/// and dismissed notices go to a separate defaults suite. Release builds ignore it.
+struct DevCloud {
+    let baseURL: URL
+    let accessToken: String?
+    let refreshToken: String?
+
+    static let defaultsSuite = "com.liamcarlin.navi.devcloud"
+
+    static let current: DevCloud? = {
+        let env = ProcessInfo.processInfo.environment
+        guard let s = env["NAVI_DEV_CLOUD"], let url = URL(string: s), url.scheme != nil else { return nil }
+        func nonEmpty(_ k: String) -> String? { env[k].flatMap { $0.isEmpty ? nil : $0 } }
+        return DevCloud(baseURL: url, accessToken: nonEmpty("NAVI_DEV_ACCESS_TOKEN"), refreshToken: nonEmpty("NAVI_DEV_REFRESH_TOKEN"))
+    }()
+
+    static var defaults: UserDefaults? { current == nil ? nil : UserDefaults(suiteName: defaultsSuite) }
+}
+#endif
+
 extension Notification.Name {
+    /// The cloud refused this app for a reason that outlives the call: account
+    /// disabled, build too old, or a feature switched off. userInfo `error: NaviError`.
+    static let naviCloudBlocked = Notification.Name("navi.cloudBlocked")
     /// Sign-in, sign-out, or a fresh `/v1/me` snapshot. userInfo `signedOut: true` on forced sign-out.
     static let naviAccountChanged = Notification.Name("navi.accountChanged")
     /// A proxy response carried `X-Navi-Tier` (userInfo `tier`). `NaviAccount` refreshes when it differs.

@@ -106,6 +106,169 @@ struct Usage: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Remote config (`/v1/me.config`)
+
+/// Operator switches the cloud sends with `/v1/me`: kill switches per feature,
+/// one banner notice, and the app versions it will serve. Every field is
+/// optional and decoded leniently — an older server sends no `config` at all,
+/// and a malformed field never fails the account decode.
+struct CloudConfig: Codable, Equatable, Sendable {
+    /// Kill switches. Unlike entitlements, a missing flag means *on*: the
+    /// operator turns a feature off explicitly, a server that omits it doesn't.
+    struct Features: Codable, Equatable, Sendable {
+        var answers = true
+        var tasks = true
+        var voice = true
+        var recall = true
+
+        init(answers: Bool = true, tasks: Bool = true, voice: Bool = true, recall: Bool = true) {
+            self.answers = answers; self.tasks = tasks; self.voice = voice; self.recall = recall
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            answers = (try? c.decodeIfPresent(Bool.self, forKey: .answers)) ?? true
+            tasks = (try? c.decodeIfPresent(Bool.self, forKey: .tasks)) ?? true
+            voice = (try? c.decodeIfPresent(Bool.self, forKey: .voice)) ?? true
+            recall = (try? c.decodeIfPresent(Bool.self, forKey: .recall)) ?? true
+        }
+
+        /// Whether the switch behind a cloud feature is on. Routing has no switch.
+        func allows(_ feature: CloudFeature) -> Bool {
+            guard let key = Self.key(for: feature) else { return true }
+            switch key {
+            case "answers": return answers
+            case "tasks": return tasks
+            case "voice": return voice
+            default: return recall
+            }
+        }
+
+        /// The `config.features` key for a metered feature (`feature_disabled.feature` uses the same names).
+        static func key(for feature: CloudFeature) -> String? {
+            switch feature {
+            case .route: return nil
+            case .answer: return "answers"
+            case .task: return "tasks"
+            case .voice: return "voice"
+            case .recallTriage, .recallDigest: return "recall"
+            }
+        }
+
+        /// Names of the switches that are off ("answers", "tasks", …).
+        var disabled: Set<String> {
+            var s = Set<String>()
+            if !answers { s.insert("answers") }
+            if !tasks { s.insert("tasks") }
+            if !voice { s.insert("voice") }
+            if !recall { s.insert("recall") }
+            return s
+        }
+    }
+
+    /// A one-line banner from the operator ("Answers are slow right now").
+    struct Notice: Codable, Equatable, Sendable, Identifiable {
+        enum Level: String, Codable, Sendable { case info, warning, critical }
+        var id: String
+        var message: String
+        var level: Level
+        var url: URL?
+
+        init(id: String, message: String, level: Level = .info, url: URL? = nil) {
+            self.id = id; self.message = message; self.level = level; self.url = url
+        }
+
+        private enum CodingKeys: String, CodingKey { case id, message, level, url }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            message = try c.decode(String.self, forKey: .message)
+            // An unknown level (a future "maintenance") reads as info rather than dropping the notice.
+            let rawLevel: String? = (try? c.decodeIfPresent(String.self, forKey: .level)) ?? nil
+            level = rawLevel.flatMap(Level.init(rawValue:)) ?? .info
+            let rawURL: String? = (try? c.decodeIfPresent(String.self, forKey: .url)) ?? nil
+            url = rawURL.flatMap(URL.init(string:))
+        }
+    }
+
+    var features = Features()
+    var notice: Notice?
+    /// Oldest app version the cloud still serves; older builds get 426 `upgrade_required`.
+    var minAppVersion: String?
+    /// Newest released version (for an "update available" hint).
+    var latestVersion: String?
+    /// Where to download the latest build when the updater can't help.
+    var downloadURL: URL?
+
+    init(features: Features = Features(), notice: Notice? = nil, minAppVersion: String? = nil,
+         latestVersion: String? = nil, downloadURL: URL? = nil) {
+        self.features = features; self.notice = notice; self.minAppVersion = minAppVersion
+        self.latestVersion = latestVersion; self.downloadURL = downloadURL
+    }
+
+    private enum CodingKeys: String, CodingKey { case features, notice, minAppVersion, latestVersion, downloadURL }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        features = (try? c.decodeIfPresent(Features.self, forKey: .features)) ?? Features()
+        notice = (try? c.decodeIfPresent(Notice.self, forKey: .notice)) ?? nil
+        if let n = notice, n.id.isEmpty || n.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { notice = nil }
+        minAppVersion = Self.nonEmpty((try? c.decodeIfPresent(String.self, forKey: .minAppVersion)) ?? nil)
+        latestVersion = Self.nonEmpty((try? c.decodeIfPresent(String.self, forKey: .latestVersion)) ?? nil)
+        downloadURL = ((try? c.decodeIfPresent(String.self, forKey: .downloadURL)) ?? nil).flatMap(URL.init(string:))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(features, forKey: .features)
+        try c.encodeIfPresent(notice, forKey: .notice)
+        try c.encodeIfPresent(minAppVersion, forKey: .minAppVersion)
+        try c.encodeIfPresent(latestVersion, forKey: .latestVersion)
+        try c.encodeIfPresent(downloadURL?.absoluteString, forKey: .downloadURL)
+    }
+
+    private static func nonEmpty(_ s: String?) -> String? {
+        guard let t = s?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        return t
+    }
+
+    /// This build is older than the oldest version the cloud serves.
+    func requiresUpdate(currentVersion: String) -> Bool {
+        guard let min = minAppVersion, let need = SemanticVersion(min), let have = SemanticVersion(currentVersion) else { return false }
+        return have < need
+    }
+
+    /// A newer release exists (informational).
+    func updateAvailable(currentVersion: String) -> Bool {
+        guard let latest = latestVersion, let l = SemanticVersion(latest), let have = SemanticVersion(currentVersion) else { return false }
+        return have < l
+    }
+}
+
+/// Which notice ids the user has dismissed. Persisted so a dismissed banner
+/// stays gone across launches; capped so the list can't grow forever.
+struct NoticeMemory {
+    static let key = "naviDismissedNoticeIDs"
+    static let limit = 50
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .navi) { self.defaults = defaults }
+
+    var dismissed: [String] { defaults.stringArray(forKey: Self.key) ?? [] }
+
+    func isDismissed(_ id: String) -> Bool { dismissed.contains(id) }
+
+    func dismiss(_ id: String) {
+        guard !id.isEmpty, !isDismissed(id) else { return }
+        defaults.set(Array((dismissed + [id]).suffix(Self.limit)), forKey: Self.key)
+    }
+
+    /// The notice to show, or nil when there is none or it was dismissed.
+    func visible(_ notice: CloudConfig.Notice?) -> CloudConfig.Notice? {
+        guard let notice, !isDismissed(notice.id) else { return nil }
+        return notice
+    }
+}
+
 /// `GET /v1/me`.
 struct AccountInfo: Codable, Equatable, Sendable {
     struct User: Codable, Equatable, Sendable {
@@ -119,13 +282,15 @@ struct AccountInfo: Codable, Equatable, Sendable {
     var entitlements: Entitlements
     var quotas: Quotas
     var usage: Usage
+    /// Operator config; nil when the server sends none (everything on, no notice).
+    var config: CloudConfig?
 
-    private enum CodingKeys: String, CodingKey { case user, tier, trialEndsAt, entitlements, quotas, usage }
+    private enum CodingKeys: String, CodingKey { case user, tier, trialEndsAt, entitlements, quotas, usage, config }
 
     init(user: User, tier: Tier, trialEndsAt: Date? = nil, entitlements: Entitlements,
-         quotas: Quotas = Quotas(), usage: Usage = Usage()) {
+         quotas: Quotas = Quotas(), usage: Usage = Usage(), config: CloudConfig? = nil) {
         self.user = user; self.tier = tier; self.trialEndsAt = trialEndsAt
-        self.entitlements = entitlements; self.quotas = quotas; self.usage = usage
+        self.entitlements = entitlements; self.quotas = quotas; self.usage = usage; self.config = config
     }
 
     init(from decoder: Decoder) throws {
@@ -138,6 +303,7 @@ struct AccountInfo: Codable, Equatable, Sendable {
         entitlements = try c.decodeIfPresent(Entitlements.self, forKey: .entitlements) ?? .none
         quotas = try c.decodeIfPresent(Quotas.self, forKey: .quotas) ?? Quotas()
         usage = try c.decodeIfPresent(Usage.self, forKey: .usage) ?? Usage()
+        config = (try? c.decodeIfPresent(CloudConfig.self, forKey: .config)) ?? nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -148,6 +314,7 @@ struct AccountInfo: Codable, Equatable, Sendable {
         try c.encode(entitlements, forKey: .entitlements)
         try c.encode(quotas, forKey: .quotas)
         try c.encode(usage, forKey: .usage)
+        try c.encodeIfPresent(config, forKey: .config)
     }
 
     static func decode(_ data: Data) throws -> AccountInfo {

@@ -55,9 +55,9 @@ interface MemorySessions {
 }
 
 function memoryStore(): MemorySessions {
-  const g = globalThis as unknown as { __naviMemorySessions2?: MemorySessions };
-  g.__naviMemorySessions2 ??= { refresh: new Map(), usersByEmail: new Map(), sessions: new Map() };
-  return g.__naviMemorySessions2;
+  const g = globalThis as unknown as { __naviMemorySessions?: MemorySessions };
+  g.__naviMemorySessions ??= { refresh: new Map(), usersByEmail: new Map(), sessions: new Map() };
+  return g.__naviMemorySessions;
 }
 
 /** Stable fake user ids per email so repeated dev logins hit the same profile. */
