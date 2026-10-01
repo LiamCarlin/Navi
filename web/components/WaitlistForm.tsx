@@ -6,7 +6,7 @@ import { getRef, joined, takeSource } from "@/lib/source";
 type Done = { position: number | null; ref: string | null; status: "created" | "exists" };
 type State = { kind: "idle" } | { kind: "busy" } | { kind: "done"; done: Done } | { kind: "error"; message: string };
 
-const SHARE_TEXT = "I just joined the waitlist for Navi — say it, it’s done.";
+const SHARE_TEXT = "I just joined the waitlist for Navi: ⌘Space, but it does things.";
 
 /**
  * The one waitlist form, used everywhere: hero, sticky bar, mid-page lines, the waitlist section.
@@ -89,7 +89,7 @@ export function WaitlistForm({
             name="note"
             rows={2}
             maxLength={500}
-            placeholder="What would you use it for? (optional)"
+            placeholder="What would you hand off first? (optional)"
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             className={`${field} h-auto resize-none py-3`}
@@ -113,7 +113,7 @@ function Share({ done, compact, className }: { done: Done; compact: boolean; cla
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const url = done.ref ? `${origin}/?ref=${done.ref}` : origin;
   const x = `https://x.com/intent/post?text=${encodeURIComponent(SHARE_TEXT)}&url=${encodeURIComponent(url)}`;
-  const mail = `mailto:?subject=${encodeURIComponent("Navi — say it, it’s done")}&body=${encodeURIComponent(`${SHARE_TEXT}\n${url}`)}`;
+  const mail = `mailto:?subject=${encodeURIComponent("Navi: ⌘Space, but it does things")}&body=${encodeURIComponent(`${SHARE_TEXT}\n${url}`)}`;
 
   async function copy() {
     try {

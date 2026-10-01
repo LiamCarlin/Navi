@@ -14,29 +14,25 @@ npm run lint
 
 | Path | What |
 |---|---|
-| `app/page.tsx` | The single landing page: nav, hero (MacBook + island loop), "Spotlight finds. Navi does.", "decides, not chats", voice, background mode, Recall, pricing, FAQ, waitlist, footer |
-| `components/MacBook.tsx` | CSS/SVG 14" MacBook Pro in perspective with pointer tilt. The screen is a container; everything on it is sized in `--u` (see `.screen` in `globals.css`) |
-| `components/HeroLoop.tsx` | The ~12 s hero loop as a pure function of time: island drops from the notch and ticks steps, then the ⌘Space bar shows task / calculator / app |
-| `components/Island.tsx`, `components/Panel.tsx`, `components/Windows.tsx` | The voice island, the ⌘Space bar, and the mini macOS windows/notifications the demos use; all presentational and themed via CSS variables |
-| `components/useLoop.ts` | Drives every looping demo as a pure function of elapsed time: starts in view, pauses off-screen, long rest so it plays once then loops slowly, one static frame under reduced motion, `seek()` for the chips |
-| `components/Does.tsx`, `Decides.tsx`, `Talk.tsx`, `Background.tsx`, `Recall.tsx` | The five numbered story sections, each with its own timeline |
-| `components/Section.tsx` | The 12-column story layout (narrow text column, wide visual, alternating) |
-| `components/SeenOn.tsx`, `lib/seenOn.ts` | The "As seen on" press strip. Every entry ships `enabled: false`, so it renders nothing. **Flip `enabled: true` once Navi is actually posted there.** Logos are Simple Icons (CC0). |
-| `components/WaitlistForm.tsx`, `StickyCTA.tsx`, `MidCTA.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: one form used in the hero, the sticky bar, the mid-page lines and the waitlist section; every CTA sends a `source` (`hero`, `sticky`, `mid-02`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons. |
-| `app/api/waitlist/count/route.ts` | `GET` → `{ count }`, cached 60 s; the page shows it only from 25 up |
-| `components/Photo.tsx`, `public/img/`, `CREDITS.md` | The one photograph on the page and where it came from |
-| `components/Nav.tsx` | Nav with the sun/moon theme toggle; `app/layout.tsx` sets `data-theme` on `<html>` before first paint (stored choice, else `prefers-color-scheme`) |
-| `app/api/waitlist/route.ts` | `POST { email, note?, source?, ref? }` → 201 created · 200 already on the list · 400 bad email · 500 storage error; the body also carries `position` (list size) and `ref` (share id) |
-| `lib/waitlist.ts` | Storage: Supabase when configured, else `web/.waitlist.local.jsonl` (gitignored) |
-| `app/opengraph-image.tsx` | OG image (the MacBook with the island down), generated at build time |
-| `app/icon.tsx`, `app/apple-icon.tsx` | Favicon / touch icon with the ✦ glyph |
-| `app/privacy`, `app/terms` | Placeholder legal pages |
+| `app/page.tsx` | The single landing page, in order: hero (typeable ⌘Space bar), the real recording, "One bar, seven kinds of answer", "What happens after you press ⏎", voice, background mode, app playbooks, Recall, privacy, pricing, FAQ, waitlist |
+| `lib/motion.ts`, `components/motion/*` | The motion system: one curve (`EASE`), three durations, one entrance (`Reveal`: rise + unblur), masked headline lines (`Lines`), Lenis smooth scrolling (`SmoothScroll`, off under reduced motion), the gradient read-progress hairline |
+| `components/bar/Bar.tsx` | The ⌘Space bar drawn from the app's `PanelStyle` (680 pt, 28 pt corners, 64 pt bar, 52 pt rows, key-hint footer) plus its bodies: rows, answer, calculator, task steps + approval, scheduler card, reminder card, Recall answer. Sized in `--u` inside a `.stage` |
+| `components/bar/LiveBar.tsx`, `lib/demo.ts` | The hero bar: types scripted examples and routes on every keystroke; click it and a toy router in `lib/demo.ts` decides what Navi would do with anything typed. The page says it's a demo |
+| `components/Film.tsx` | `public/video/demo.mp4` (a real screen recording) in the CSS MacBook; tilts flat as it scrolls in; chapters seek the video |
+| `components/Kinds.tsx` | Pinned scrollytelling: steps scroll on the left, the bar on the right changes to match (phones: a bar per step) |
+| `components/Anatomy.tsx` | One task scrubbed by the scroll on three lanes (your Mac / decides / writes); phones get a vertical list |
+| `components/Voice.tsx` | Dark stage (`.stage-dark`) that opens to full bleed, then pins while the island hears a sentence and splits it into three jobs. The nav and sticky bar switch palette over it (`lib/useOverDark.ts`) |
+| `components/Background.tsx`, `Apps.tsx`, `Recall.tsx`, `Privacy.tsx` | Background mode + what it asks before; the playbook marquee and habits/people/browser cards; the notes graph, pipeline and personal-data switches; what stays on the Mac vs. what's sent |
+| `components/MacBook.tsx`, `components/Windows.tsx` | CSS 14" MacBook Pro and mini macOS windows |
+| `components/SeenOn.tsx`, `lib/seenOn.ts` | The "As seen on" press strip. Every entry ships `enabled: false`, so it renders nothing. **Flip `enabled: true` once Navi is actually posted there.** |
+| `components/WaitlistForm.tsx`, `StickyCTA.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: one form used in the hero, the sticky bar (a button on phones) and the waitlist section; every CTA sends a `source` (`hero`, `sticky`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons |
+| `app/api/waitlist/route.ts`, `app/api/waitlist/count/route.ts`, `lib/waitlist.ts` | Signup + count; Supabase when configured, else `web/.waitlist.local.jsonl` |
+| `components/Nav.tsx` | Nav with the active-section underline and the sun/moon theme toggle; `app/layout.tsx` sets `data-theme` before first paint |
+| `app/opengraph-image.tsx`, `app/icon.tsx`, `app/apple-icon.tsx` | OG image and icons |
 
-Copy rule: the site never names a model or an AI vendor. It is all "Navi".
-
-Theme: dark and light are two real palettes in `app/globals.css` (`:root` and `[data-theme="light"]`, with a
-`prefers-color-scheme` fallback for no-JS). The MacBook's wallpaper, the bar and the mini windows follow via
-`--wall`, `--panel-*` and `--win-*`; the island stays black because it is the notch.
+Copy rules: the site never names a model or an AI vendor; it is all "Navi". Claims about what is sent off the Mac
+must match the app (typed queries are routed by the server; local rows don't wait for it). Type: Newsreader for
+headlines, Geist for interface, Geist Mono for timings and footnotes.
 
 ## Environment
 

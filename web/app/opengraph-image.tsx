@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "Navi — Say it. It’s done.";
+export const alt = "Navi: ⌘Space, but it does things.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -12,6 +12,15 @@ function Star({ size, color }: { size: number; color: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24">
       <path d={STAR} fill={color} />
+    </svg>
+  );
+}
+
+/** ⌘, drawn: the OG renderer's default font has no glyph for it. */
+function Cmd({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 9V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
     </svg>
   );
 }
@@ -38,7 +47,7 @@ export default function OpenGraphImage() {
           display: "flex",
           alignItems: "center",
           background: "#0a0a0b",
-          backgroundImage: "radial-gradient(50% 60% at 70% 40%, rgba(139,140,248,0.18), transparent 70%)",
+          backgroundImage: "radial-gradient(50% 60% at 70% 40%, rgba(191,90,242,0.16), transparent 70%)",
           color: "#f4f4f5",
           fontFamily: "sans-serif",
           padding: "0 64px",
@@ -47,15 +56,18 @@ export default function OpenGraphImage() {
         {/* Left: wordmark + headline */}
         <div style={{ display: "flex", flexDirection: "column", width: 470 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 26, fontWeight: 600 }}>
-            <Star size={24} color="#8b8cf8" />
+            <Star size={24} color="#bf5af2" />
             Navi
           </div>
           <div style={{ display: "flex", flexDirection: "column", fontSize: 72, fontWeight: 600, letterSpacing: -3, lineHeight: 1.02, marginTop: 36 }}>
-            <span>Say it.</span>
-            <span>It’s done.</span>
+            <span style={{ display: "flex", alignItems: "center" }}>
+              <Cmd size={58} />
+              <span style={{ marginLeft: 6 }}>Space, but</span>
+            </span>
+            <span>it does things.</span>
           </div>
           <div style={{ display: "flex", fontSize: 24, color: "#a3a3ad", marginTop: 22, lineHeight: 1.4 }}>
-            Opens apps, answers questions, and does things on your Mac — by keyboard or voice, in under a second.
+            Opens apps, answers questions, and does small jobs on your Mac in the background. Type it or say it.
           </div>
         </div>
 
@@ -103,7 +115,7 @@ export default function OpenGraphImage() {
                   <span style={{ marginLeft: 12 }}>File</span>
                   <span style={{ marginLeft: 12 }}>Edit</span>
                   <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
-                    <Star size={11} color="#8b8cf8" />
+                    <Star size={11} color="#bf5af2" />
                     Navi
                   </span>
                   <span style={{ marginLeft: 12 }}>Mon 9:41</span>
@@ -134,11 +146,11 @@ export default function OpenGraphImage() {
                         justifyContent: "center",
                       }}
                     >
-                      <Star size={12} color="#8b8cf8" />
+                      <Star size={12} color="#bf5af2" />
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 3, height: 18 }}>
                       {bars.map((h, i) => (
-                        <div key={i} style={{ display: "flex", width: 3, height: h, borderRadius: 2, background: "#8b8cf8" }} />
+                        <div key={i} style={{ display: "flex", width: 3, height: h, borderRadius: 2, background: "#bf5af2" }} />
                       ))}
                     </div>
                     <span style={{ marginLeft: "auto", fontSize: 11, color: "#6e6e78" }}>Done</span>
@@ -164,7 +176,7 @@ export default function OpenGraphImage() {
                             width: 14,
                             height: 14,
                             borderRadius: 7,
-                            background: "#8b8cf8",
+                            background: "#bf5af2",
                             alignItems: "center",
                             justifyContent: "center",
                           }}

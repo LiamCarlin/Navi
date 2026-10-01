@@ -4,9 +4,11 @@ const columns = [
   {
     title: "Product",
     links: [
-      { href: "/#does", label: "What it does" },
+      { href: "/#what", label: "What it does" },
+      { href: "/#how", label: "How it works" },
       { href: "/#voice", label: "Voice" },
       { href: "/#recall", label: "Recall" },
+      { href: "/#privacy", label: "Privacy" },
       { href: "/#pricing", label: "Pricing" },
       { href: "/#faq", label: "FAQ" },
     ],
@@ -29,12 +31,12 @@ const columns = [
 
 export function Footer() {
   return (
-    <footer className="border-t border-line px-6 py-16">
+    <footer className="border-t border-line px-4 py-16 sm:px-6">
       <div className="mx-auto grid max-w-7xl grid-cols-2 gap-x-6 gap-y-10 md:grid-cols-12">
         <div className="col-span-2 md:col-span-5">
           <Wordmark className="text-[17px]" />
           <p className="lede mt-3 max-w-xs text-sm">
-            A menu-bar app for macOS. Press ⌘Space, say what you want.
+            A menu-bar app for macOS. ⌘Space, but it does things.
           </p>
         </div>
         {columns.map((c) => (

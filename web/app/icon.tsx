@@ -23,7 +23,7 @@ export default function Icon() {
         }}
       >
         <svg width="42" height="42" viewBox="0 0 24 24">
-          <path d={STAR} fill="#8b8cf8" />
+          <path d={STAR} fill="#bf5af2" />
         </svg>
       </div>
     ),

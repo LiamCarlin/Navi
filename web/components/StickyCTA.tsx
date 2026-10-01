@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ctaDismissed, joined } from "@/lib/source";
 import { WaitlistForm } from "./WaitlistForm";
+import { useOverDark } from "@/lib/useOverDark";
 
 /**
  * A slim bar (desktop) / bottom sheet (phone) with the email field, once the hero has scrolled
@@ -13,6 +14,7 @@ export function StickyCTA() {
   const [pastHero, setPastHero] = useState(false);
   const [nearForm, setNearForm] = useState(false);
   const [hidden, setHidden] = useState(true);
+  const overDark = useOverDark("-92% 0px 0px 0px");
 
   useEffect(() => {
     setHidden(ctaDismissed.get() || joined.get());
@@ -32,16 +34,21 @@ export function StickyCTA() {
 
   return (
     <div
-      className={`fixed inset-x-0 bottom-0 z-30 transition-transform duration-200 ease-out ${show ? "translate-y-0" : "translate-y-full"}`}
+      className={`fixed inset-x-0 bottom-0 z-30 transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${show ? "translate-y-0" : "translate-y-full"} ${overDark ? "stage-dark" : ""}`}
       aria-hidden={!show}
     >
       <div className="border-t border-line bg-bg/85 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-6 py-3 sm:flex-row sm:items-center sm:gap-6">
-          <div className="min-w-0 flex-1 text-sm text-fg">
-            <span className="font-medium">Navi for macOS.</span> <span className="text-fg-muted">Say it, it’s done. Join the waitlist.</span>
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 sm:gap-6 sm:px-6 sm:py-3">
+          <div className="min-w-0 flex-1 truncate text-sm text-fg">
+            <span className="font-medium">Navi for macOS.</span> <span className="hidden text-fg-muted sm:inline">⌘Space, but it does things.</span>
           </div>
-          <div className="flex items-center gap-2 sm:w-[440px]">
-            <WaitlistForm source="sticky" compact className="flex-1" />
+          <div className="flex shrink-0 items-center gap-2 sm:w-[440px]">
+            <a href="#waitlist" className="btn-primary !h-9 !px-4 !text-sm sm:hidden">
+              Join the waitlist
+            </a>
+            <div className="hidden flex-1 sm:block">
+              <WaitlistForm source="sticky" compact />
+            </div>
             <button
               type="button"
               onClick={() => {

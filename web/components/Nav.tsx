@@ -3,38 +3,58 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Wordmark } from "./Glyph";
+import { ScrollProgress } from "./motion/ScrollProgress";
+import { useOverDark } from "@/lib/useOverDark";
 
 const links = [
-  { href: "#does", label: "What it does" },
+  { href: "#what", label: "What it does" },
+  { href: "#how", label: "How it works" },
   { href: "#voice", label: "Voice" },
+  { href: "#recall", label: "Recall" },
+  { href: "#privacy", label: "Privacy" },
   { href: "#pricing", label: "Pricing" },
-  { href: "#faq", label: "FAQ" },
 ];
 
 export function Nav() {
   const [scrolled, setScrolled] = useState(false);
+  const [active, setActive] = useState<string | null>(null);
+  const overDark = useOverDark("0px 0px -94% 0px");
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    // The section under the middle of the viewport lights its link.
+    const io = new IntersectionObserver(
+      (es) => es.forEach((e) => e.isIntersecting && setActive("#" + e.target.id)),
+      { rootMargin: "-45% 0px -54% 0px" },
+    );
+    const ids = [...links.map((l) => l.href.slice(1)), "film", "apps", "background", "faq", "waitlist"];
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) io.observe(el);
+    });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      io.disconnect();
+    };
   }, []);
 
   return (
-    <header className="sticky top-0 z-40 w-full">
+    <header className={`sticky top-0 z-40 w-full transition-colors duration-300 ${overDark ? "stage-dark" : ""}`}>
+      <ScrollProgress />
       <div
         className={`pointer-events-none absolute inset-0 border-b bg-bg/75 backdrop-blur-xl transition-opacity duration-200 ${
           scrolled ? "border-line opacity-100" : "border-transparent opacity-0"
         }`}
         aria-hidden="true"
       />
-      <div className="relative mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+      <div className="relative mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link href="/" className="text-[17px] text-fg" aria-label="Navi home">
           <Wordmark />
         </Link>
-        <nav className="hidden items-center gap-8 text-sm md:flex" aria-label="Primary">
+        <nav className="hidden items-center gap-7 text-sm lg:flex" aria-label="Primary">
           {links.map((l) => (
-            <a key={l.href} href={l.href} className="navlink">
+            <a key={l.href} href={l.href} className="navlink" aria-current={active === l.href ? "true" : undefined}>
               {l.label}
             </a>
           ))}
@@ -76,7 +96,7 @@ function ThemeToggle() {
       meta.name = "theme-color";
       document.head.prepend(meta);
     }
-    meta.content = next === "light" ? "#f7f7f5" : "#0a0a0b";
+    meta.content = next === "light" ? "#f4f3ee" : "#0b0b0c";
   }
 
   const isLight = theme === "light";

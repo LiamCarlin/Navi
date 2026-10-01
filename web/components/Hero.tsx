@@ -1,40 +1,43 @@
-import { HeroVideo } from "./HeroVideo";
-import { MacBook } from "./MacBook";
+import { LiveBar } from "./bar/LiveBar";
 import { WaitlistCount } from "./WaitlistCount";
 import { WaitlistForm } from "./WaitlistForm";
 
+const d = (ms: number) => ({ "--rise-delay": `${ms}ms` }) as React.CSSProperties;
+
 export function Hero() {
   return (
-    <section className="relative overflow-x-clip px-6 pb-16 pt-12 sm:pt-16 md:pb-24 lg:pt-20">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-12 lg:gap-8">
-        <div className="lg:col-span-5">
-          <h1 className="h-display rise">Say it. It’s done.</h1>
-          <div className="rise" style={{ "--rise-delay": "80ms" } as React.CSSProperties}>
-            <p className="lede mt-6 text-lg">
-              Navi opens apps, answers questions, and does things on your Mac — by keyboard or voice, in under a
-              second.
+    <section className="relative px-4 pb-8 pt-10 sm:px-6 sm:pt-16 lg:pt-20">
+      <div className="mx-auto max-w-7xl">
+        <div className="grid grid-cols-1 gap-10 lg:grid-cols-12 lg:items-end lg:gap-8">
+          <h1 className="h-display lg:col-span-7">
+            <span className="line-mask">
+              <span style={d(0)}>
+                <span className="keycap-xl">⌘</span> <span className="keycap-xl">space</span>,
+              </span>
+            </span>
+            <span className="line-mask">
+              <span style={d(90)}>
+                but it <span className="ital">does</span> things.
+              </span>
+            </span>
+          </h1>
+          <div className="lg:col-span-5 lg:pb-2">
+            <p className="lede rise" style={d(200)}>
+              Navi takes over ⌘Space on your Mac. It opens apps as fast as Spotlight, answers questions right in the bar, and
+              takes on small jobs like “text Sam I’m 10 minutes late”, doing them in the app while you keep working in yours.
+            </p>
+            <div className="rise mt-7" style={d(280)}>
+              <WaitlistForm source="hero" compact />
+              <WaitlistCount className="mt-3" />
+            </div>
+            <p className="label rise mt-4" style={d(340)}>
+              Private beta · macOS 26 Tahoe · Apple silicon
             </p>
           </div>
-          <div className="rise mt-8 max-w-md" style={{ "--rise-delay": "120ms" } as React.CSSProperties}>
-            <WaitlistForm source="hero" compact />
-            <WaitlistCount className="mt-3" />
-          </div>
-          <div className="rise mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm" style={{ "--rise-delay": "160ms" } as React.CSSProperties}>
-            <a href="#does" className="navlink !text-fg">
-              See how it works ↓
-            </a>
-            <span className="text-fg-dim">Private beta · macOS 26 · Apple silicon</span>
-          </div>
-          <p className="rise mt-10 text-sm text-fg-muted" style={{ "--rise-delay": "200ms" } as React.CSSProperties}>
-            <span className="keycap">⌥ Space</span> to talk · <span className="keycap">⌘ Space</span> to type.
-          </p>
         </div>
 
-        {/* On phones the laptop runs wider than the viewport so the screen stays legible; the section clips it. */}
-        <div className="rise w-[134%] -translate-x-[12.7%] sm:w-full sm:translate-x-0 lg:col-span-7" style={{ "--rise-delay": "100ms" } as React.CSSProperties}>
-          <MacBook>
-            <HeroVideo />
-          </MacBook>
+        <div className="rise mt-12 sm:mt-16" style={d(380)}>
+          <LiveBar />
         </div>
       </div>
     </section>
