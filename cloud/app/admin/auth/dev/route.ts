@@ -24,7 +24,7 @@ function secretMatches(given: string): boolean {
  */
 export async function POST(req: Request): Promise<Response> {
   if (!env.devLoginSecret) return notFound();
-  if (!authIpLimiter.hit(clientIp(req)).ok) return new Response("Too many attempts", { status: 429 });
+  if (!(await authIpLimiter.hit(clientIp(req))).ok) return new Response("Too many attempts", { status: 429 });
 
   const form = await req.formData().catch(() => null);
   const email = String(form?.get("email") ?? "").trim().toLowerCase();

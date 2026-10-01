@@ -448,7 +448,9 @@ final class AgentRun: @unchecked Sendable {
                 }
                 pageText = text
                 if case .failed(let msg) = outcome, NativeBrowser.isRunnerUnavailable(msg) {
-                    handle.emit(.status("Chrome runner unavailable (\(AgentAction.short(msg, 80))) — driving \(NativeBrowser.displayName(bb)) directly instead"))
+                    handle.emit(.status(DeveloperMode.isEnabled
+                        ? "Chrome runner unavailable (\(AgentAction.short(msg, 80))) — driving \(NativeBrowser.displayName(bb)) directly instead"
+                        : "Working in \(NativeBrowser.displayName(bb)) directly"))
                     ranRunner = false
                 }
             }
@@ -786,7 +788,9 @@ final class AgentRun: @unchecked Sendable {
             guard writerAvailable else {
                 writeRun(outcome.rawValue)
                 if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
-                else { handle.emit(.failed("Stopped: \(outcome.told). Add an Anthropic key so Navi can read the screen and keep going.")) }
+                else { handle.emit(.failed(DeveloperMode.isEnabled
+                    ? "Stopped: \(outcome.told). Add an Anthropic key so Navi can read the screen and keep going."
+                    : "Stopped: \(outcome.told).")) }
                 return false
             }
             // A focus that led to no action leaves the answer it came with standing.
@@ -837,7 +841,7 @@ final class AgentRun: @unchecked Sendable {
             if mayResume, !answer.achieved, !answer.focus.isEmpty {
                 run.refocus(.init(step: step, outcome: outcome, focus: answer.focus, actions: run.history.count))
                 handle.emit(.status("Read the screen in \(ms) ms: \(answer.text)"))
-                handle.emit(.planned("Next for Jev: \(answer.focus)"))
+                handle.emit(DeveloperMode.isEnabled ? .planned("Next for Jev: \(answer.focus)") : .status("Next: \(answer.focus)"))
                 return true
             }
             conclude(answer, outcome: outcome)
@@ -901,7 +905,10 @@ final class AgentRun: @unchecked Sendable {
             } catch {
                 try checkCancelled()
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                guard writerAvailable, screenshots else { throw NaviError.other("Jev is unavailable (\(msg)) and there is no vision fallback") }
+                guard writerAvailable, screenshots else {
+                    throw NaviError.other(DeveloperMode.isEnabled ? "Jev is unavailable (\(msg)) and there is no vision fallback"
+                                                                  : "Navi couldn't reach its decision service (\(msg)).")
+                }
                 handle.emit(.status("Jev unavailable (\(msg)) — continuing with Claude only"))
                 let outcome = try await claudeTakeover(remainingSteps: config.maxSteps - step + 1, history: run.history, handle: handle)
                 finishClaudeOnly(outcome, handle: handle)

@@ -6,12 +6,27 @@ import SwiftUI
 // MARK: - Settings
 
 extension NaviSettings {
-    /// Where Navi looks for `appcast.json` (written by scripts/gen-appcast.sh, hosted next to
-    /// the DMG — docs/RELEASE.md). Override for a local test feed:
-    /// `defaults write com.liamcarlin.navi updateFeedURL http://localhost:8000/appcast.json`.
+    /// Where Navi looks for `appcast.json` (written by scripts/gen-appcast.sh, uploaded next to
+    /// the DMG by scripts/publish-release.sh — docs/RELEASE.md). Order: the
+    /// `updateFeedURL` default (a local test feed:
+    /// `defaults write com.liamcarlin.navi updateFeedURL http://localhost:8000/appcast.json`),
+    /// then the build's `NaviUpdateFeedURL` Info.plist key (project.yml), then the built-in default.
     nonisolated static var updateFeedURL: URL {
-        if let s = UserDefaults.navi.string(forKey: "updateFeedURL"), let u = URL(string: s), u.scheme != nil { return u }
-        return URL(string: "https://navi.app/appcast.json")!
+        resolveUpdateFeedURL(override: UserDefaults.navi.string(forKey: "updateFeedURL"),
+                             infoPlist: Bundle.main.object(forInfoDictionaryKey: "NaviUpdateFeedURL") as? String)
+    }
+
+    /// The latest *published* GitHub Release's `appcast.json` (drafts and pre-releases are
+    /// skipped by `/releases/latest`): no website or domain needed to ship updates.
+    nonisolated static let defaultUpdateFeedURL = URL(string: "https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json")!
+
+    nonisolated static func resolveUpdateFeedURL(override: String?, infoPlist: String?) -> URL {
+        for candidate in [override, infoPlist] {
+            guard let s = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
+                  let u = URL(string: s), let scheme = u.scheme?.lowercased(), ["https", "http", "file"].contains(scheme) else { continue }
+            return u
+        }
+        return defaultUpdateFeedURL
     }
     /// `defaults write com.liamcarlin.navi updateChecksEnabled -bool NO` turns the daily check off.
     nonisolated static var updateChecksEnabled: Bool {

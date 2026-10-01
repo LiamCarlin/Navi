@@ -13,6 +13,9 @@ type Plan = {
   id: string;
 };
 
+const CLOUD = process.env.NEXT_PUBLIC_NAVI_CLOUD_URL?.replace(/\/+$/, "");
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "1" && Boolean(CLOUD);
+
 const plans: Plan[] = [
   {
     id: "free",
@@ -86,9 +89,16 @@ export function Pricing() {
                   </li>
                 ))}
               </ul>
-              <a href="#waitlist" onClick={() => setSource(`pricing-${p.id}`)} className={`mt-6 !h-10 ${p.featured ? "btn-primary" : "btn-secondary"}`}>
-                Join the waitlist
-              </a>
+              {SIGNUPS_OPEN ? (
+                // Everyone starts on the 7-day Pro trial; plans are picked on /account.
+                <a href={`${CLOUD}/auth/start?redirect=account`} className={`mt-6 !h-10 ${p.featured ? "btn-primary" : "btn-secondary"}`}>
+                  {p.monthly === 0 ? "Get started" : "Start free trial"}
+                </a>
+              ) : (
+                <a href="#waitlist" onClick={() => setSource(`pricing-${p.id}`)} className={`mt-6 !h-10 ${p.featured ? "btn-primary" : "btn-secondary"}`}>
+                  Join the waitlist
+                </a>
+              )}
             </article>
           ))}
         </div>

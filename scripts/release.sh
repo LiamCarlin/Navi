@@ -14,9 +14,12 @@
 #   NAVI_SIGN_IDENTITY   codesign identity (default "Developer ID Application")
 #   NAVI_NOTARY_PROFILE  notarytool keychain profile (default "navi"; docs/RELEASE.md)
 #   NAVI_UPDATE_KEY      ed25519 PEM that signs appcast.json (default ~/.config/navi-release/update-key.pem)
-#   NAVI_DOWNLOAD_BASE   where the DMG will be hosted (default https://navi.app/downloads)
+#   NAVI_RELEASE_REPO    GitHub repo whose Releases host the DMG + appcast (default LiamCarlin/Navi)
+#   NAVI_DOWNLOAD_BASE   where the DMG will be hosted (default
+#                        https://github.com/$NAVI_RELEASE_REPO/releases/download/v<version>)
 #
 # Output: build/release/Navi-<version>.dmg, build/release/appcast.json, build/release/Navi.app
+# Then: scripts/publish-release.sh uploads them as a draft GitHub Release (docs/RELEASE.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,14 +30,16 @@ while (( $# )); do
     --universal) UNIVERSAL=1; shift ;;
     --skip-notarize) NOTARIZE=0; shift ;;
     --notes) NOTES="$2"; shift 2 ;;
-    -h|--help) sed -n 2,20p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,23p "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 IDENTITY="${NAVI_SIGN_IDENTITY:-Developer ID Application}"
 PROFILE="${NAVI_NOTARY_PROFILE:-navi}"
-BASE="${NAVI_DOWNLOAD_BASE:-https://navi.app/downloads}"
+REPO="${NAVI_RELEASE_REPO:-LiamCarlin/Navi}"
+BASE="${NAVI_DOWNLOAD_BASE:-}"                 # default needs the version: set after the build
+KEY="${NAVI_UPDATE_KEY:-$HOME/.config/navi-release/update-key.pem}"
 DD="build/DerivedData-release"
 OUT="build/release"
 say() { echo "▸ $*"; }
@@ -68,6 +73,8 @@ if [[ ! -x "$APP_SRC/Contents/Resources/browser-runtime/python-arm64/bin/python3
 fi
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_SRC/Contents/Info.plist")"
+[[ -n "$BASE" ]] || BASE="https://github.com/$REPO/releases/download/v$VERSION"
+FEED_URL="$(/usr/libexec/PlistBuddy -c 'Print :NaviUpdateFeedURL' "$APP_SRC/Contents/Info.plist" 2>/dev/null || echo '(built-in default)')"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_SRC/Contents/Info.plist")"
 MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_SRC/Contents/Info.plist" 2>/dev/null || echo 26.0)"
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -127,9 +134,28 @@ echo
 echo "Release $VERSION ($BUILD)$( (( DRY )) && echo ' — DRY RUN, not shippable')"
 echo "  app      $APP"
 echo "  dmg      $DMG  ($(du -h "$DMG" | awk '{print $1}'))"
-echo "  appcast  $OUT/appcast.json"
-if (( ! DRY )); then
-  echo
-  echo "Next: upload Navi-$VERSION.dmg + appcast.json to $BASE/ (see docs/RELEASE.md), then verify:"
-  echo "  curl -s $(dirname "$BASE")/appcast.json | python3 -m json.tool"
+echo "  appcast  $OUT/appcast.json  → url $BASE/Navi-$VERSION.dmg"
+echo "  feed     the app checks $FEED_URL"
+
+# --- 6. What stands between this build and a shippable one ----------------------------------
+missing=()
+have_identity "Developer ID Application" || missing+=("Developer ID Application certificate (docs/RELEASE.md step 1) — without it Gatekeeper blocks Navi on every other Mac")
+xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 \
+  || missing+=("notarytool keychain profile \"$PROFILE\" (docs/RELEASE.md step 2: xcrun notarytool store-credentials $PROFILE …)")
+if [[ -f "$KEY" ]]; then
+  PUB="$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | base64)"
+  grep -q "$PUB" Navi/App/Updater.swift 2>/dev/null \
+    || missing+=("update key $KEY does not match UpdateVerifier.publicKeyBase64 in Navi/App/Updater.swift")
+else
+  missing+=("update signing key at $KEY (docs/RELEASE.md step 3) — appcast.json is unsigned, installed copies will refuse it")
+fi
+(( NOTARIZE )) || missing+=("notarization was skipped$( (( DRY )) && echo ' (--dry-run)' || echo ' (--skip-notarize)')")
+echo
+if (( ${#missing} )); then
+  echo "Not shippable yet — missing:"
+  for m in "${missing[@]}"; do echo "  ✗ $m"; done
+  echo "This DMG still installs and runs on this Mac (and on others after right-click → Open)."
+else
+  echo "Shippable. Next: scripts/publish-release.sh (uploads a DRAFT GitHub Release to $REPO), review, publish."
+  echo "Then verify: curl -sL $FEED_URL | python3 -m json.tool"
 fi
