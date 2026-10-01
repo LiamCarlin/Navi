@@ -42,7 +42,7 @@ final class GeminiClient: @unchecked Sendable {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 90
         cfg.httpAdditionalHeaders = ["User-Agent": "Navi/0.1 (macOS)"]
-        session = URLSession(configuration: cfg)
+        session = URLSession(configuration: TestHost.guarded(cfg))
     }
 
     var isConfigured: Bool { cloud.isActive || Keychain.has(.gemini) }

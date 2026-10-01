@@ -50,16 +50,27 @@ targets:
         NSHumanReadableCopyright: "© 2026 Liam Carlin. All rights reserved."
         NSHighResolutionCapable: true
         NSPrincipalClass: NSApplication
-        NSAppleEventsUsageDescription: "Navi uses Apple Events to control apps (Chrome, Safari, Finder) when you ask it to perform tasks."
-        NSAccessibilityUsageDescription: "Navi needs Accessibility access to click, type and navigate apps on your behalf."
-        NSScreenCaptureUsageDescription: "Navi captures your screen so it can see what you're working on and act on your instructions."
-        NSMicrophoneUsageDescription: "Navi can listen for voice queries when you enable voice input."
-        NSSpeechRecognitionUsageDescription: "Navi transcribes voice queries on-device."
-        NSCalendarsFullAccessUsageDescription: "Navi reads your calendar to find times when everyone is free and books the meetings you ask for."
+        # Where the in-app updater reads appcast.json (Navi/App/Updater.swift). The latest
+        # published GitHub Release (scripts/publish-release.sh); point it at the website once
+        # it serves the feed. `defaults write com.liamcarlin.navi updateFeedURL …` overrides it.
+        NaviUpdateFeedURL: "https://github.com/LiamCarlin/Navi/releases/latest/download/appcast.json"
+        # Navi Cloud's API for this build (CloudTransport.defaultBaseURL; the hard-coded
+        # https://api.navi.app is the fallback). Set it to the deployed domain before a release.
+        # `defaults write com.liamcarlin.navi cloudBaseURL …` still overrides it.
+        NaviCloudBaseURL: "https://api.navi.app"
+        # Permission prompts, in plain words (shown by macOS when Navi first asks).
+        NSAppleEventsUsageDescription: "Navi controls other apps, like Chrome, Safari and Finder, only when you ask it to do something in them."
+        NSAccessibilityUsageDescription: "Navi clicks, types and moves between apps for you when you ask it to do a task."
+        NSScreenCaptureUsageDescription: "Navi looks at your screen to carry out what you ask and, if you turn on Recall, to remember what you worked on. Screenshots are read on your Mac."
+        NSMicrophoneUsageDescription: "Navi listens only while voice control is on, so you can tell it what to do."
+        NSSpeechRecognitionUsageDescription: "Navi turns what you say into text, on your Mac, while voice control is on."
+        NSCalendarsFullAccessUsageDescription: "Navi checks your calendar to find times when everyone is free and adds the meetings you ask for."
         NSRemindersFullAccessUsageDescription: "Navi adds the reminders you ask for and shows what else is due that day."
-        NSContactsUsageDescription: "Navi looks up the people you schedule with to find their email and photo."
-        NSLocationWhenInUseUsageDescription: "Navi uses your location for Maps and weather queries."
-        NSUserNotificationsUsageDescription: "Navi notifies you when a background task completes."
+        NSContactsUsageDescription: "Navi looks up the people you mention to find their email address and photo."
+        NSDesktopFolderUsageDescription: "Navi finds and opens files on your Desktop when you ask for them."
+        NSDocumentsFolderUsageDescription: "Navi finds and opens files in your Documents folder when you ask for them."
+        NSDownloadsFolderUsageDescription: "Navi finds and opens files in your Downloads folder when you ask for them."
+        NSUserNotificationsUsageDescription: "Navi lets you know when a task it was doing in the background is finished."
         CFBundleURLTypes:
           - CFBundleURLName: com.liamcarlin.navi
             CFBundleURLSchemes: [navi]

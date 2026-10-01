@@ -24,6 +24,10 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 - Ad-hoc code signing, no sandbox (needed for Accessibility, ScreenCaptureKit, AppleScript).
 - **No third-party Swift packages.** Everything is URLSession / Foundation / AppKit /
   SwiftUI / Vision / ScreenCaptureKit / SQLite3 (C API). Keep it dependency-free.
+- Tests run hosted inside Navi.app, which detects it (`Core/TestHost`) and starts nothing:
+  settings go to a throwaway suite (`UserDefaults.navi` — **use it, never `.standard`**),
+  Keychain is in-memory, data dirs are scratch, network is off. Network tests take
+  `.needsNetwork` and run with `NAVI_TEST_NETWORK=1 scripts/test.sh` (keys from env).
 - When building concurrently with other agents, pass a private derived-data
   dir: `scripts/build.sh Debug build/DerivedData-<yourname>`.
 - `scripts/install.sh` is guarded (`scripts/install-guard.sh`, test:

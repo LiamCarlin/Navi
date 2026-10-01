@@ -38,7 +38,7 @@ enum PrivacyData {
         let before = DataInventory.scan(paths)
         var report = Report()
 
-        if let memory = AppDelegate.shared?.services.memory as? MemoryService {
+        if let memory = AppDelegate.shared?.services?.memory as? MemoryService {
             do {
                 let r = try await memory.eraseAll()
                 report.frames = r.frames
@@ -57,7 +57,7 @@ enum PrivacyData {
         AgentExperience.shared.removeAll()
         let files = eraseFiles(paths, includeMemoryDatabase: false)
         report.logItems = files.logItems
-        for key in contentDefaultsKeys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in contentDefaultsKeys { UserDefaults.navi.removeObject(forKey: key) }
 
         let after = DataInventory.scan(paths)
         report.bytesFreed = max(0, before.totalBytes - after.totalBytes)

@@ -188,7 +188,7 @@ struct HomeView: View {
         while !Task.isCancelled {
             await perms.refresh()
             loginStatus = LoginItem.status
-            if let m = AppDelegate.shared?.services.memory { memoryStatus = m.status }
+            if let m = AppDelegate.shared?.services?.memory { memoryStatus = m.status }
             try? await Task.sleep(for: .seconds(2))
         }
     }

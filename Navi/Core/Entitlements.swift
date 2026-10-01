@@ -251,7 +251,7 @@ struct NoticeMemory {
     static let limit = 50
     let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = .navi) { self.defaults = defaults }
 
     var dismissed: [String] { defaults.stringArray(forKey: Self.key) ?? [] }
 

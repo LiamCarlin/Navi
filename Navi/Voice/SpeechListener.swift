@@ -110,7 +110,7 @@ final class SpeechListener {
             throw NaviError.other("On-device speech recognition isn't available on this Mac")
         }
         var reporting: Set<SpeechTranscriber.ReportingOption> = [.volatileResults]
-        if UserDefaults.standard.object(forKey: "voiceFastResults") == nil || UserDefaults.standard.bool(forKey: "voiceFastResults") {
+        if UserDefaults.navi.object(forKey: "voiceFastResults") == nil || UserDefaults.navi.bool(forKey: "voiceFastResults") {
             reporting.insert(.fastResults)
         }
         let transcriber = SpeechTranscriber(locale: locale,
