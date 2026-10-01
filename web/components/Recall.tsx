@@ -36,7 +36,7 @@ const PIPE = [
   ["Capture", "A frame now and then, from the apps you haven’t excluded. Paused for an hour or a day in one click."],
   ["Read", "Text is read off the frame on your Mac. Passwords, and anything you’ve told it not to keep, like card numbers or IDs: the frame is dropped right here."],
   ["Triage", "A quick check: is this new, is it important, is it sensitive? Most frames stop here."],
-  ["Summarize", "Only the moments that matter are summarized, with personal details redacted before and after."],
+  ["Summarize", "Only the moments that matter are summarized, from their text and up to two small screenshots, with personal details redacted before and after."],
   ["Write", "Plain Markdown notes in a folder you own, linked by people, projects and days. Open it in Obsidian and it’s a graph."],
 ];
 

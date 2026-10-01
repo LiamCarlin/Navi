@@ -65,7 +65,7 @@ export function Background() {
             </ul>
             <p className="body mt-4">
               Everything else just happens. Turn off Auto mode and it asks before every step instead. <span className="keycap">esc</span>{" "}
-              or saying “stop” ends a task on the spot, and every run is logged step by step on your Mac.
+              or saying “stop” ends a task on the spot.
             </p>
           </Reveal>
         </div>

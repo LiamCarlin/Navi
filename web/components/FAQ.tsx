@@ -20,7 +20,7 @@ const items = [
   },
   {
     q: "Is it safe to let it click things?",
-    a: "Tasks run behind your window, so your cursor and keyboard stay yours. Before anything it can’t undo (sending, paying, deleting) it stops and asks. Press esc or say “stop” to end a task at once, and every run is logged step by step on your Mac.",
+    a: "Tasks run behind your window, so your cursor and keyboard stay yours. Before anything it can’t undo (sending, paying, deleting) it stops and asks. Press esc or say “stop” to end a task at once.",
   },
   {
     q: "What happens when it gets stuck?",

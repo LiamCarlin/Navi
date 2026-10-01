@@ -6,13 +6,14 @@ const STAYS = [
   "Reading the text in a window, for tasks and for Recall",
   "The check for personal details you’ve blocked, which runs before anything is sent",
   "Your Recall notes: Markdown files in a folder you own",
-  "A step-by-step log of every task",
+  "Task logs, if you turn them on for troubleshooting (kept 7 days, never uploaded)",
+  "Your last 50 searches, used to rank results",
 ];
 
 const LEAVES = [
-  ["What you type or say", "so the decision model can tell what it is. Local results never wait for that, and a question’s text goes on to be answered."],
-  ["During a task", "the controls and text of the one window it’s working in, a step at a time. A screenshot of that window only when the text isn’t enough."],
-  ["With Recall on", "text from frames that passed the local check, to judge what matters; for the moments that do, a request to summarize them, with personal details redacted. A frame that needed redacting is never sent as an image."],
+  ["What you type or say", "with the app you’re in and its window title, so Navi can tell what you mean and answer. Your selected text, clipboard or screen memories only when the question refers to them. Local results never wait for any of this."],
+  ["During a task", "the text and controls of the one app it’s working in, a step at a time, and sometimes a screenshot of that window."],
+  ["With Recall on", "up to a few thousand characters of a moment’s screen text, to judge whether it’s worth remembering; for the ones that are, that text and up to two small screenshots, to write the summary. Details you’ve blocked are removed first, and moments that show them are never sent at all."],
 ];
 
 export function Privacy() {
@@ -23,8 +24,8 @@ export function Privacy() {
           <Lines className="h-section lg:col-span-7" lines={["What stays on your Mac,", "and what doesn’t."]} />
           <Reveal className="lg:col-span-5 lg:pt-3">
             <p className="lede">
-              Navi needs a server to decide and to write. Here’s exactly what it sends, and when. There are no API keys to paste and
-              no models to pick; Navi’s own service handles that part.
+              Navi needs a server to decide and to write. Here’s exactly what it sends, and when. Navi’s servers pass requests on and
+              keep your account and usage counts, not the content. Nothing is sold, and nothing is used to train models.
             </p>
           </Reveal>
         </div>
@@ -62,8 +63,11 @@ export function Privacy() {
             </dl>
             <Reveal>
               <p className="label mt-5 leading-relaxed">
-                Recall also skips apps you exclude, never keeps password fields, and pauses for an hour or the rest of the day from
-                the menu bar.
+                Recall is off until you turn it on, skips password managers, private windows and anything you exclude, and keeps
+                notes 30 days by default (7, 30, 90 days or forever). Settings → Privacy &amp; Data deletes everything Navi has stored.{" "}
+                <a href="/privacy" className="underline underline-offset-2 hover:text-fg">
+                  Full privacy policy
+                </a>
               </p>
             </Reveal>
           </div>
