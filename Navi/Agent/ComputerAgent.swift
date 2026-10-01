@@ -1056,14 +1056,23 @@ final class AgentRun: @unchecked Sendable {
             // Jev stopping short of it — unsure, or finding "nothing" — is overruled, and the click is
             // made (the gate still reads this call's nouls). A sure "done" stands.
             if let literal, let stopped = stop, !(stopped == .done && (decision?.confidence ?? 0) >= 0.5),
-               !literalTried, let it = CUFacts.literalItem(literal, in: screen.items) {
-                let d = CUDecide.Decision(kind: .clickItem, kindHead: .init(choice: CUDecide.Kind.clickItem.rawValue, probabilities: [:], confidence: 1),
-                                          target: .init(choice: "\(it.index)", probabilities: [:], confidence: 1))
-                if let m = CUDecide.move(d, request: request, screen: screen, browserName: browserName) {
-                    handle.emit(.status("The goal names ‘\(it.text)’ and it is on screen — clicking it (Jev: \(stopped.rawValue))"))
-                    decision = d
-                    move = m
-                    stop = nil
+               !literalTried {
+                // On screen once, or — scrolled out of a sidebar or list — one control the app still exposes.
+                var target: (kind: CUDecide.Kind, id: String, text: String)?
+                if let it = CUFacts.literalItem(literal, in: screen.items) { target = (.clickItem, "\(it.index)", it.text) }
+                else {
+                    let off = screen.offscreen.enumerated().filter { CUFacts.matchesLiteral($0.element.label, literal) }
+                    if off.count == 1 { target = (.pressOffscreen, "\(off[0].offset)", off[0].element.label) }
+                }
+                if let target {
+                    let d = CUDecide.Decision(kind: target.kind, kindHead: .init(choice: target.kind.rawValue, probabilities: [:], confidence: 1),
+                                              target: .init(choice: target.id, probabilities: [:], confidence: 1))
+                    if let m = CUDecide.move(d, request: request, screen: screen, browserName: browserName) {
+                        handle.emit(.status("The goal names ‘\(target.text)’ and the app shows it — pressing it (Jev: \(stopped.rawValue))"))
+                        decision = d
+                        move = m
+                        stop = nil
+                    }
                 }
             }
             if let stop {
@@ -1137,6 +1146,10 @@ final class AgentRun: @unchecked Sendable {
                     if decision.kind == .clickItem, let i = decision.target.flatMap({ Int($0.choice) }),
                        let it = screen.items.first(where: { $0.index == i }) { literalHit = CUFacts.matchesLiteral(it.text, literal) }
                 case .select(_, let option)?: literalHit = CUFacts.matchesLiteral(option, literal)
+                case .press?:
+                    if decision.kind == .pressOffscreen, let k = decision.target.flatMap({ Int($0.choice) }), k < screen.offscreen.count {
+                        literalHit = CUFacts.matchesLiteral(screen.offscreen[k].label, literal)
+                    }
                 default: break
                 }
             }

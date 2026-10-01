@@ -154,7 +154,8 @@ final class CUReplay: @unchecked Sendable {
         case .scroll: return .scroll(up: step.up ?? false)
         case .click, .press, .select:
             if !step.role.isEmpty {
-                let pool = step.kind == .press ? screen.offscreen + screen.snapshot.elements : screen.snapshot.elements
+                // A control scrolled out of a sidebar or list is still exposed: pressed, not clicked.
+                let pool = step.kind == .select ? screen.snapshot.elements : screen.snapshot.elements + screen.offscreen
                 var hits = pool.filter { $0.role == step.role && CUFacts.matchesLiteral($0.label, step.label) }
                 if hits.count > 1 { hits = hits.filter { $0.path == step.path } }
                 if hits.count == 1, let e = hits.first {
@@ -162,8 +163,7 @@ final class CUReplay: @unchecked Sendable {
                     case .select:
                         guard let o = step.option, e.options.isEmpty || e.options.contains(o) else { return nil }
                         return .select(elementID: e.id, option: o)
-                    case .press: return screen.offscreen.contains(where: { $0.id == e.id }) ? .press(elementID: e.id) : .click(elementID: e.id)
-                    default: return .click(elementID: e.id)
+                    default: return screen.offscreen.contains(where: { $0.id == e.id }) ? .press(elementID: e.id) : .click(elementID: e.id)
                     }
                 }
                 if hits.count > 1 { return nil }

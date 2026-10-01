@@ -288,6 +288,11 @@ struct VoiceSpeedTests {
         let twinScreen = CUPerception.perceive(twin, ocr: nil, goal: "x")
         #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXButton", label: "code"), on: twinScreen) == nil)
         #expect(CUReplay.resolve(CUReplayStep(kind: .key, key: "cmd+n"), on: s) == .key("cmd+n"))
+        // Scrolled out of the sidebar: still exposed, so pressed.
+        var scrolled = Self.snapshot
+        scrolled.offscreen = [AXElement(id: "o1", role: "AXCell", label: "Displays", frame: CGRect(x: 0, y: 9000, width: 200, height: 20), actions: ["AXPress"], pid: 42)]
+        let sc = CUPerception.perceive(scrolled, ocr: nil, goal: "x")
+        #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXCell", label: "displays", path: "Sidebar"), on: sc) == .press(elementID: "o1"))
     }
 
     @Test func irreversibleStepsAreNeverReplayed() {
