@@ -1,18 +1,19 @@
 import { Nav } from "@/components/Nav";
 import { Hero } from "@/components/Hero";
-import { Does } from "@/components/Does";
-import { Decides } from "@/components/Decides";
-import { Talk } from "@/components/Talk";
+import { AppStrip, Habits } from "@/components/Apps";
+import { TypeTalk } from "@/components/TypeTalk";
+import { Kinds } from "@/components/Kinds";
+import { Anatomy } from "@/components/Anatomy";
+import { Stats } from "@/components/Stats";
+import { Voice } from "@/components/Voice";
 import { Background } from "@/components/Background";
 import { Recall } from "@/components/Recall";
+import { Privacy } from "@/components/Privacy";
 import { Pricing } from "@/components/Pricing";
 import { FAQ } from "@/components/FAQ";
 import { Waitlist } from "@/components/Waitlist";
 import { Footer } from "@/components/Footer";
-import { MidCTA } from "@/components/MidCTA";
-import { StickyCTA } from "@/components/StickyCTA";
 import { SeenOn } from "@/components/SeenOn";
-import { Photo } from "@/components/Photo";
 
 export default function Home() {
   return (
@@ -20,22 +21,22 @@ export default function Home() {
       <Nav />
       <main>
         <Hero />
+        <AppStrip />
         <SeenOn />
-        <Does />
-        <Decides />
-        <MidCTA source="mid-02" />
-        <Talk />
-        <Photo />
+        <TypeTalk />
+        <Kinds />
+        <Stats />
+        <Anatomy />
+        <Voice />
         <Background />
-        <MidCTA source="mid-04" />
+        <Habits />
         <Recall />
+        <Privacy />
         <Pricing />
         <FAQ />
         <Waitlist />
-        <SeenOn className="pb-8" />
       </main>
       <Footer />
-      <StickyCTA />
     </div>
   );
 }

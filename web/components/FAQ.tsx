@@ -2,27 +2,41 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useState } from "react";
+import { Head, Reveal } from "./motion/Reveal";
+import { EASE } from "@/lib/motion";
 
 const items = [
   {
     q: "Which Macs does it run on?",
-    a: "macOS 26 Tahoe on Apple silicon (M1 or later). The launcher, calculator, and voice transcription run on the Mac itself.",
+    a: "macOS 26 Tahoe on Apple silicon (M1 or later). It lives in the menu bar; there’s no window to keep open.",
+  },
+  {
+    q: "Does it replace Spotlight?",
+    a: "It takes over ⌘Space, and offers to turn off Spotlight’s shortcut so the two don’t collide. You can switch it back in System Settings whenever you like.",
   },
   {
     q: "Do I need my own API keys?",
-    a: "No. One subscription covers answers, tasks, voice, and Recall. Nothing to paste, no models to pick.",
-  },
-  {
-    q: "What does Navi see?",
-    a: "Only what you ask it to: the window a task needs, and nothing else. Recall is a separate, opt-in tier that reads your screen locally, skips anything sensitive, and writes notes to a folder you own.",
+    a: "No. One subscription covers answers, tasks, voice and Recall. Nothing to paste, no models to pick.",
   },
   {
     q: "Is it safe to let it click things?",
-    a: "Tasks run in the background so you keep your cursor, and Navi stops to ask before anything it can’t undo — sending, paying, deleting. Say “stop” or press Escape to halt a task instantly.",
+    a: "Tasks run behind your window, so your cursor and keyboard stay yours. Before anything it can’t undo (sending, paying, deleting) it stops and asks. Press esc or say “stop” to end a task at once.",
+  },
+  {
+    q: "What happens when it gets stuck?",
+    a: "When the fast model isn’t sure, or the same move isn’t working, it stops rather than guessing. A second, slower look at the screen either finishes the answer or suggests one next move; if that doesn’t help either, the task ends and tells you where it got to.",
+  },
+  {
+    q: "Which apps can it use?",
+    a: "Most Mac apps, since it works through the same accessibility interface screen readers use. It has written playbooks for 60+ apps and 55+ websites, and web tasks run in whichever browser you use: Safari, Arc, Firefox or Chrome.",
+  },
+  {
+    q: "Does it work offline?",
+    a: "Opening apps, files and settings, the calculator, and speech-to-text all work offline. Answers, tasks and Recall summaries need a connection.",
   },
   {
     q: "When can I get it?",
-    a: "Join the waitlist; invites go out in order as builds are ready. Everyone gets a 7-day Pro trial.",
+    a: "Join the waitlist; invites go out in order as builds are ready. Everyone starts with a 7-day Pro trial.",
   },
 ];
 
@@ -30,19 +44,17 @@ export function FAQ() {
   const [open, setOpen] = useState<number | null>(0);
   const reduce = useReducedMotion();
   return (
-    <section id="faq" className="scroll-mt-16 px-6 py-24 md:py-32">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-8 lg:grid-cols-12">
-        <div className="lg:col-span-4">
-          <h2 className="h-section">Questions</h2>
-        </div>
-        <div className="divide-y divide-line border-y border-line lg:col-span-7 lg:col-start-6">
+    <section id="faq" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-3xl">
+        <Head title={["Frequently asked questions"]} />
+        <div className="mt-12 divide-y divide-line border-y border-line">
           {items.map((it, i) => {
             const isOpen = open === i;
             return (
               <div key={it.q}>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between gap-4 py-5 text-left text-[17px] font-medium text-fg transition-colors duration-150 hover:text-fg-muted"
+                  className="flex w-full items-center justify-between gap-4 py-5 text-left text-[16px] font-medium text-fg transition-colors duration-150 hover:text-fg-muted sm:text-[17px]"
                   aria-expanded={isOpen}
                   aria-controls={`faq-${i}`}
                   onClick={() => setOpen(isOpen ? null : i)}
@@ -68,10 +80,10 @@ export function FAQ() {
                       initial={reduce ? false : { height: 0, opacity: 0 }}
                       animate={{ height: "auto", opacity: 1 }}
                       exit={reduce ? undefined : { height: 0, opacity: 0 }}
-                      transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                      transition={{ duration: 0.4, ease: EASE }}
                       className="overflow-hidden"
                     >
-                      <p className="max-w-[60ch] pb-5 text-[15px] leading-relaxed text-fg-muted">{it.a}</p>
+                      <p className="body max-w-[62ch] pb-6">{it.a}</p>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -79,6 +91,14 @@ export function FAQ() {
             );
           })}
         </div>
+        <Reveal>
+          <p className="mt-8 text-center text-[14.5px] text-fg-muted">
+            Something else?{" "}
+            <a className="font-medium text-accent hover:underline" href="mailto:hello@navi.app">
+              hello@navi.app
+            </a>
+          </p>
+        </Reveal>
       </div>
     </section>
   );

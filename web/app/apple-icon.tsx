@@ -22,7 +22,7 @@ export default function AppleIcon() {
         }}
       >
         <svg width="112" height="112" viewBox="0 0 24 24">
-          <path d={STAR} fill="#8b8cf8" />
+          <path d={STAR} fill="#bf5af2" />
         </svg>
       </div>
     ),

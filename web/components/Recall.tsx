@@ -1,127 +1,225 @@
 "use client";
 
-import { useRef } from "react";
-import { Glyph } from "./Glyph";
-import { Section } from "./Section";
-import { useLoop } from "./useLoop";
-import { Typed, typed, words } from "./Windows";
+import { motion, useMotionValueEvent, useReducedMotion, useScroll } from "framer-motion";
+import { useRef, useState } from "react";
+import { Head, Reveal } from "./motion/Reveal";
+import { EASE, progress } from "@/lib/motion";
 
-/* A day of screen memory: the strip scrubs, the question types, the answer streams. */
-const DAY: { t: string; app: string; tint: string; w: number }[] = [
-  { t: "09:00", app: "Mail", tint: "#3b82f6", w: 1 },
-  { t: "09:40", app: "Xcode", tint: "#6366f1", w: 3 },
-  { t: "11:15", app: "Chrome", tint: "#f59e0b", w: 2 },
-  { t: "12:30", app: "Messages", tint: "#22c55e", w: 1 },
-  { t: "13:10", app: "Xcode", tint: "#6366f1", w: 2 },
-  { t: "14:02", app: "Pages", tint: "#f97316", w: 2 },
-  { t: "15:30", app: "Chrome", tint: "#f59e0b", w: 1 },
-  { t: "16:20", app: "Terminal", tint: "#64748b", w: 1 },
+type Node = { id: string; x: number; y: number; label: string; day?: boolean };
+const NODES: Node[] = [
+  { id: "d", x: 300, y: 210, label: "Tue, Sep 30", day: true },
+  { id: "pricing", x: 150, y: 110, label: "Pricing doc" },
+  { id: "annual", x: 70, y: 220, label: "Annual billing" },
+  { id: "xcode", x: 470, y: 120, label: "ResultsListView.swift" },
+  { id: "anim", x: 520, y: 250, label: "List animation" },
+  { id: "maya", x: 190, y: 330, label: "Maya Patel" },
+  { id: "launch", x: 400, y: 340, label: "Navi launch" },
+  { id: "m", x: 300, y: 50, label: "Mon, Sep 29", day: true },
+  { id: "w", x: 560, y: 380, label: "Wed, Oct 1", day: true },
 ];
-const QUESTION = "What was I working on yesterday?";
-const ANSWER =
-  "Mostly the panel animation in Xcode — PanelController.swift from 09:40 — then some reading on window layering in Chrome, and the pricing doc in Pages after lunch.";
-const NOTES = [
-  { t: "09:40", app: "Xcode", text: "PanelController.swift — the results list animation" },
-  { t: "11:15", app: "Chrome", text: "Reading about window levels; two tabs open" },
-  { t: "14:02", app: "Pages", text: "Pricing doc: Free, Pro, Pro + Recall" },
+const EDGES: [string, string][] = [
+  ["d", "pricing"],
+  ["pricing", "annual"],
+  ["d", "xcode"],
+  ["xcode", "anim"],
+  ["d", "maya"],
+  ["d", "launch"],
+  ["maya", "launch"],
+  ["m", "pricing"],
+  ["m", "xcode"],
+  ["launch", "w"],
+  ["anim", "w"],
+  ["pricing", "maya"],
 ];
-const SCRUB_AT = 300;
-const SCRUB_MS = 3200;
-const Q_AT = 800;
-const A_AT = 3900;
-const LOOP = 12_500;
 
-type Frame = { scrub: number; q: number; answer: string; notes: number };
+const PIPE = [
+  ["Capture", "A frame now and then, from the apps you haven’t excluded. Paused for an hour or a day in one click."],
+  ["Read", "Text is read off the frame on your Mac. Passwords, and anything you’ve told it not to keep, like card numbers or IDs: the frame is dropped right here."],
+  ["Triage", "A quick check: is this new, is it important, is it sensitive? Most frames stop here."],
+  ["Summarize", "Only the moments that matter are summarized, from their text and up to two small screenshots, with personal details redacted before and after."],
+  ["Write", "Plain Markdown notes in a folder you own, linked by people, projects and days. Open it in Obsidian and it’s a graph."],
+];
 
-function derive(t: number): Frame {
-  const scrub = Math.max(0, Math.min(1, (t - SCRUB_AT) / SCRUB_MS));
-  const answer = words(ANSWER, t, A_AT, 90);
-  const notes = t < A_AT + 1200 ? 0 : Math.min(NOTES.length, Math.floor((t - A_AT - 1200) / 500) + 1);
-  return { scrub: Math.round(scrub * 100) / 100, q: typed(QUESTION, t, Q_AT, 55), answer, notes };
-}
-const keyOf = (f: Frame) => `${f.scrub}|${f.q}|${f.answer.length}|${f.notes}`;
+const DATA = [
+  ["Phone numbers", true],
+  ["Addresses", true],
+  ["Dates of birth", false],
+  ["Card numbers", false],
+  ["SSNs and ID numbers", false],
+  ["Account numbers", false],
+  ["Health information", false],
+] as const;
 
 export function Recall() {
+  const reduce = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
-  const { frame: f } = useLoop(ref, { duration: LOOP, derive, key: keyOf, staticT: 8000 });
-  const total = DAY.reduce((a, d) => a + d.w, 0);
+  const { scrollYProgress } = useScroll({ target: ref, offset: ["start 80%", "end 45%"] });
+  const [p, setP] = useState(reduce ? 1 : 0);
+  useMotionValueEvent(scrollYProgress, "change", (v) => !reduce && setP(Math.round(v * 300) / 300));
+
+  const edgeP = (i: number) => progress(p, 0.05 + i * 0.06, 0.17 + i * 0.06);
+  const nodeOn = (id: string) => id === "d" ? p > 0.02 : EDGES.some(([a, b], i) => (a === id || b === id) && edgeP(i) > 0.6);
+  const at = (id: string) => NODES.find((n) => n.id === id)!;
 
   return (
-    <Section
-      id="recall"
-      n="05"
-      title="Recall. What was I working on yesterday?"
-      aside="Optional tier. Frames never leave your Mac. Pause it for an hour or the day in one click."
-      visual={
-        <div ref={ref} className="card overflow-hidden" style={{ "--u": "1px" } as React.CSSProperties}>
-          {/* The day, as a strip of app-colored blocks, scrubbed by a playhead. */}
-          <div className="border-b border-line p-4">
-            <div className="tnum mb-2 flex justify-between text-[11px] text-fg-dim">
-              <span>Yesterday</span>
-              <span>09:00 – 17:00</span>
-            </div>
-            <div className="relative">
-              <div className="flex h-10 gap-[3px]" style={{ containerType: "inline-size" }}>
-                {DAY.map((d, i) => {
-                  const start = DAY.slice(0, i).reduce((a, x) => a + x.w, 0) / total;
-                  const passed = f.scrub >= start;
+    <section id="recall" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-6xl">
+        <Head
+          title={["Recall: ask what", "you were doing"]}
+          sub="Optional. Navi keeps a diary of your screen as plain notes on your Mac, so “what was I working on yesterday afternoon” has an answer."
+        />
+
+        <div ref={ref} className="mt-16 grid grid-cols-1 items-center gap-10 lg:mt-20 lg:grid-cols-12 lg:gap-8">
+          <div className="relative lg:col-span-7">
+            <div className="card-white relative overflow-hidden p-2 sm:p-4">
+              <svg viewBox="0 0 620 420" className="h-auto w-full" role="img" aria-label="A graph of linked notes: days, documents, people and projects">
+                {EDGES.map(([a, b], i) => {
+                  const A = at(a);
+                  const B = at(b);
                   return (
-                    <div
-                      key={d.t}
-                      className="rounded-[4px] transition-opacity duration-200"
-                      style={{ flex: d.w, background: d.tint, opacity: passed ? 0.9 : 0.25 }}
-                      title={`${d.t} ${d.app}`}
+                    <motion.line
+                      key={a + b}
+                      x1={A.x}
+                      y1={A.y}
+                      x2={B.x}
+                      y2={B.y}
+                      stroke="var(--fg-dim)"
+                      strokeOpacity={0.5}
+                      strokeWidth={1}
+                      initial={false}
+                      animate={{ pathLength: edgeP(i) }}
+                      transition={{ duration: 0.2 }}
                     />
                   );
                 })}
-                <div
-                  className="absolute top-[-4px] bottom-[-4px] w-[2px] rounded-full bg-fg"
-                  style={{ left: 0, transform: `translateX(calc(${f.scrub * 100}cqw - 1px))`, boxShadow: "0 0 0 2px var(--bg-elev)" }}
-                  aria-hidden="true"
-                />
-              </div>
-              <div className="tnum mt-1.5 hidden text-[10px] text-fg-dim sm:flex">
-                {DAY.map((d) => (
-                  <span key={d.t} className="truncate" style={{ flex: d.w }}>
-                    {d.t}
-                  </span>
-                ))}
-              </div>
+                {NODES.map((n) => {
+                  const on = nodeOn(n.id);
+                  return (
+                    <motion.g
+                      key={n.id}
+                      initial={false}
+                      animate={{ opacity: on ? 1 : 0, scale: on ? 1 : 0.5 }}
+                      transition={{ duration: 0.45, ease: EASE }}
+                      style={{ transformOrigin: `${n.x}px ${n.y}px` }}
+                    >
+                      <circle cx={n.x} cy={n.y} r={n.day ? 9 : 6} fill={n.day ? "#5e5ce6" : "var(--fg)"} />
+                      {n.day && <circle cx={n.x} cy={n.y} r={15} fill="none" stroke="#5e5ce6" strokeOpacity={0.3} />}
+                      <text x={n.x} y={n.y + (n.day ? 32 : 22)} textAnchor="middle" fontSize="14" fill="var(--fg-muted)" fontFamily="var(--font-geist-sans)" stroke="var(--bg-elev)" strokeWidth={5} paintOrder="stroke" strokeLinejoin="round">
+                        {n.label}
+                      </text>
+                    </motion.g>
+                  );
+                })}
+              </svg>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 border-b border-line px-4 py-3 text-sm">
-            <Glyph className="h-4 w-4 text-accent" />
-            <span>
-              {f.q === 0 ? <span className="text-fg-dim">Ask Navi anything</span> : <Typed text={QUESTION} n={f.q} />}
-            </span>
+          <div className="lg:col-span-5">
+            <motion.div
+              className="card-white overflow-hidden"
+              initial={false}
+              animate={{ opacity: p > 0.35 ? 1 : 0.0, y: p > 0.35 ? 0 : 20 }}
+              transition={{ duration: 0.6, ease: EASE }}
+            >
+              <div className="flex items-center justify-between border-b border-line px-5 py-3">
+                <span className="mono">Navi Vault/2026-09-30.md</span>
+                <span className="mono">Markdown</span>
+              </div>
+              <div className="space-y-3 px-5 py-4 font-mono text-[12.5px] leading-relaxed text-fg-muted">
+                <p className="text-fg"># Tuesday, September 30</p>
+                <p>
+                  <span className="text-fg">13:10–14:40</span> · Pages · Worked on the <L>Pricing doc</L>: Free, Pro, Pro + Recall.
+                  Read two pieces on <L>Annual billing</L>.
+                </p>
+                <p>
+                  <span className="text-fg">14:45</span> · Messages · <L>Maya Patel</L> about the <L>Navi launch</L> date.
+                </p>
+                <p>
+                  <span className="text-fg">16:05–17:10</span> · Xcode · <L>ResultsListView.swift</L>, the <L>List animation</L>.
+                </p>
+                <p className="text-fg-dim">activity: writing, coding · sensitive frames: 3 dropped</p>
+              </div>
+            </motion.div>
           </div>
-          <div className="p-4">
-            <p className="min-h-[66px] max-w-[52ch] text-sm leading-relaxed text-fg-muted">
-              {f.answer}
-              {f.answer && f.answer.length < ANSWER.length && <span className="caret" />}
+        </div>
+
+        {/* pipeline */}
+        <div className="mt-24 md:mt-32">
+          <Reveal>
+            <h3 className="text-center text-[1.75rem] font-medium leading-tight tracking-[-0.03em]">From a frame on your screen to a note on your disk</h3>
+          </Reveal>
+          <ol className="relative mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {PIPE.map(([k, v], i) => (
+              <Reveal as="li" key={k} i={i} className="card relative p-5">
+                <div className="flex items-baseline gap-3">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[12px] font-medium text-fg-muted ring-1 ring-line">{i + 1}</span>
+                  <span className="font-medium">{k}</span>
+                </div>
+                <p className="body mt-2 text-[14.5px]">{v}</p>
+              </Reveal>
+            ))}
+          </ol>
+        </div>
+
+        {/* personal data */}
+        <div className="mt-24 grid grid-cols-1 gap-10 md:mt-32 lg:grid-cols-12 lg:gap-8">
+          <Reveal className="lg:col-span-5">
+            <h3 className="text-[1.75rem] font-medium leading-tight tracking-[-0.03em]">You decide what it may remember</h3>
+            <p className="body mt-4 max-w-[46ch]">
+              Settings → Recall has a switch for each kind of personal detail. These are the defaults. For anything switched off, a
+              check on your Mac runs before anything is sent anywhere, and the frame is dropped if it matches. A cleanup can also
+              remove details that were saved before you changed your mind.
             </p>
-            <ul className="mt-4 space-y-2">
-              {NOTES.map((n, i) => (
-                <li
-                  key={n.t}
-                  className="flex items-center gap-3 rounded-[8px] border border-line px-3 py-2 text-sm transition-opacity duration-200"
-                  style={{ opacity: i < f.notes ? 1 : 0 }}
-                >
-                  <span className="tnum text-xs text-fg-dim">{n.t}</span>
-                  <span className="rounded-[6px] px-1.5 py-0.5 text-xs text-fg-muted" style={{ background: "var(--glass-strong)" }}>
-                    {n.app}
-                  </span>
-                  <span className="truncate text-fg-muted">{n.text}</span>
-                </li>
+          </Reveal>
+          <div className="lg:col-span-6 lg:col-start-7">
+            <ul className="card divide-y divide-line px-6">
+              {DATA.map(([k, on], i) => (
+                <Reveal as="li" key={k} i={i} className="flex items-center justify-between py-3.5">
+                  <span>{k}</span>
+                  <Switch on={on} delay={0.3 + i * 0.05} />
+                </Reveal>
               ))}
+              <Reveal as="li" i={DATA.length} className="flex items-center justify-between py-3.5">
+                <span>
+                  Passwords and one-time codes <span className="text-fg-dim">· always blocked</span>
+                </span>
+                <span className="mono">locked</span>
+              </Reveal>
             </ul>
           </div>
         </div>
-      }
+      </div>
+    </section>
+  );
+}
+
+function L({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[#7c3aed]">
+      [[<span className="underline decoration-[#7c3aed]/40 underline-offset-2">{children}</span>]]
+    </span>
+  );
+}
+
+function Switch({ on, delay }: { on: boolean; delay: number }) {
+  const reduce = useReducedMotion();
+  return (
+    <motion.span
+      className="relative inline-flex h-[22px] w-[38px] shrink-0 rounded-full"
+      initial={reduce ? false : { backgroundColor: "rgba(127,127,127,0.25)" }}
+      whileInView={{ backgroundColor: on ? "#30d158" : "rgba(127,127,127,0.25)" }}
+      viewport={{ once: true }}
+      transition={{ delay, duration: 0.3 }}
+      role="img"
+      aria-label={on ? "on" : "off"}
     >
-      Navi reads your screen locally and keeps plain-text notes on your disk, so you can ask. Passwords, banking,
-      anything sensitive: never stored.
-    </Section>
+      <motion.span
+        className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow"
+        initial={reduce ? false : { left: 2 }}
+        whileInView={{ left: on ? 18 : 2 }}
+        viewport={{ once: true }}
+        transition={{ delay, duration: 0.35, ease: EASE }}
+      />
+    </motion.span>
   );
 }
