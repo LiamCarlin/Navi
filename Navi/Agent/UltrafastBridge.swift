@@ -463,6 +463,8 @@ enum UltrafastBridge {
         if !things.isEmpty || moves != nil, let data = try? JSONSerialization.data(withJSONObject: userContext, options: [.sortedKeys]) {
             env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
         }
+        // What the user clicks on each site, so the runner marks the page's elements (adaptation 21).
+        if let marks = UserMoves.liveRunnerJSON(startURL: url) { env["NAVI_USER_MOVES_JSON"] = marks }
         let reveal = UserDefaults.navi.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy

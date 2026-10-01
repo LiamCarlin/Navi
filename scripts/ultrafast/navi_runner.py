@@ -101,6 +101,13 @@ Reliability adaptations (from failed runs, see git log):
      notes" are and who works on them. Those things (NAVI_USER_CONTEXT_JSON,
      only the ones the goal names) are added to every request as
      `user_context`, next to the playbook.
+ 21. The user's own clicks mark the page: Navi's screen memory records what
+     this user clicks on each site (NAVI_USER_MOVES_JSON from `UserMoves`).
+     Elements whose label is one of theirs get `this_user` ("clicks this here
+     (12×)", "usually clicks this next") in the state and in the target
+     questions' criteria, and those questions say to prefer them when the goal
+     could mean several. Same matching as the native driver: badge counts and
+     a trailing "…" don't matter, a row matches on its name.
 """
 
 import argparse
@@ -820,6 +827,198 @@ class Playbook:
                         qs[name] = q
                     body["questions"] = qs
             return inner(url, key, body)
+
+        jev_model.post_json = post_json
+
+
+# --- Adaptation 21: the user's own clicks mark the page's elements ----------
+
+USER_MOVES_RULE = ("Elements marked `this_user` are the ones this user clicks on this site themselves (how often, or "
+                   "that they usually click it next): where the goal could mean several elements, choose theirs.")
+
+
+class UserMoves:
+    """What this user clicks on each site, from Navi's screen memory
+    (NAVI_USER_MOVES_JSON: {"sites": {site: {"clicks": [{label, role, count}],
+    "next": {label: {label: count}}}}}). Mirrors Navi's `UserMoves.hints`."""
+
+    MAX_MARKED = 8
+    MIN_COUNT = 2
+    SEPARATORS = (",", " \u00b7", " -", " \u2014", ":", " |", " (")
+    SHARED_HOSTS = {"docs.google.com", "google.com"}
+
+    def __init__(self, sites=None):
+        self.sites = sites if sites is not None else self.from_env()
+        self.last = {}   # site -> normalised label of the element clicked last
+
+    @staticmethod
+    def from_env():
+        raw = os.environ.get("NAVI_USER_MOVES_JSON")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        sites = data.get("sites") if isinstance(data, dict) else None
+        return sites if isinstance(sites, dict) else {}
+
+    @classmethod
+    def site_key(cls, url):
+        """Navi's `UserHabits.siteKey`: the host without www., plus the first path
+        segment on hosts that hold several apps (docs.google.com/document)."""
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(url or "")
+        except ValueError:
+            return None
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return None
+        host = u.hostname.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host in cls.SHARED_HOSTS:
+            seg = [p for p in u.path.split("/") if p]
+            if seg:
+                return host + "/" + seg[0].lower()
+        return host
+
+    @staticmethod
+    def norm(s):
+        t = " ".join(str(s or "").lower().split())
+        while t and t[-1] in "\u2026:.":
+            t = t[:-1]
+        import re
+        m = re.search(r"\s*\(\d{1,5}\)$", t)
+        if m and m.start() > 0:
+            t = t[:m.start()]
+        return t.strip()[:80]
+
+    @classmethod
+    def head(cls, s):
+        cut = len(s)
+        for sep in cls.SEPARATORS:
+            i = s.find(sep)
+            if i != -1 and i < cut:
+                cut = i
+        return s[:cut]
+
+    @classmethod
+    def same_control(cls, a, b):
+        if a == b:
+            return True
+        short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+        if len(short) < 6 or not long_.startswith(short):
+            return False
+        return long_[len(short):].startswith(cls.SEPARATORS)
+
+    @classmethod
+    def matches(cls, control, text):
+        label = cls.norm(control.get("label", ""))
+        if cls.same_control(label, text):
+            return True
+        if control.get("role") != "row":
+            return False
+        h = cls.head(label)
+        return len(h) >= 4 and h == cls.head(text)
+
+    def marks(self, site, elements):
+        """{element index: {"clicks": n} and/or {"next": True}} for this page."""
+        info = self.sites.get(site) or {}
+        controls = [c for c in info.get("clicks", []) if isinstance(c, dict) and c.get("count", 0) >= self.MIN_COUNT]
+        if not controls:
+            return {}
+        by_label = {self.norm(c.get("label", "")): c for c in controls}
+        counted = []
+        for e in elements:
+            n = self.norm(e.get("label", ""))
+            if not n:
+                continue
+            c = by_label.get(n) or next((c for c in controls if self.matches(c, n)), None)
+            if c:
+                counted.append((e["index"], c["count"]))
+        counted.sort(key=lambda x: (-x[1], int(x[0]) if str(x[0]).isdigit() else 0))
+        out = {i: {"clicks": n} for i, n in counted[:self.MAX_MARKED]}
+        last = self.last.get(site)
+        nexts = info.get("next") or {}
+        after = nexts.get(last) if last else None
+        if last and after is None:   # the row clicked last, shown with a newer preview
+            after = next((v for k, v in nexts.items()
+                          if self.matches(by_label.get(k) or {"label": k, "role": ""}, last)), None)
+        if after:
+            wanted = [k for k, v in sorted(after.items(), key=lambda kv: -kv[1]) if v >= self.MIN_COUNT][:2]
+            wanted_controls = [by_label.get(k) or {"label": k, "role": ""} for k in wanted]
+            for e in elements:
+                n = self.norm(e.get("label", ""))
+                if n and any(self.matches(c, n) for c in wanted_controls):
+                    out.setdefault(e["index"], {})["next"] = True
+        return out
+
+    @staticmethod
+    def describe(mark):
+        parts = []
+        if mark.get("clicks"):
+            parts.append(f"clicks this here ({mark['clicks']}\u00d7)")
+        if mark.get("next"):
+            parts.append("usually clicks this next")
+        return "this user " + " and ".join(parts)
+
+    def annotate(self, body):
+        """The request with this user's marks on its elements and target criteria."""
+        state = body.get("state") if isinstance(body, dict) else None
+        if not isinstance(state, dict) or "questions" not in body or not self.sites:
+            return body
+        site = self.site_key((state.get("page") or {}).get("url"))
+        elements = state.get("elements")
+        if not site or not isinstance(elements, list):
+            return body
+        marks = self.marks(site, elements)
+        if not marks:
+            return body
+        body = dict(body)
+        body["state"] = {**state, "elements": [
+            {**e, "this_user": self.describe(marks[e["index"]])} if e.get("index") in marks else e for e in elements]}
+        qs = {}
+        for name, q in body["questions"].items():
+            if name.endswith("_target") and isinstance(q.get("criteria"), dict):
+                q = dict(q)
+                q["criteria"] = {k: ({**v, "this_user": self.describe(marks[k.split(":")[0]])}
+                                     if isinstance(v, dict) and k.split(":")[0] in marks else v)
+                                 for k, v in q["criteria"].items()}
+                if isinstance(q.get("instructions"), dict):
+                    rules = q["instructions"].get("rules")
+                    rules = list(rules) if isinstance(rules, list) else ([rules] if rules else [])
+                    q["instructions"] = {**q["instructions"], "rules": rules + [USER_MOVES_RULE]}
+            qs[name] = q
+        body["questions"] = qs
+        return body
+
+    def observe(self, body, result):
+        """Remembers the element a CLICK chose, for "usually clicks this next"."""
+        try:
+            answers = result.get("answers") or {}
+            if (answers.get("operation") or {}).get("choice") != "CLICK":
+                return
+            index = (answers.get("click_target") or {}).get("choice")
+            state = body["state"]
+            site = self.site_key((state.get("page") or {}).get("url"))
+            label = next((e.get("label") for e in state.get("elements", []) if e.get("index") == index), None)
+            if site and label:
+                self.last[site] = self.norm(label)
+        except (AttributeError, KeyError, TypeError):
+            pass
+
+    def install(self):
+        if not self.sites:
+            return
+        inner = jev_model.post_json
+
+        def post_json(url, key, body):
+            body = self.annotate(body)
+            result = inner(url, key, body)
+            if isinstance(body, dict) and isinstance(result, dict):
+                self.observe(body, result)
+            return result
 
         jev_model.post_json = post_json
 
@@ -1552,6 +1751,7 @@ def main():
         return 2
     playbook = Playbook(goal=args.goal)
     playbook.install()
+    UserMoves().install()
     FIELD_HINTS["playbook"] = playbook
     coach = Coach()
     coach.playbook = playbook

@@ -364,6 +364,51 @@ assert nr.Playbook.user_context_from_env() == ways
 os.environ.pop("NAVI_USER_CONTEXT_JSON")
 print("user context OK")
 
+# --- the user's own clicks mark the page (adaptation 21) ---
+moves = {"sites": {"canvas.olin.edu": {
+    "clicks": [{"label": "Assignments", "role": "link", "count": 9}, {"label": "Grades", "role": "link", "count": 1},
+               {"label": "MTH3199 Calculus, Fall 2026", "role": "row", "count": 4}],
+    "next": {"mth3199 calculus, fall 2026": {"assignments": 4}}}}}
+os.environ["NAVI_USER_MOVES_JSON"] = json.dumps(moves)
+um = nr.UserMoves()
+assert set(um.sites) == {"canvas.olin.edu"}
+assert nr.UserMoves.site_key("https://www.docs.google.com/document/d/1/edit") == "docs.google.com/document"
+assert nr.UserMoves.site_key("https://canvas.olin.edu/courses/1") == "canvas.olin.edu"
+assert nr.UserMoves.norm("Drafts (3)") == "drafts" and nr.UserMoves.norm("Assignment 2") == "assignment 2"
+assert nr.UserMoves.norm("New Email\u2026") == "new email"
+elements = [{"index": "1", "label": "Assignments"}, {"index": "2", "label": "Grades"}, {"index": "3", "label": "Assignments Help"},
+            {"index": "4", "label": "MTH3199 Calculus, Spring section"}]
+body = {"model": "jev-latest", "state": {"page": {"url": "https://canvas.olin.edu/courses/1"}, "elements": elements},
+        "questions": {"operation": {"type": "choice", "criteria": {}, "instructions": {"rules": "x"}},
+                      "click_target": {"type": "choice", "criteria": {e["index"]: {"element": f"[{e['index']}] {e['label']}"} for e in elements},
+                                       "instructions": {"goal": "g", "rules": ["a", "b"]}}}}
+marked = um.annotate(body)
+els = {e["index"]: e for e in marked["state"]["elements"]}
+assert els["1"]["this_user"] == "this user clicks this here (9\u00d7)"
+assert "this_user" not in els["2"] and "this_user" not in els["3"]          # one click is chance; "Assignments Help" is another control
+assert els["4"]["this_user"] == "this user clicks this here (4\u00d7)"       # a row matches on its name
+assert marked["questions"]["click_target"]["criteria"]["1"]["this_user"].startswith("this user clicks")
+assert marked["questions"]["click_target"]["instructions"]["rules"][-1] == nr.USER_MOVES_RULE
+assert marked["questions"]["operation"] == body["questions"]["operation"]
+assert "this_user" not in body["state"]["elements"][0]                         # the original request is untouched
+# After clicking the course row, Assignments is what this user clicks next.
+um.observe(marked, {"answers": {"operation": {"choice": "CLICK"}, "click_target": {"choice": "4"}}})
+assert um.last["canvas.olin.edu"] == "mth3199 calculus, spring section"
+again = {e["index"]: e for e in um.annotate(body)["state"]["elements"]}
+assert again["1"]["this_user"] == "this user clicks this here (9\u00d7) and usually clicks this next"
+# Another site, no memory, or junk: untouched.
+other = json.loads(json.dumps(body)); other["state"]["page"]["url"] = "https://example.com/"
+assert um.annotate(other) == other
+os.environ["NAVI_USER_MOVES_JSON"] = "not json"; assert nr.UserMoves.from_env() == {}
+os.environ.pop("NAVI_USER_MOVES_JSON")
+assert nr.UserMoves().annotate(body) is body
+seen = {}
+jev_model.post_json = lambda url, key, body: seen.update(body=body) or {"answers": {}}
+nr.UserMoves(sites=moves["sites"]).install()
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", body)
+assert seen["body"]["state"]["elements"][0]["this_user"].startswith("this user")
+print("user moves OK")
+
 # --- the tab is the deliverable (adaptation 13) ---
 for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
     os.environ.pop(var, None)
