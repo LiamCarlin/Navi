@@ -293,6 +293,13 @@ struct VoiceSpeedTests {
         scrolled.offscreen = [AXElement(id: "o1", role: "AXCell", label: "Displays", frame: CGRect(x: 0, y: 9000, width: 200, height: 20), actions: ["AXPress"], pid: 42)]
         let sc = CUPerception.perceive(scrolled, ocr: nil, goal: "x")
         #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXCell", label: "displays", path: "Sidebar"), on: sc) == .press(elementID: "o1"))
+        // System Settings: the cell was clicked on screen; scrolled away, only its row is exposed.
+        var rowOnly = Self.snapshot
+        rowOnly.offscreen = [AXElement(id: "o1", role: "AXRow", label: "Displays", frame: CGRect(x: 0, y: 9000, width: 200, height: 20),
+                                       actions: ["AXShowDefaultUI", AXSnapshotter.selectRowAction], pid: 42)]
+        let rs = CUPerception.perceive(rowOnly, ocr: nil, goal: "x")
+        #expect(CUReplay.resolve(CUReplayStep(kind: .click, role: "AXCell", label: "displays", path: "Sidebar"), on: rs) == .press(elementID: "o1"))
+        #expect(rowOnly.offscreen[0].selectsByRow && !rowOnly.offscreen[0].hasPress)
     }
 
     @Test func irreversibleStepsAreNeverReplayed() {
