@@ -283,3 +283,23 @@ import Testing
         #expect(try cleanup.plan().actionRows == 0)
     }
 }
+
+@Suite struct ActionPrivacyTests {
+    @Test func deleteEverythingAndDeleteBeforeTakeClicksAndRoutines() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("navi-moves-erase-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try MemoryStore(directory: dir)
+        let now = Date()
+        func seed() throws {
+            try store.insertActions([ActionRecord(timestamp: now.addingTimeInterval(-3600), bundleID: "a", appName: "A", kind: .click, role: "button", label: "Reply")])
+            try store.insertProcedure(ProcedureRecord(sessionID: 1, start: now.addingTimeInterval(-3600), end: now.addingTimeInterval(-3600),
+                                                      bundleID: "a", appName: "A", goal: "reply", steps: ["x"], habits: []))
+        }
+        try seed()
+        try store.prune(before: now)                       // "delete history before now": nothing learned survives
+        #expect(try store.actionCount() == 0 && (try store.procedures(since: .distantPast)).isEmpty)
+        try seed()
+        try store.deleteAll()
+        #expect(try store.actionCount() == 0 && (try store.procedures(since: .distantPast)).isEmpty)
+    }
+}
