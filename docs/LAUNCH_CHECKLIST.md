@@ -22,9 +22,10 @@ Code session can do it from the repo (open a PR; Liam merges).
 |---|---|---|---|
 | ☐ | Create the Vercel project with root `cloud/`; attach `api.<domain>` | Liam | `curl -s https://api.<domain>/healthz` → `{"ok":true,"db":"supabase",…}` |
 | ☐ | Production env vars per `cloud/README.md` § 3 (`NAVI_CLOUD_BASE_URL`, Supabase, Stripe, vendor keys); **no** `DEV_LOGIN_SECRET` / `MOCK_UPSTREAM` / `DB_DRIVER` | Liam | `/healthz` shows `"mockUpstream":false`, `"devLogin":false`, all three vendors `true` |
-| ☐ | Vendor keys (`TYPESAFE_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) entered through the admin console (cloud workstream) or Vercel env — never in the app, the repo or a DMG | Liam | `/healthz` vendors all `true`; `grep -rn 'sk-ant\|tsk_' build/release/Navi.app` finds nothing |
+| ☐ | Vendor keys (TypeSafe, Anthropic, Gemini, optional AI Gateway) pasted into `/admin` → **Keys** (stored AES-256-GCM-encrypted with `NAVI_KEYS_SECRET`; Vercel env vars are only the fallback) — never in the app, the repo or a DMG | Liam | each key's **Test** button is green; `/healthz` reports every vendor's source as `database`; `grep -rn 'sk-ant\|tsk_' build/release/Navi.app` finds nothing |
 | ☐ | Rotate the vendor keys that sit in your local Keychain/env once the proxy is live | Liam | old keys revoked in each vendor console |
-| ☐ | Swap the in-process rate limiter for Vercel KV / Upstash (`cloud/lib/ratelimit.ts`) — per-instance memory doesn't limit anything on Vercel. Re-check the 120 req/min per-user cap against a busy browser task (one Jev call per step + text helper) | Agent | two parallel instances of `scripts/smoke.sh` see one shared counter; a 40-step browser task never hits 429 |
+| ☑ | Shared rate limiter: done in #47 — `cloud/lib/ratelimit.ts` uses the Postgres `rate_limit_hit()` RPC (migration 0003) when Supabase is configured, so every Vercel instance shares one counter. Keep Vercel's function region next to Supabase's (one DB round trip per `/v1/*` call) | Agent | two parallel instances of `scripts/smoke.sh` see one shared counter |
+| ☐ | Re-check the 120 req/min per-user cap against a busy browser task (one Jev call per step + text helper) | Agent | a 40-step browser task never hits 429 |
 | ☐ | Vercel **Pro** plan if `/v1/claude`'s `maxDuration = 300` is kept (Hobby caps functions at 60 s; long streamed agent turns would be cut) | Liam | a 2-minute streamed answer completes |
 | ☐ | Smoke against production: `NAVI_CLOUD_URL=https://api.<domain> DEV_LOGIN_SECRET=… cloud/scripts/smoke.sh` (temporarily set the secret, then remove it) | Agent + Liam | all steps pass; secret removed afterwards |
 
@@ -32,11 +33,11 @@ Code session can do it from the repo (open a PR; Liam merges).
 
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
-| ☐ | Project (the waitlist one `oqvuejmxkkfaogelwraz`, or a new one) with `cloud/supabase/migrations/0001_init.sql` applied | Liam | Table editor shows `profiles`, `entitlements`, `usage`, `waitlist`, `auth_codes`, RLS on |
+| ☑ | Migrations `0001_init` → `0002_admin` → `0003_account` applied to the waitlist project `oqvuejmxkkfaogelwraz` (2026-10-01, dashboard SQL editor; the existing waitlist row kept) | Agent | done: 10 public tables (`admin_audit`, `admins`, `app_config`, `auth_codes`, `entitlements`, `profiles`, `rate_limits`, `usage`, `vendor_keys`, `waitlist`), RLS on for all; `on_auth_user_created` trigger present |
 | ☐ | Auth → URL configuration: Site URL `https://api.<domain>`, redirect `https://api.<domain>/auth/callback` | Liam | magic-link sign-in from the app lands back in Navi signed in |
-| ☐ | Auth email: custom SMTP (Supabase's built-in sender is rate-limited to a few mails/hour) and a Navi-branded magic-link template | Liam | 10 sign-ups in an hour all receive the mail |
+| ☐ | Auth email: custom SMTP — Supabase's built-in sender only delivers to the project's team members, so strangers get no sign-in mail without it — plus the Navi template (link + 6-digit code) from `cloud/DEPLOY.md` §3 in both "Magic Link" and "Confirm signup" | Liam | 10 sign-ups in an hour from outside addresses all receive the mail |
 | ☐ | Optional Google sign-in (`GOOGLE_CLIENT_ID/SECRET`) | Liam | "Continue with Google" appears on `/auth/start` and works |
-| ☐ | Cron for `purge_expired_auth_codes()` | Agent | `auth_codes` holds nothing older than 5 min |
+| ☐ | Daily purge: Vercel Cron (`cloud/vercel.json`, 04:17 UTC) → `GET /auth/purge` → `navi_purge()` (expired sign-in codes + old rate-limit windows). Needs `CRON_SECRET` set in Vercel | Liam (env) | the cron's run log in Vercel shows 200; `auth_codes` holds nothing older than a day |
 
 ## 3. Stripe
 
@@ -97,7 +98,7 @@ Dry run (`scripts/dev/runtime-smoke.sh --cloud … --token …`).
 
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
-| ☐ | Privacy policy: what leaves the Mac (queries/answers/task steps to Navi Cloud and its model providers; Recall: only redacted digests, never raw frames; sensitive frames dropped locally), retention, deletion | Liam (write/approve) + Agent (draft) | published at the URL the app links |
+| ☐ | Privacy policy (`web/app/privacy/page.tsx`, drafted in #45 from `docs/PRIVACY.md`): what leaves the Mac — queries/answers and task steps (incl. a window screenshot when a task stops for review) to Navi Cloud and its model providers; Recall sends each moment's screen text for triage and, for important ones, the text plus up to two thumbnails for the summary (frames and thumbnails themselves stay on the Mac); sensitive frames and blocked personal details are dropped locally first — retention, deletion. Confirm the flagged claims: providers don't train on the data (Gemini only on the paid tier), the contact address, 30-day account deletion, minimum age 13, GDPR/CCPA wording | Liam (approve) + Agent (draft done) | published at the URL the app links; every claim matches `docs/PRIVACY.md` |
 | ☐ | Terms of service + refund policy (Stripe requires a refund/cancellation policy on the site) | Liam | published, linked from pricing and Checkout |
 | ☐ | Support email that someone reads | Liam | test mail answered |
 | ☐ | Third-party notices (python-build-standalone, browser-harness, jev-ultrafast MIT, sounds CC0) in the app's About or a bundled file | Agent | About → Acknowledgements lists them |
