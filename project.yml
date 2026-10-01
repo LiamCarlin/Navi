@@ -57,7 +57,7 @@ targets:
         # Navi Cloud's API for this build (CloudTransport.defaultBaseURL; the hard-coded
         # https://api.navi.app is the fallback). Set it to the deployed domain before a release.
         # `defaults write com.liamcarlin.navi cloudBaseURL …` still overrides it.
-        NaviCloudBaseURL: "https://api.navi.app"
+        NaviCloudBaseURL: "https://navi-cloud.vercel.app"
         # Permission prompts, in plain words (shown by macOS when Navi first asks).
         NSAppleEventsUsageDescription: "Navi controls other apps, like Chrome, Safari and Finder, only when you ask it to do something in them."
         NSAccessibilityUsageDescription: "Navi clicks, types and moves between apps for you when you ask it to do a task."

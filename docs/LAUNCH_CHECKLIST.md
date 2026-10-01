@@ -52,7 +52,7 @@ Code session can do it from the repo (open a PR; Liam merges).
 
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
-| ☐ | `NaviCloudBaseURL` in `project.yml` = the deployed API (read by `CloudTransport.defaultBaseURL`; `https://api.navi.app` is the fallback, and it does not resolve yet) | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
+| ☑ | `NaviCloudBaseURL` in `project.yml` = the deployed API — `https://navi-cloud.vercel.app` since 2026-10-01 (read by `CloudTransport.defaultBaseURL`; `https://api.navi.app` is only the code fallback). Change it again when the custom domain is attached | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
 | ☐ | `NaviUpdateFeedURL` in `project.yml` = where `appcast.json` is served (default: the latest GitHub Release — works as is) | Agent | `curl -sL <url> \| python3 -m json.tool` |
 | ☐ | Privacy/terms/support links (`AboutView`: `https://navi.app/privacy`, `/terms`, `support@navi.app`) point at pages and a mailbox that exist | Liam (pages) + Agent (URLs) | each link opens; a test mail to support arrives |
 | ☐ | Version bump (`CFBundleShortVersionString` 1.0.0 / `CFBundleVersion`) via PR | Agent | About shows the version |
