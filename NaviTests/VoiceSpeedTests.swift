@@ -152,6 +152,7 @@ struct VoiceSpeedTests {
         #expect(CUFacts.literalTarget("select local") == "local")
         #expect(CUFacts.literalTarget("Can you press the send button") == "send")
         #expect(CUFacts.literalTarget("tap on New session.") == "new session")
+        #expect(CUFacts.literalTarget("In System Settings: click on Bluetooth") == "bluetooth")
         #expect(CUFacts.literalTarget("click it") == nil)
         #expect(CUFacts.literalTarget("select all") == nil)
         #expect(CUFacts.literalTarget("change it from local to cloud") == nil)

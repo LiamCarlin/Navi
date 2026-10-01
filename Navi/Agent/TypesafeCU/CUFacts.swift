@@ -183,6 +183,8 @@ enum CUFacts {
     /// the goal, so code can tell when it is done (Navi deviation, docs/TYPESAFE_CU.md).
     static func literalTarget(_ goal: String) -> String? {
         var g = VoiceDecider.normalizedGoal(goal).lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // A voice follow-up names its app up front: "In System Settings: click on bluetooth".
+        if let r = g.range(of: #"^in [^:]{1,40}:\s*"#, options: .regularExpression) { g = String(g[r.upperBound...]) }
         while let last = g.last, ".!".contains(last) { g.removeLast() }
         guard g.count <= 60, g.range(of: #"[,;?]|\b(and|then|to|into|from|with|if|until|after|before|so)\b"#, options: .regularExpression) == nil
         else { return nil }
