@@ -5,13 +5,21 @@
 #   Terminal 2:  cd cloud && scripts/smoke.sh
 #
 # Env: NAVI_CLOUD_URL (default http://localhost:3100), DEV_LOGIN_SECRET (default dev),
-#      SMOKE_EMAIL (default a fresh smoke+<ts>@navi.local so every run starts on a clean profile).
+#      SMOKE_EMAIL (default a fresh smoke+<ts>@navi.local so every run starts on a clean profile),
+#      VERCEL_BYPASS (the "Protection Bypass for Automation" secret, for protected previews).
+# Ends by exporting and then DELETING the smoke account, so nothing is left behind.
 # Needs curl and node. Exits non-zero on the first surprise.
 set -euo pipefail
 
 BASE=${NAVI_CLOUD_URL:-http://localhost:3100}
 SECRET=${DEV_LOGIN_SECRET:-dev}
 EMAIL=${SMOKE_EMAIL:-smoke+$(date +%s)@navi.local}
+
+# Vercel preview deployments sit behind Deployment Protection: pass the project's
+# "Protection Bypass for Automation" secret as VERCEL_BYPASS and every request carries it.
+if [ -n "${VERCEL_BYPASS:-}" ]; then
+  curl() { command curl -H "x-vercel-protection-bypass: $VERCEL_BYPASS" "$@"; }
+fi
 
 bold() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[31m✗ %s\033[0m\n' "$*"; exit 1; }
@@ -177,8 +185,6 @@ CODE=$(status "$BASE/v1/account/export" "${AUTH2[@]}")
 [ "$CODE" = "401" ] || fail "export after delete: expected 401, got $CODE"
 CODE=$(status -X POST "$BASE/auth/refresh" -H 'content-type: application/json' -d "{\"refreshToken\":\"$REFRESH2\"}")
 [ "$CODE" = "401" ] || fail "refresh after delete: expected 401, got $CODE"
-C3=$(status -X POST "$BASE/waitlist" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"source\":\"smoke\"}")
-[ "$C3" = "201" ] || fail "waitlist row should be gone after delete (re-adding gave $C3)"
-ok "account, sessions and waitlist row are gone"
+ok "account and sessions are gone (the waitlist row went with them — covered by tests/account.test.ts)"
 
 printf '\n\033[1;32mSmoke passed against %s\033[0m\n' "$BASE"

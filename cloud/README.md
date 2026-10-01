@@ -11,7 +11,9 @@ Navi.app ──(Bearer <navi session>)──▶ Navi Cloud
    │   POST /v1/claude    → api.anthropic.com/v1/messages      (server key, metered, SSE streamed through)
    │   POST /v1/digest    → Claude or Gemini                   (requires `recall`)
    │   GET  /v1/me        → tier, entitlements, quotas, usage, resetsAt
-   │   /auth/*            → Supabase Auth (magic link + Google) → navi://auth/callback?code=…
+   │   /auth/*            → Supabase Auth (email link + 6-digit code, Google, Apple) → navi://auth/callback?code=…
+   │   /account           → web portal: plan, usage, billing, download, devices, export, delete
+   │   /v1/account*       → GET export · DELETE account (Bearer or the /account cookie)
    │   /billing/*         → Stripe Checkout / Portal / webhook → profiles.tier
    └── POST /waitlist     → waitlist table (also used by web/)
 ```
@@ -45,11 +47,18 @@ vendor keys. `POST /auth/dev-login` only exists while `DEV_LOGIN_SECRET` is set.
 | POST | `/v1/jev` | Bearer | Body = exact TypeSafe `/v1/systemone` body. JSON passthrough. |
 | POST | `/v1/claude` | Bearer | Body = exact Anthropic `/v1/messages` body. `stream:true` → SSE piped through unbuffered. Client `anthropic-version` / `anthropic-beta` headers are forwarded. |
 | POST | `/v1/digest` | Bearer | Same as `/v1/claude`, needs the `recall` entitlement (403 `not_entitled`). With `GEMINI_API_KEY` set and body `provider:"gemini"`, forwards `{model?, ...generateContent body}` to Gemini instead. |
-| GET | `/auth/start?redirect=navi` | – | Hosted sign-in page (magic link, "Continue with Google" when `GOOGLE_*` set). |
-| GET | `/auth/callback` | – | Supabase lands here; mints a single-use 5-min code → `302 navi://auth/callback?code=…` (or `?error=sign_in_failed&message=…`). |
+| GET | `/auth/start?redirect=navi\|account` | – | Hosted sign-in page: one email with a link and a 6-digit code; Google / Apple when enabled in Supabase. Failures come back as `?error=<kind>` with an explanation (and, for the app flow, a "Back to Navi" link to `navi://auth/callback?error=sign_in_failed&message=…`). |
+| POST | `/auth/otp` | – | `{ email, redirect }` → sends the email (5 per address / 15 min). |
+| POST | `/auth/verify` | – | `{ email, code, redirect }` → `{ redirect }`: `navi://auth/callback?code=…` or `/account` + cookie (10 tries per address / 15 min). |
+| GET | `/auth/oauth?provider=google\|apple&redirect=` | – | → the provider's consent page. |
+| GET | `/auth/callback` | – | Link / OAuth return (`?code=` PKCE or `?token_hash=`); app flow → single-use 5-min code → `302 navi://auth/callback?code=…`; web flow → cookie → `/account`; failures → `/auth/start?error=…`. |
 | POST | `/auth/exchange` | – | `{ code }` → `{ accessToken, refreshToken, expiresAt }` |
 | POST | `/auth/refresh` | – | `{ refreshToken }` → same shape |
-| POST | `/auth/dev-login` | secret | `{ email, trial?: false }` + header `x-dev-login-secret`. Dev only. |
+| POST | `/auth/dev-login` | secret | `{ email, trial?: false, redirect? }` + header `x-dev-login-secret`. Dev only; 404 on production deployments. |
+| GET | `/auth/purge` | cron secret | Daily (vercel.json): expired sign-in codes, old rate-limit rows. |
+| GET | `/v1/account/export` | Bearer or cookie | Everything the cloud holds about the user (profile, plan + usage, grants, usage rows, waitlist row, devices). `?download=1` → attachment. 401 after deletion. |
+| DELETE | `/v1/account` | Bearer or cookie | → 204. Cancels Stripe (fail-closed), deletes usage, grants, pending codes, waitlist row, profile, then the auth user. |
+| GET | `/account` | cookie | The web portal (`/account/billing`, `/account/signout`, `/account/refresh` back it). |
 | POST | `/billing/checkout` | Bearer | `{ plan: "pro"\|"pro_recall", interval: "month"\|"year" }` → `{ url }` |
 | POST | `/billing/portal` | Bearer | → `{ url }` (400 `no_customer` before the first purchase) |
 | POST | `/billing/webhook` | Stripe sig | `checkout.session.completed`, `customer.subscription.{created,updated,deleted}`, `invoice.payment_failed` |
@@ -107,7 +116,8 @@ Manual grants (comps, beta testers) go in the `entitlements` table and are OR-ed
 | `entitlements(user_id, key, granted_by, expires_at)` | Manual grants on top of the tier. |
 | `usage(user_id, feature, run_id, day, month, cost_usd)` | PK `(user_id, feature, run_id)` — one row per run. |
 | `waitlist(email, source, note, created_at)` | Deduped on email. |
-| `auth_codes(code, access_token, refresh_token, token_expires_at, expires_at)` | Single-use, 5-min TTL; `purge_expired_auth_codes()` for cron. |
+| `auth_codes(code, user_id, access_token, refresh_token, token_expires_at, expires_at)` | Single-use, 5-min TTL; purged daily by `navi_purge()`. |
+| `rate_limits(bucket, window_start, window_end, count)` | `0003_account.sql`; one row per limiter key per window. |
 
 RLS is on for all five; users can `select` their own profile/entitlements/usage; everything
 else is service-role only. `add_usage_cost()` is a `security definer` RPC.
@@ -166,10 +176,14 @@ GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET            (optional)
 Do **not** set `DEV_LOGIN_SECRET`, `MOCK_UPSTREAM` or `DB_DRIVER` on production.
 `/v1/claude` declares `maxDuration = 300` for long streamed agent turns (Vercel Pro).
 
-**Production swap before launch:** `lib/ratelimit.ts` is an in-process fixed window
-(120 req/min per user on `/v1/*`, 30/min per IP on `/auth/*`, 10/min on `/waitlist`). On Vercel
-each instance has its own memory, so replace `hit()` with Vercel KV / Upstash `INCR`+`EXPIRE`;
-the call sites do not change.
+**Rate limits** (`lib/ratelimit.ts`): 120 req/min per user on `/v1/*`, 30/min per IP on `/auth/*`,
+10/min on `/waitlist`, 5 sign-in emails + 10 code tries per address per 15 min. With Supabase
+configured they are global (a `rate_limits` row per window, incremented by the atomic
+`rate_limit_hit` RPC from `0003_account.sql`); without it, in process memory. The Postgres path
+fails open onto memory if the database errors.
+
+**The full go-live runbook — every env var, Supabase auth + email template, Google/Apple, Stripe,
+domain, smoke, data inventory — is [`DEPLOY.md`](DEPLOY.md).**
 
 ## Smoke walkthrough — `scripts/smoke.sh`
 
