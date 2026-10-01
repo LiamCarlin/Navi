@@ -67,7 +67,7 @@ enum NativeBrowser {
                 _ = try await NSWorkspace.shared.open([target], withApplicationAt: app, configuration: config)
                 return true
             } catch {
-                Log.agent.warning("open \(url, privacy: .public) in \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.agent.warning("open \(url, privacy: .private) in \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         return NSWorkspace.shared.open(target)

@@ -198,14 +198,90 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     }
 
     private func prune() async {
-        guard let stack = await MainActor.run(body: { stack }) else { return }
-        let days = await MainActor.run { max(1, NaviSettings.shared.memoryRetentionDays) }
+        // Tests run hosted inside Navi.app: never prune the tester's real memory from a test run.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        await applyRetention()
+    }
+
+    // MARK: Privacy (Settings → Privacy & Data)
+
+    /// "Keep screen memory for N days": frames, sessions, thumbnails and — unless the user
+    /// turned it off — the journal notes Navi wrote for them. 0 days = forever. Runs daily
+    /// (`PrivacyMaintenance`) whether or not capture is on; never creates a database.
+    @discardableResult
+    func applyRetention(now: Date = Date()) async -> MemoryStore.PruneResult {
+        let (days, includeVault) = await MainActor.run {
+            (NaviSettings.shared.memoryRetentionDays, NaviSettings.shared.memoryRetentionIncludesVault)
+        }
+        guard days > 0 else { return .init() }
+        guard let stack = await MainActor.run(body: { existingStack() }) else { return .init() }
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
         do {
-            let n = try stack.store.pruneOlderThan(days: days)
-            if n > 0 { Log.memory.info("Pruned \(n) frames older than \(days) days") }
+            let result = try stack.store.prune(before: cutoff)
+            var notes = 0
+            if includeVault {
+                notes = VaultCleanup(root: stack.vault.root).prune(sessionNotePaths: result.sessionNotePaths, before: cutoff).notesDeleted
+            }
+            if result.frames + result.sessions + notes > 0 {
+                Log.memory.info("Retention (\(days) days): removed \(result.frames) frames, \(result.sessions) sessions, \(notes) notes")
+                await MainActor.run { refreshCounts() }
+            }
+            return result
         } catch {
             Log.memory.error("Prune failed: \(error.localizedDescription)")
+            return .init()
         }
+    }
+
+    struct EraseReport: Sendable, Equatable {
+        var frames = 0
+        var sessions = 0
+        var vault = VaultCleanup.Report()
+    }
+
+    /// "Delete everything Navi has stored", memory part: every frame, session, thumbnail and
+    /// every journal note Navi wrote (never the user's own notes). Capture pauses for the
+    /// erase and carries on afterwards, so Recall keeps working from an empty memory.
+    func eraseAll() async throws -> EraseReport {
+        let (open, wasRunning, vaultRoot, dir) = await MainActor.run { () -> (Stack?, Bool, URL, URL) in
+            let running = status.isRunning
+            self.stack?.scheduler.stop()
+            return (existingStack(), running, Self.vaultRoot(), NaviSettings.dataDirectory)
+        }
+        let stack = open
+        var report = EraseReport()
+        if let stack {
+            let r = try stack.store.deleteAll()
+            report.frames = r.frames; report.sessions = r.sessions
+        } else {
+            // Never opened this launch: remove the files directly (no open connection to them).
+            let fm = FileManager.default
+            for name in ["memory.sqlite", "memory.sqlite-wal", "memory.sqlite-shm", "frames"] {
+                try? fm.removeItem(at: dir.appendingPathComponent(name))
+            }
+        }
+        report.vault = VaultCleanup(root: stack?.vault.root ?? vaultRoot).deleteAllNaviNotes()
+        UserKnowledge.current?.invalidate()
+        await MainActor.run {
+            if wasRunning { stack?.scheduler.start() }
+            status.framesToday = 0
+            refreshCounts()
+        }
+        Log.memory.info("Erased screen memory: \(report.frames) frames, \(report.sessions) sessions, \(report.vault.notesDeleted) notes")
+        return report
+    }
+
+    /// The open stack, or one opened only when a memory database already exists on disk.
+    @MainActor private func existingStack() -> Stack? {
+        if let stack { return stack }
+        let db = NaviSettings.dataDirectory.appendingPathComponent("memory.sqlite")
+        guard FileManager.default.fileExists(atPath: db.path) else { return nil }
+        return ensureStack()
+    }
+
+    @MainActor static func vaultRoot() -> URL {
+        let path = NaviSettings.shared.memoryVaultPath
+        return URL(fileURLWithPath: path.isEmpty ? NaviSettings.defaultVaultPath : path, isDirectory: true)
     }
 
     @MainActor private func refreshCounts() {

@@ -18,6 +18,9 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if let notice = account.homeNotice {
+                    NoticeBanner(notice: notice, account: account)
+                }
                 hero
                 PlanCard()
                 VStack(alignment: .leading, spacing: 10) {
@@ -143,7 +146,7 @@ struct HomeView: View {
 
     private var readyLine: String {
         var issues = 0
-        if !(account.isSignedIn || account.hasDeveloperKeys) { issues += 1 }
+        if !(account.isSignedIn || account.hasDeveloperKeys) || account.isAccountDisabled || account.isUpdateRequired { issues += 1 }
         if perms.accessibility != .granted { issues += 1 }
         if perms.screenRecording != .granted { issues += 1 }
         if spotlightLoaded && spotlight.conflict { issues += 1 }
@@ -227,19 +230,15 @@ struct PlanCard: View {
                     Text("Your own keys are in use. Sign in to use a Navi plan instead.").font(.callout).foregroundStyle(.secondary)
                 } else {
                     Text("Sign in to Navi").font(.title3.weight(.semibold))
-                    Text("One account, one subscription, no API keys. 7-day free trial of Pro.").font(.callout).foregroundStyle(.secondary)
+                    Text("Answers, tasks and voice control need an account; apps, files and math work without one. 7-day free trial of Pro.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()
             if account.isSignedIn {
                 Button("Manage") { nav.go(.account) }.buttonStyle(.bordered)
             } else {
-                Button {
-                    account.signIn()
-                } label: {
-                    Label("Sign in with your browser", systemImage: "safari").padding(.horizontal, 4)
-                }
-                .buttonStyle(.glassProminent)
+                SignInButton(account: account, large: false)
             }
         }
         .padding(18)
@@ -250,5 +249,53 @@ struct PlanCard: View {
         var parts = [account.answersLine, account.tasksLine]
         if account.entitlements.recall { parts.append("Recall on") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The account's banner on Home: an operator notice (dismissible, remembered
+/// by id), "Update Navi", or "account disabled".
+struct NoticeBanner: View {
+    let notice: AccountNotice
+    @ObservedObject var account: NaviAccount
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 18, weight: .semibold)).foregroundStyle(tint)
+            Text(notice.message).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if let title = notice.actionTitle {
+                Button(title) { account.perform(notice) }
+                    .buttonStyle(.borderedProminent).tint(notice.level == .info ? .accentColor : tint)
+            }
+            Button {
+                withAnimation(.spring(duration: 0.3)) { account.dismiss(notice) }
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.primary.opacity(0.07)))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(tint.opacity(0.25)))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var tint: Color {
+        switch notice.level {
+        case .info: return .accentColor
+        case .warning: return .orange
+        case .critical: return .red
+        }
+    }
+
+    private var symbol: String {
+        switch notice.kind {
+        case .updateRequired: return "arrow.down.circle.fill"
+        case .accountDisabled: return "person.crop.circle.badge.exclamationmark"
+        case .config: return notice.level == .info ? "info.circle.fill" : "exclamationmark.triangle.fill"
+        }
     }
 }

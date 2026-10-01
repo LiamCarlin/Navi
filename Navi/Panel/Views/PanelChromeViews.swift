@@ -126,18 +126,30 @@ struct ToastView: View {
 /// Error banner with a dismiss button; part of the flow so the card grows.
 struct ErrorBanner: View {
     let message: String
+    /// The fix for an account error ("Sign in", "Upgrade", "Update", "Contact support").
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+    var symbol: String = "exclamationmark.triangle.fill"
+    var tint: Color = .red
     let dismiss: () -> Void
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(tint)
             Text(message)
                 .font(.system(size: 12))
                 .foregroundStyle(.primary.opacity(0.85))
                 .lineLimit(3)
                 .textSelection(.enabled)
             Spacer(minLength: 8)
+            if let actionTitle, !actionTitle.isEmpty, let action {
+                Button(action: action) {
+                    Text(actionTitle).font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
             Button(action: dismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
@@ -150,9 +162,23 @@ struct ErrorBanner: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.red.opacity(0.09)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.red.opacity(0.2)))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tint.opacity(0.2)))
         .padding(.horizontal, PanelStyle.listPad)
         .padding(.vertical, 8)
+    }
+}
+
+/// The account's critical banner in the panel (update required, account
+/// disabled, an operator's critical notice). Same shape as `ErrorBanner`.
+struct AccountNoticeBanner: View {
+    let notice: AccountNotice
+    @ObservedObject var account: NaviAccount
+    var body: some View {
+        ErrorBanner(message: notice.message,
+                    actionTitle: notice.actionTitle,
+                    action: { account.perform(notice) },
+                    symbol: notice.kind == .accountDisabled ? "person.crop.circle.badge.exclamationmark" : "exclamationmark.circle.fill",
+                    tint: .orange) { account.dismiss(notice) }
     }
 }

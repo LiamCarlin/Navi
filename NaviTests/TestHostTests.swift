@@ -45,6 +45,8 @@ extension Trait where Self == ConditionTrait {
         #expect(NaviSettings.shared.memoryVaultPath.hasPrefix(TestHost.scratchDirectory.path))
         #expect(!NaviSettings.shared.memoryVaultPath.hasPrefix(NSString(string: "~/Navi Vault").expandingTildeInPath))
         #expect(AgentExperience.defaultFileURL.standardizedFileURL.path.hasPrefix(scratch))
+        #expect(TaskLogs.directory.standardizedFileURL.path.hasPrefix(scratch))
+        #expect(MemoryService.vaultRoot().path.hasPrefix(TestHost.scratchDirectory.path))
         // A write lands in the suite, not in com.liamcarlin.navi.
         let key = "testHostProbe.\(UUID().uuidString)"
         UserDefaults.navi.set(true, forKey: key)
