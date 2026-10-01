@@ -27,6 +27,8 @@ export interface Overview {
   mrrUsd: number;
   cost30dUsd: number;
   costTodayUsd: number;
+  /** Since the 1st of this month (UTC). */
+  costMtdUsd: number;
   waitlist: number;
   days: DayPoint[];
 }
@@ -107,6 +109,7 @@ export function computeOverview(input: {
     mrrUsd: mrr,
     cost30dUsd: days.reduce((s, d) => s + d.costUsd, 0),
     costTodayUsd: usageByDay.get(today)?.costUsd ?? 0,
+    costMtdUsd: usageDaily.filter((d) => d.day >= `${today.slice(0, 8)}01` && d.day <= today).reduce((s, d) => s + d.costUsd, 0),
     waitlist: input.waitlist,
     days,
   };
@@ -115,7 +118,8 @@ export function computeOverview(input: {
 export async function loadOverview(db: Db, now = new Date()): Promise<Overview> {
   const [profiles, usageDaily, active1d, active7d, waitlist] = await Promise.all([
     db.adminAllProfiles(),
-    db.adminUsageDaily(daysBack(now, 29)),
+    // 30 days, or back to the 1st when the month is 31 days long.
+    db.adminUsageDaily(daysBack(now, Math.max(29, now.getUTCDate() - 1))),
     db.adminActiveUsers(dayKey(now)),
     db.adminActiveUsers(daysBack(now, 6)),
     db.adminCountWaitlist(),

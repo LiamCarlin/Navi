@@ -248,9 +248,9 @@ it server-side and answers **404** to anyone else.
 
 | Page | What it does |
 |---|---|
-| Overview | Signups today/7d/30d, active users today/7d, tier mix (as served), trials running, paying subs + MRR estimate (paying = `active`/`past_due` × monthly list price), vendor cost per day vs revenue run-rate (inline SVG), waitlist size. |
+| Overview | Signups today/7d/30d, active users today/7d, tier mix (as served), trials running, paying subs, waitlist size. **Money** (`lib/admin/spend.ts`): revenue collected (Stripe balance transactions: charges − refunds) and MRR from live Stripe subscriptions (falls back to profiles × list price without Stripe); spend = AI vendors (the proxy's metering) + Vercel (`/v1/billing/charges`, FOCUS) + Supabase (plan + compute + add-ons from the Management API — an estimate, usage overages excluded); profit after Stripe fees. Today / this month / 30 days, spend per day stacked by source vs revenue run-rate. Each source is cached 10 min per instance (`?refresh=1` refetches) and fails on its own. |
 | Users | Search by email/id. Detail: profile, served tier, trial, Stripe customer (dashboard link) + status, entitlement grants, quota now, usage by feature with cost to date. Actions: tier override, grant/revoke entitlement with expiry, extend trial, reset today's quota / this month's tasks, disable/enable (→ 403 `account_disabled`), sign out all sessions (revokes refresh tokens; access tokens live out ≤ 1 h), delete (retype the email; cascades). |
-| Keys | TypeSafe, Anthropic, Gemini, AI Gateway: source (database / env / none), masked last 4, last rotated, last used, last test. **Test** makes the cheapest real call (Anthropic/Gemini model list, one Jev noul) and shows OK/latency/error. **Store/Rotate** encrypts with AES-256-GCM (`NAVI_KEYS_SECRET`; refuses without it). **Remove** falls back to the env var. `lib/keys.ts` `getVendorKey()` = database key (60 s in-process cache) then env — what the proxy uses. |
+| Keys | TypeSafe, Anthropic, Gemini, AI Gateway — plus the Overview's billing tokens, Vercel (`VERCEL_API_TOKEN`; team = `VERCEL_TEAM_ID`, else the token's team) and Supabase (`SUPABASE_ACCESS_TOKEN`, a personal access token), stored the same way (migration `0004_billing_keys.sql`): source (database / env / none), masked last 4, last rotated, last used, last test. **Test** makes the cheapest real call (Anthropic/Gemini model list, one Jev noul) and shows OK/latency/error. **Store/Rotate** encrypts with AES-256-GCM (`NAVI_KEYS_SECRET`; refuses without it). **Remove** falls back to the env var. `lib/keys.ts` `getVendorKey()` = database key (60 s in-process cache) then env — what the proxy uses. |
 | Product config | Kill switches (answers, tasks, voice, recall), in-app notice, `minAppVersion` / `latestVersion` / `downloadURL`, per-tier quota overrides, model per feature (answer / task / digest; empty = pass the app's `model` through), admins. `app_config` row `product`, cached 30 s per instance. |
 | Waitlist | Search, CSV export (formula-safe), Invite (Supabase invite email → `downloadURL`) / Mark invited. |
 | Audit log | Every admin action: actor, action, target, metadata (`admin_audit`). |
@@ -309,6 +309,7 @@ lib/admin/      console auth (cookie, guard), ops (+ audit), overview stats, Jev
 app/admin/      the console (pages, server actions, /admin/auth/*)
 supabase/migrations/0001_init.sql   schema + RLS + trigger + RPCs
 supabase/migrations/0002_admin.sql  admin console tables + aggregates
+supabase/migrations/0004_billing_keys.sql  vendor_keys accepts the Vercel / Supabase billing tokens
 scripts/smoke.sh                    the curl walkthrough
 tests/                              vitest
 ```

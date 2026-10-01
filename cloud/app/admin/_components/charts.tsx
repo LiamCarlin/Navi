@@ -33,7 +33,7 @@ function Axis({ max, h, W, fmt }: { max: number; h: number; W: number; fmt: (n: 
   );
 }
 
-function XLabels({ days, h, W }: { days: DayPoint[]; h: number; W: number }) {
+function XLabels({ days, h, W }: { days: { day: string }[]; h: number; W: number }) {
   const step = (W - PAD.l - PAD.r) / days.length;
   return (
     <g>
@@ -46,32 +46,54 @@ function XLabels({ days, h, W }: { days: DayPoint[]; h: number; W: number }) {
   );
 }
 
-/** Daily vendor cost (bars) against revenue run-rate (line), both USD/day on one axis. */
-export function CostRevenueChart({ days }: { days: DayPoint[] }) {
+export interface MoneyDay { day: string; aiUsd: number; vercelUsd: number; supabaseUsd: number; revenueRunRateUsd: number }
+
+const COST_SERIES = [
+  { k: "aiUsd", label: "AI vendors", color: "var(--series-2)" },
+  { k: "supabaseUsd", label: "Supabase", color: "var(--series-3)" },
+  { k: "vercelUsd", label: "Vercel", color: "var(--series-4)" },
+] as const;
+
+/** Daily spend stacked by source (bars) against the revenue run-rate (line), USD/day on one axis. */
+export function CostRevenueChart({ days, revenueLabel }: { days: MoneyDay[]; revenueLabel: string }) {
   const W = 1000;
   const h = 240;
-  const max = niceMax(Math.max(...days.map((d) => Math.max(d.costUsd, d.revenueUsd)), 0.0001) * 1.1);
+  const total = (d: MoneyDay) => d.aiUsd + d.vercelUsd + d.supabaseUsd;
+  const max = niceMax(Math.max(...days.map((d) => Math.max(total(d), d.revenueRunRateUsd)), 0.0001) * 1.1);
   const plotH = h - PAD.t - PAD.b;
   const step = (W - PAD.l - PAD.r) / days.length;
   const barW = Math.max(2, step - 2);
   const y = (v: number) => PAD.t + plotH * (1 - v / max);
-  const line = days.map((d, i) => `${i ? "L" : "M"}${(PAD.l + step * (i + 0.5)).toFixed(1)},${y(d.revenueUsd).toFixed(1)}`).join(" ");
+  const line = days.map((d, i) => `${i ? "L" : "M"}${(PAD.l + step * (i + 0.5)).toFixed(1)},${y(d.revenueRunRateUsd).toFixed(1)}`).join(" ");
   return (
     <div>
       <div className={s.legend}>
-        <span><span className={s.swatch} style={{ background: "var(--series-2)" }} />Vendor cost / day</span>
-        <span><span className={s.swatchLine} style={{ background: "var(--series-1)" }} />Revenue / day (MRR run-rate)</span>
+        {COST_SERIES.map((c) => (
+          <span key={c.k}><span className={s.swatch} style={{ background: c.color }} />{c.label}</span>
+        ))}
+        <span><span className={s.swatchLine} style={{ background: "var(--series-1)" }} />{revenueLabel}</span>
       </div>
-      <svg className={s.chart} viewBox={`0 0 ${W} ${h}`} role="img" aria-label="Vendor cost per day versus revenue per day, last 30 days">
+      <svg className={s.chart} viewBox={`0 0 ${W} ${h}`} role="img" aria-label="Spend per day by source versus revenue per day, last 30 days">
         <Axis max={max} h={h} W={W} fmt={(n) => usd(n, max >= 10 ? 0 : 2)} />
         {days.map((d, i) => {
           const x = PAD.l + step * i + 1;
-          const top = y(d.costUsd);
+          let base = 0;
+          let drawn = 0;
           return (
             <g key={d.day} className={s.bar}>
-              {d.costUsd > 0 && <rect x={x} y={top} width={barW} height={Math.max(1, PAD.t + plotH - top)} rx={2} fill="var(--series-2)" />}
+              {COST_SERIES.map((c) => {
+                const v = d[c.k];
+                if (!(v > 0)) return null;
+                const bottom = y(base);
+                base += v;
+                const top = y(base);
+                // 2px surface gap between stacked segments.
+                const gap = drawn++ > 0 ? 2 : 0;
+                const height = Math.max(1, bottom - top - gap);
+                return <rect key={c.k} x={x} y={top} width={barW} height={height} rx={2} fill={c.color} />;
+              })}
               <rect x={PAD.l + step * i} y={PAD.t} width={step} height={plotH} fill="transparent">
-                <title>{`${d.day}\nCost ${usd(d.costUsd)} · revenue ${usd(d.revenueUsd)}\n${d.runs} runs · ${d.activeUsers} active users`}</title>
+                <title>{`${d.day}\nAI ${usd(d.aiUsd, 2)} · Supabase ${usd(d.supabaseUsd, 2)} · Vercel ${usd(d.vercelUsd, 2)}\nSpend ${usd(total(d), 2)} · revenue ${usd(d.revenueRunRateUsd, 2)}/day`}</title>
               </rect>
             </g>
           );

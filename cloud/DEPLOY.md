@@ -30,6 +30,8 @@ applies on top of that table without touching its rows, and can be re-run safely
    2. `supabase/migrations/0002_*.sql` — the admin back end's migration (if present on `main`).
    3. `supabase/migrations/0003_account.sql` — `rate_limits` + `rate_limit_hit()`,
       `auth_codes.user_id`, `account_sessions()`, `navi_purge()`.
+   4. `supabase/migrations/0004_billing_keys.sql` — lets the Keys page store the Vercel and
+      Supabase billing tokens the Overview's Money section reads.
 
    (Alternative: `supabase link --project-ref oqvuejmxkkfaogelwraz && supabase db push` from
    `cloud/`. Either works; don't mix them on the same day.)
@@ -159,7 +161,8 @@ Start in **test mode**; repeat in live mode at launch.
    and $288/year. Copy the four price IDs into `STRIPE_PRICE_PRO_MONTH`, `STRIPE_PRICE_PRO_YEAR`,
    `STRIPE_PRICE_PRO_RECALL_MONTH`, `STRIPE_PRICE_PRO_RECALL_YEAR`.
 2. Developers → API keys → secret key → `STRIPE_SECRET_KEY` (a restricted key works: write on
-   Checkout Sessions, Customers, Subscriptions, Customer portal).
+   Checkout Sessions, Customers, Subscriptions, Customer portal; read on Balance for the admin
+   Overview's revenue).
 3. Developers → Webhooks → Add endpoint `https://<cloud>/billing/webhook`, events
    `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
    `customer.subscription.deleted`, `invoice.payment_failed` → signing secret →
