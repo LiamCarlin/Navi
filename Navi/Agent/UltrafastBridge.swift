@@ -36,6 +36,12 @@ enum UltrafastBridge {
         return nil
     }
 
+    /// A runtime whose interpreter exists (cheap: one file check; no doctor script).
+    static var isRuntimeInstalled: Bool {
+        guard let rt = runtime else { return false }
+        return FileManager.default.isExecutableFile(atPath: rt.python.path)
+    }
+
     /// `Navi.app/Contents/Resources/browser-runtime/python-<arch>` (see scripts/bundle-runtime.sh).
     static var bundledRuntime: Runtime? {
         guard let res = Bundle.main.resourceURL else { return nil }
@@ -189,31 +195,129 @@ enum UltrafastBridge {
         }
     }
 
+    // MARK: Credentials
+
+    /// How the runner reaches the decision model and the text writer.
+    ///
+    /// A signed-in user has no vendor keys: the runner gets the Navi Cloud base URL and
+    /// the account's short-lived access token, and sends `X-Navi-Feature` / `X-Navi-Run`
+    /// so every browser step is metered as part of the task that started it (one usage
+    /// unit per run). The refresh token never leaves the app. Bring-your-own-key
+    /// transports stay for Developer mode.
+    enum RunnerCredentials: Equatable {
+        case cloud(baseURL: URL, token: String, feature: CloudFeature, runID: UUID)
+        case typesafe(key: String, anthropicKey: String?)
+        case vercelGateway(key: String, anthropicKey: String?)
+    }
+
+    /// Variables that pick or authenticate the runner's transport. All are cleared before
+    /// the credentials' own are set: a key exported in a developer's shell must not bypass
+    /// the account's meter, and a stale cloud token must not ride into a BYOK run.
+    static let cloudVariables = ["NAVI_CLOUD_URL", "NAVI_CLOUD_TOKEN", "NAVI_CLOUD_FEATURE", "NAVI_CLOUD_RUN"]
+    static let vendorVariables = ["TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                                  "TEXT_MODEL_API_KEY", "TEXT_MODEL_BASE_URL", "TEXT_MODEL"]
+
+    /// `base` with exactly the transport `credentials` describe (pure; unit-tested).
+    /// Developer mode keeps `ANTHROPIC_BASE_URL` and the upstream `TEXT_MODEL_*` helper
+    /// variables from the shell, as before.
+    static func applying(_ credentials: RunnerCredentials, to base: [String: String]) -> [String: String] {
+        var env = base
+        for k in cloudVariables + ["NAVI_JEV_TRANSPORT"] { env.removeValue(forKey: k) }
+        switch credentials {
+        case .cloud(let url, let token, let feature, let runID):
+            for k in vendorVariables { env.removeValue(forKey: k) }
+            var s = url.absoluteString
+            while s.hasSuffix("/") { s.removeLast() }
+            env["NAVI_JEV_TRANSPORT"] = "navi"
+            env["NAVI_CLOUD_URL"] = s
+            env["NAVI_CLOUD_TOKEN"] = token
+            env["NAVI_CLOUD_FEATURE"] = feature.rawValue
+            env["NAVI_CLOUD_RUN"] = runID.uuidString.lowercased()     // as CloudTransport sends it
+        case .typesafe(let key, let anthropic):
+            env.removeValue(forKey: "AI_GATEWAY_API_KEY")
+            env["TYPESAFE_API_KEY"] = key
+            if let anthropic, !anthropic.isEmpty { env["ANTHROPIC_API_KEY"] = anthropic }
+        case .vercelGateway(let key, let anthropic):
+            env.removeValue(forKey: "TYPESAFE_API_KEY")
+            env["AI_GATEWAY_API_KEY"] = key
+            env["NAVI_JEV_TRANSPORT"] = "vercel"
+            if let anthropic, !anthropic.isEmpty { env["ANTHROPIC_API_KEY"] = anthropic }
+        }
+        return env
+    }
+
+    /// Tokens live an hour and the runner cannot refresh one (it never sees the refresh
+    /// token), so it is handed one that outlives any browser run.
+    static let minimumTokenLifetime: TimeInterval = 20 * 60
+
+    /// The credentials for a run: the account when Navi Cloud is active (the same rule
+    /// every client follows), else the developer's own keys; nil when there are neither.
+    static func credentials(for run: CloudRun, cloud: CloudTransport = .shared) async -> RunnerCredentials? {
+        if cloud.isActive {
+            guard let token = await accessToken(cloud, validFor: minimumTokenLifetime) else { return nil }
+            return .cloud(baseURL: cloud.baseURL, token: token, feature: run.feature, runID: run.runID)
+        }
+        let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
+        switch JevClient.resolveTransport(preference: pref) {
+        case .typesafe:
+            guard let key = Keychain.get(.typesafe), !key.isEmpty else { return nil }
+            return .typesafe(key: key, anthropicKey: Keychain.get(.anthropic))
+        case .vercelGateway:
+            guard let key = Keychain.get(.vercelGateway), !key.isEmpty else { return nil }
+            return .vercelGateway(key: key, anthropicKey: Keychain.get(.anthropic))
+        case .navi, nil:
+            return nil
+        }
+    }
+
+    /// True when a token expiring at `expiresAt` would lapse within `lifetime`. An unknown
+    /// expiry is trusted (the proxy's 401 is the backstop).
+    static func needsRefresh(expiresAt: Date?, validFor lifetime: TimeInterval, now: Date = Date()) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt.timeIntervalSince(now) < lifetime
+    }
+
+    /// The account's access token, refreshed first when it would lapse during a run.
+    ///
+    /// Integration hook (account workstream): `CloudTransport`'s single-flight refresher is
+    /// private, so this mirrors its `/auth/refresh` call. The app's own proactive refresh only
+    /// fires in a token's last 30 s, so the two do not overlap in practice; a public
+    /// `CloudTransport.accessToken(validFor:)` would make this a one-liner.
+    static func accessToken(_ cloud: CloudTransport, validFor lifetime: TimeInterval, now: Date = Date()) async -> String? {
+        let current = cloud.tokens.accessToken.flatMap { $0.isEmpty ? nil : $0 }
+        let expires = cloud.tokens.accessExpiresAt
+        if let current, !needsRefresh(expiresAt: expires, validFor: lifetime, now: now) { return current }
+        if let refresh = cloud.tokens.refreshToken, !refresh.isEmpty {
+            do {
+                let (data, _) = try await cloud.post(path: "/auth/refresh", json: ["refreshToken": refresh])
+                let t = try CloudTransport.decodeTokens(data)
+                cloud.tokens.store(access: t.accessToken, refresh: t.refreshToken ?? refresh, expiresAt: t.expiresAt)
+                Log.agent.info("browser runner: refreshed the session before the run")
+                return t.accessToken
+            } catch {
+                Log.agent.error("browser runner: session refresh failed: \(error.localizedDescription, privacy: .public)")
+                // Only an auth failure ends the session; a network blip keeps the tokens.
+                if case NaviError.signedOut = error { await cloud.signOutLocally(); return nil }
+                if case NaviError.http(let s, _) = error, (400..<500).contains(s) { await cloud.signOutLocally(); return nil }
+            }
+        }
+        // Refresh unavailable: a token that is still valid beats none.
+        if let current, (expires.map { $0 > now } ?? true) { return current }
+        return nil
+    }
+
     // MARK: Run
 
-    /// Environment for the runner: Jev transport + keys, text-helper key.
-    static func environment() -> [String: String]? {
+    /// Environment for the runner: transport + credentials, models, playbooks, runtime paths.
+    static func environment(credentials: RunnerCredentials) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONUNBUFFERED"] = "1"
         env["TYPESAFE_MODEL"] = UserDefaults.standard.string(forKey: "jevModel") ?? "jev-latest"
-        let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
-        switch JevClient.resolveTransport(preference: pref) {
-        case .typesafe:
-            env["TYPESAFE_API_KEY"] = Keychain.get(.typesafe)
-            env.removeValue(forKey: "NAVI_JEV_TRANSPORT")
-        case .vercelGateway:
-            env["AI_GATEWAY_API_KEY"] = Keychain.get(.vercelGateway)
-            env["NAVI_JEV_TRANSPORT"] = "vercel"
-        case .navi, nil:
-            // Integration hook (account workstream): the Python runner still needs a vendor
-            // key of its own; the account transport does not reach it yet.
-            return nil
-        }
-        if let k = Keychain.get(.anthropic) { env["ANTHROPIC_API_KEY"] = k }
-        // Text helper for TYPE_TEXT: Claude Haiku on the Anthropic key. Developers can
-        // instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL / TEXT_MODEL (upstream's
-        // OpenAI-compatible helper) before launching Navi; those pass through untouched.
+        env = applying(credentials, to: env)
+        // Text helper for TYPE_TEXT: Claude Haiku (through the account, or on the developer's
+        // Anthropic key). Developers can instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL /
+        // TEXT_MODEL (upstream's OpenAI-compatible helper) before launching Navi.
         env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
         // Coach (Claude diagnoses a failing run once): the agent model from Settings.
         env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
@@ -233,6 +337,28 @@ enum UltrafastBridge {
         return env
     }
 
+    /// The runner's `error` event as the user should read it: the proxy's refusals
+    /// (`code` = quota_exceeded / not_entitled / signed_out) become Navi's own account errors.
+    static func runnerErrorMessage(_ json: [String: Any]) -> String {
+        let message = (json["message"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "The browser task stopped unexpectedly."
+        switch json["code"] as? String {
+        case "quota_exceeded":
+            let resets = (json["resetsAt"] as? String).flatMap { s -> Date? in
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+            }
+            return NaviError.quotaExceeded(feature: json["feature"] as? String ?? CloudFeature.task.rawValue,
+                                           tier: json["tier"] as? String ?? "", resetsAt: resets).localizedDescription
+        case "not_entitled":
+            return NaviError.notEntitled(feature: json["feature"] as? String ?? CloudFeature.task.rawValue,
+                                         tier: json["tier"] as? String ?? "").localizedDescription
+        case "signed_out":
+            return NaviError.signedOut.localizedDescription
+        default:
+            return message
+        }
+    }
     /// What happens to the runner's tab when the run ends (`NAVI_TAB_POLICY`).
     /// The tab is the deliverable of an effect task ("make a Google Doc"), so it
     /// stays open; in background mode it is also brought forward on completion
@@ -341,14 +467,23 @@ enum UltrafastBridge {
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
                         allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false,
                         attachURL: String? = nil) async -> (outcome: RunOutcome, text: String?) {
+        let developer = DeveloperMode.isEnabled
         guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else {
-            handle.emit(.failed("Browser runtime not installed. Navi → Settings → Agent → Install jev-ultrafast."))
+            // "runtime not installed" is what `NativeBrowser.isRunnerUnavailable` matches: the
+            // native driver then takes the step in the user's browser instead.
+            handle.emit(.failed(developer ? "Browser runtime not installed. Navi → Developer → Browser runtime → Install."
+                                          : "Browser runtime not installed — reinstall Navi to use Chrome for web tasks."))
             return (.failed, nil)
         }
-        guard var env = environment() else {
-            handle.emit(.failed(NaviError.missingAPIKey(.typesafe).localizedDescription))
+        // The task's run (ComputerAgent sets it for the whole task): browser steps are
+        // metered as part of it, not as runs of their own.
+        let run = CloudRun.resolve(fallback: .task)
+        guard let credentials = await credentials(for: run) else {
+            handle.emit(.failed(CloudTransport.shared.isActive ? NaviError.signedOut.localizedDescription
+                                                               : NaviError.missingAPIKey(.typesafe).localizedDescription))
             return (.failed, nil)
         }
+        var env = environment(credentials: credentials)
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
         // The people/projects/documents the task names, as the user's screen memory knows them.
@@ -375,7 +510,11 @@ enum UltrafastBridge {
         proc.standardOutput = out
         proc.standardError = err
 
-        handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(url)" + (attachURL != nil ? " (current tab)" : "")))
+        if developer {
+            let via: String
+            if case .cloud = credentials { via = "Navi Cloud" } else { via = "own keys" }
+            handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(via) · \(url)" + (attachURL != nil ? " (current tab)" : "")))
+        }
         do { try proc.run() } catch {
             handle.emit(.failed("Could not start runner: \(error.localizedDescription)"))
             return (.failed, nil)
@@ -387,7 +526,6 @@ enum UltrafastBridge {
         }
         var finished = false
         var stepIndex = 0
-        var lastDecision = ""
         // Keep the raw event stream of the last run for debugging (local only).
         let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
@@ -410,16 +548,21 @@ enum UltrafastBridge {
                 case "status":
                     handle.emit(.status(json["message"] as? String ?? ""))
                 case "guidance":
-                    handle.emit(.planned("Guidance for Jev:\n\(json["text"] as? String ?? "")"))
+                    // The coach's notes name element indexes: diagnostics, not a plan the user reads.
+                    handle.emit(developer ? .planned("Guidance for Jev:\n\(json["text"] as? String ?? "")")
+                                          : .status("Trying a different approach on this page"))
                 case "ready":
                     let n = json["elements"] as? Int ?? 0
-                    handle.emit(.status("Page ready · \(n) elements · \(json["title"] as? String ?? "")"))
+                    let title = json["title"] as? String ?? ""
+                    handle.emit(.status(developer ? "Page ready · \(n) elements · \(title)" : (title.isEmpty ? "Page ready" : "On “\(title)”")))
                 case "decision":
+                    // Per-decision model, probability and latency: developer mode only (the
+                    // overlay pill shows the latest status verbatim).
+                    guard developer else { break }
                     let op = json["operation"] as? String ?? "?"
                     let conf = Int(((json["confidence"] as? Double) ?? 0) * 100)
                     let ms = json["latency_ms"] as? Int ?? 0
-                    lastDecision = "Jev · \(op)\((json["target"] as? String).map { " [\($0)]" } ?? "") \(conf)% · \(ms) ms"
-                    handle.emit(.status(lastDecision))
+                    handle.emit(.status("Jev · \(op)\((json["target"] as? String).map { " [\($0)]" } ?? "") \(conf)% · \(ms) ms"))
                 case "step":
                     stepIndex += 1
                     let kind = (json["kind"] as? String ?? "").uppercased()
@@ -471,13 +614,14 @@ enum UltrafastBridge {
                             outcome = .blockedBeforeActing
                         } else {
                             outcome = .failed
-                            handle.emit(.failed("Blocked: \(summary)"))
+                            // The runner's summary already reads "Stopped: …" for users.
+                            handle.emit(.failed(developer ? "Blocked: \(summary)" : summary))
                         }
                     }
                 case "error":
                     finished = true
                     outcome = .failed
-                    handle.emit(.failed(json["message"] as? String ?? "Runner error"))
+                    handle.emit(.failed(runnerErrorMessage(json)))
                 default: break
                 }
             }

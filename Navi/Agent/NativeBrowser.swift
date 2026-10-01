@@ -41,8 +41,9 @@ enum NativeBrowser {
     static func runnerUsable(for bundleID: String) -> Bool {
         guard UserDefaults.standard.object(forKey: "ultrafastEnabled") as? Bool ?? true else { return false }
         guard AXSnapshotter.chromiumBundles.contains(bundleID) else { return false }
-        guard let vendor = UltrafastBridge.vendorDir else { return false }
-        return FileManager.default.isExecutableFile(atPath: vendor.appendingPathComponent(".venv/bin/python").path)
+        // The runtime bundled in Release builds, else the repo checkout's venv (Debug). Checking
+        // only the checkout meant an installed copy on a fresh Mac never used its own runtime.
+        return UltrafastBridge.isRuntimeInstalled
     }
 
     /// A runner failure that means "the runner isn't available", not "the task
