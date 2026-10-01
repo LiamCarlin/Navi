@@ -118,6 +118,8 @@ returns void language sql security definer set search_path = public as $$
 $$;
 
 revoke all on function public.add_usage_cost(uuid, text, text, numeric) from public, anon, authenticated;
+-- Explicit, rather than relying on Supabase's default privileges: the API calls it as service_role.
+grant execute on function public.add_usage_cost(uuid, text, text, numeric) to service_role;
 
 -- MARK: - waitlist ---------------------------------------------------------------
 -- Already exists on the production project (created by web/); the guards below only
@@ -177,3 +179,4 @@ begin
 end $$;
 
 revoke all on function public.purge_expired_auth_codes() from public, anon, authenticated;
+grant execute on function public.purge_expired_auth_codes() to service_role;

@@ -47,17 +47,21 @@ create index if not exists auth_codes_user_idx on public.auth_codes (user_id);
 -- auth.sessions is not exposed over the API. /account lists a user's sessions (one per
 -- signed-in Mac or browser) through this RPC: ids and timestamps only.
 
+-- plpgsql (not sql) so the body is only checked when called: if a future auth schema renames a
+-- column, the migration still applies and /account just shows no device list.
 create or replace function public.account_sessions(p_user_id uuid)
 returns table (id uuid, created_at timestamptz, last_active_at timestamptz)
-language sql stable security definer set search_path = auth, public as $$
-  select s.id,
-         s.created_at,
-         greatest(s.created_at, s.updated_at, s.refreshed_at::timestamptz) as last_active_at
-    from auth.sessions s
-   where s.user_id = p_user_id
-     and (s.not_after is null or s.not_after > now())
-   order by 3 desc nulls last;
-$$;
+language plpgsql stable security definer set search_path = auth, public as $$
+begin
+  return query
+    select s.id,
+           s.created_at,
+           greatest(s.created_at, s.updated_at, s.refreshed_at::timestamptz) as last_active_at
+      from auth.sessions s
+     where s.user_id = p_user_id
+       and (s.not_after is null or s.not_after > now())
+     order by 3 desc nulls last;
+end $$;
 
 revoke all on function public.account_sessions(uuid) from public, anon, authenticated;
 grant execute on function public.account_sessions(uuid) to service_role;
