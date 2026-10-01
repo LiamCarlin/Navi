@@ -168,7 +168,7 @@ export function createSupabaseAuthBackend(): AuthBackend {
       },
     });
 
-  let providerCache: { at: number; list: OAuthProvider[] } | undefined;
+  let providerCache: { until: number; list: OAuthProvider[] } | undefined;
 
   return {
     kind: "supabase",
@@ -215,17 +215,28 @@ export function createSupabaseAuthBackend(): AuthBackend {
     async providers() {
       const forced = env.authProviders;
       if (forced) return OAUTH_PROVIDERS.filter((p) => forced.includes(p));
-      if (providerCache && Date.now() - providerCache.at < 5 * 60_000) return providerCache.list;
+      if (providerCache && Date.now() < providerCache.until) return providerCache.list;
       let list: OAuthProvider[];
+      let ttl = 5 * 60_000;
       try {
-        // Public endpoint: which external providers are switched on in the dashboard.
-        const res = await fetch(`${url.replace(/\/+$/, "")}/auth/v1/settings`, { headers: { apikey: anon }, signal: AbortSignal.timeout(2000) });
+        // Public endpoint: which external providers are switched on in the dashboard. Never let
+        // Next's fetch cache keep an old answer (pages render this; switching a provider on in
+        // the dashboard must show its button within the TTL below).
+        const res = await fetch(`${url.replace(/\/+$/, "")}/auth/v1/settings`, {
+          headers: { apikey: anon },
+          cache: "no-store",
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!res.ok) throw new Error(`auth settings ${res.status}`);
         const external = ((await res.json()) as { external?: Record<string, boolean> }).external ?? {};
         list = OAUTH_PROVIDERS.filter((p) => external[p] === true);
-      } catch {
+      } catch (e) {
+        // A blip shouldn't hide the buttons for five minutes: retry soon.
+        console.warn("[navi-cloud] provider list unavailable:", (e as Error).message);
         list = env.googleConfigured ? ["google"] : [];
+        ttl = 30_000;
       }
-      providerCache = { at: Date.now(), list };
+      providerCache = { until: Date.now() + ttl, list };
       return list;
     },
   };
