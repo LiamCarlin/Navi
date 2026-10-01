@@ -166,7 +166,7 @@ struct VoiceIslandView: View {
 
     private var secondaryLine: String? {
         if let a = session.activity {
-            var s = a.detail ?? (a.isAnswer ? "" : "Jev is deciding each step")
+            var s = a.detail ?? (a.isAnswer ? "" : "Working on it")
             if session.queueCount > 0 { s = (s.isEmpty ? "" : s + " · ") + "\(session.queueCount) more queued" }
             return s
         }
