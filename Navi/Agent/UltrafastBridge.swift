@@ -456,7 +456,7 @@ enum UltrafastBridge {
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
         // The people/projects/documents the task names, as the user's screen memory knows them.
         // …and how they did tasks like this themselves (`UserMoves` procedures and habits).
-        let things = UserKnowledge.context(for: task)
+        let things = UserKnowledge.context(for: task, original: handle.task)
         let moves = UserMoves.liveContext(for: task)
         var userContext: [String: Any] = ["note": CUDecide.userContextNote, "things": things]
         if let moves { userContext["how_this_user_works"] = moves }

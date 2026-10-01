@@ -421,6 +421,12 @@ enum VoiceDecider {
         // "Calculate 22 + 34", "what's 15% of 340", "5 miles in km": answered on the spot, not by
         // clicking through Calculator — unless the user asked for the Calculator app itself.
         if kind != .control, localMath(text) != nil { return .answer(question: text, wantsMemory: false) }
+        // "Open the last assignment I did", "pull up the doc I was working on", "continue where I
+        // left off": the user's own past work, found in screen memory (`TaskGrounding`) — a task,
+        // never an app named "last assignment did" or a spoken answer about it.
+        if kind != .control, appChoice(v, input: input) == nil, TaskGrounding.reopensOwnWork(text) {
+            return .task(goal: text, surface: .unsure, useCurrentTab: false, isRisky: risky, continuesPrevious: false)
+        }
         switch kind {
         case .control:
             let ctl = v.control.flatMap { Control(rawValue: $0.choice) } ?? .none

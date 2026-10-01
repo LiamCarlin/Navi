@@ -138,11 +138,12 @@ import Testing
 
     @Test func peopleAreTextedWhereTheUserTalksToThem() {
         let t = "text dhvan I'm on my way"
-        #expect(UserKnowledge.chatApp(task: t, matches: UserKnowledge.matches(task: t, in: Self.things)) == "net.whatsapp.WhatsApp")
+        #expect(UserKnowledge.channelApp(task: t, matches: UserKnowledge.matches(task: t, in: Self.things)) == "net.whatsapp.WhatsApp")
         let b = "message bella"
-        #expect(UserKnowledge.chatApp(task: b, matches: UserKnowledge.matches(task: b, in: Self.things)) == "com.apple.MobileSMS")
+        #expect(UserKnowledge.channelApp(task: b, matches: UserKnowledge.matches(task: b, in: Self.things)) == "com.apple.MobileSMS")
+        // No email app in what memory saw of Dhvan: the default mail app decides.
         let e = "email dhvan the notes"
-        #expect(UserKnowledge.chatApp(task: e, matches: UserKnowledge.matches(task: e, in: Self.things)) == nil)
+        #expect(UserKnowledge.channelApp(task: e, matches: UserKnowledge.matches(task: e, in: Self.things)) == nil)
     }
 
     @Test func describeCarriesNamesPlacesAndPagesNeverSummaries() throws {
@@ -151,6 +152,7 @@ import Testing
         #expect(d["people_involved"] as? [String] != nil)
         let p = UserKnowledge.describe(try #require(Self.thing("Dhvan Shah")), now: Self.now)
         #expect(p["talks_with_them_in"] as? [String] == ["WhatsApp (5)", "docs.google.com/document (4)"])
+        #expect(p["reach_them_by"] as? [String: String] == ["texting": "WhatsApp"])
         #expect(p["url"] == nil)                                                           // a person has no page to open
         let json = String(decoding: try JSONSerialization.data(withJSONObject: [d, p]), as: UTF8.self)
         #expect(!json.contains("private summary"))
@@ -168,7 +170,7 @@ import Testing
         let md = UserKnowledge.markdown(Self.things, now: Self.now)
         #expect(md.contains("# How you work"))
         #expect(md.contains("## People"))
-        #expect(md.contains("[[Dhvan Shah]] — talk in WhatsApp (5)"))
+        #expect(md.contains("[[Dhvan Shah]] — texting in WhatsApp"))
         #expect(md.contains("usually canvas.olin.edu → MATLAB"))
         // Dhvan worked in the HCI doc, but that page is the doc's, not his.
         let dhvan = md.split(separator: "\n").first { $0.hasPrefix("- [[Dhvan Shah]]") }
