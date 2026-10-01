@@ -370,7 +370,7 @@ private struct DeleteAccountSheet: View {
                 bullet("This Mac signs out. Apps, files and math keep working without an account.")
             }
             if canEraseLocalData {
-                Toggle("Also erase Navi's data on this Mac (Recall, journal, history)", isOn: $eraseLocalData)
+                Toggle("Also erase this Mac's data (Recall, journal, task history)", isOn: $eraseLocalData)
             } else {
                 Text("What Recall saved on this Mac stays here; you can clear it under Recall.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

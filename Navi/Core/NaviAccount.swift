@@ -97,10 +97,13 @@ final class NaviAccount: ObservableObject {
     /// A sign-in that never comes back (browser closed) stops "waiting" after this long.
     static let signInTimeout: TimeInterval = 5 * 60
 
-    /// INTEGRATION(privacy): set by the privacy workstream to erase everything
-    /// Navi keeps on this Mac (Recall frames, the journal, history). When set,
-    /// Delete account offers "Also erase Navi's data on this Mac".
-    static var eraseLocalData: (@MainActor () async -> Void)?
+    /// Erases everything Navi keeps on this Mac (Recall, the journal, task logs,
+    /// recent searches) — `PrivacyData.deleteAllLocalData()`. Delete account offers
+    /// it as "Also erase this Mac's data". Replaceable so tests never erase for real.
+    static var eraseLocalData: (@MainActor () async -> Void)? = {
+        let report = await PrivacyData.deleteAllLocalData()
+        Log.app.info("account: local data erased with the account (\(report.summary, privacy: .public))")
+    }
 
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -547,8 +550,10 @@ final class NaviAccount: ObservableObject {
         clearState(reason: "account deleted")
         if alsoEraseLocalData, let erase = Self.eraseLocalData {
             await erase()
+            toast = "Your Navi account and this Mac's Navi data were deleted."
+        } else {
+            toast = "Your Navi account was deleted."
         }
-        toast = "Your Navi account was deleted."
         return true
     }
 

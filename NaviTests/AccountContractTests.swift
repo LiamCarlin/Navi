@@ -465,15 +465,17 @@ struct AccountLifecycleTests {
         let tokens = MemoryTokenStore(access: "acc-1", refresh: "ref-1")
         let account = try signedInAccount(host, config: nil, defaults: d, tokens: tokens)
         let erased = Flag()
-        NaviAccount.eraseLocalData = { erased.set(true) }
-        defer { NaviAccount.eraseLocalData = nil }
+        // Wired to PrivacyData.deleteAllLocalData() by default; never erase this Mac in a test.
         #expect(account.canEraseLocalData)
+        let real = NaviAccount.eraseLocalData
+        NaviAccount.eraseLocalData = { erased.set(true) }
+        defer { NaviAccount.eraseLocalData = real }
         let ok = await account.deleteAccount(alsoEraseLocalData: true)
         #expect(ok && erased.value)
         #expect(!account.isSignedIn && account.info == nil)
         #expect(tokens.accessToken == nil && tokens.refreshToken == nil)
         #expect(d.data(forKey: NaviAccount.snapshotKey) == nil)
-        #expect(account.toast == "Your Navi account was deleted.")
+        #expect(account.toast == "Your Navi account and this Mac's Navi data were deleted.")
         #expect(StubProtocol.requests(host: host).last?.value(forHTTPHeaderField: "Authorization") == "Bearer acc-1")
     }
 
