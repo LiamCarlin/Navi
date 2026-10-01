@@ -12,7 +12,7 @@ import AppKit
 /// an alias for the same page. `.usage` is no longer listed: what Navi did for
 /// you this month is on the Account page, next to the plan's limits.
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
-    case home, account, general, providers, permissions, memory, agent, calendars, voice, usage, about, developer
+    case home, account, general, providers, permissions, memory, privacy, agent, calendars, voice, usage, about, developer
 
     var id: String { rawValue }
 
@@ -27,7 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         var groups: [(title: String?, sections: [SettingsSection])] = [
             (nil, [.home, .account]),
             ("Features", [.agent, .voice, .memory, .calendars]),
-            ("Mac", [.general, .permissions, .about]),
+            ("Mac", [.general, .permissions, .privacy, .about]),
         ]
         if DeveloperMode.isEnabled { groups.append(("Developer", [.providers])) }
         return groups
@@ -42,6 +42,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .permissions: return "Permissions"
         case .memory: return "Recall"
         case .agent: return "Tasks"
+        case .privacy: return "Privacy & Data"
         case .calendars: return "Calendars"
         case .voice: return "Voice"
         case .usage: return "Usage"
@@ -58,6 +59,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .providers: return "hammer"
         case .permissions: return "lock.shield"
         case .memory: return "clock.arrow.circlepath"
+        case .privacy: return "hand.raised"
         case .agent: return "cursorarrow.click.2"
         case .calendars: return "calendar"
         case .voice: return "waveform"

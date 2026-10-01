@@ -9,6 +9,8 @@ struct CaptureConfig: Sendable, Equatable {
     var excludedBundleIDs: Set<String>
     var keepScreenshots: Bool
     var personalData: PersonalData.Policy = .strict
+    /// Domains never captured (`CaptureExclusions.isExcludedSite`).
+    var excludedSites: [String] = []
 
     @MainActor static var current: CaptureConfig {
         let s = NaviSettings.shared
@@ -17,7 +19,8 @@ struct CaptureConfig: Sendable, Equatable {
                              intervalSeconds: max(5, s.memoryCaptureIntervalSeconds),
                              excludedBundleIDs: Set(s.memoryExcludedBundleIDs),
                              keepScreenshots: s.memoryKeepScreenshots,
-                             personalData: s.personalDataPolicy)
+                             personalData: s.personalDataPolicy,
+                             excludedSites: s.memoryExcludedSites)
     }
 }
 
@@ -44,6 +47,9 @@ final class CaptureScheduler: @unchecked Sendable {
     enum Skip: Equatable, Sendable {
         case disabled, paused, screenLocked, screensaver, displayAsleep, noPermission
         case excludedApp(String), idle, unchanged, noFrontmostApp
+        /// Privacy: another user's session has the screen, a private browser window, an
+        /// excluded site, or a password field / secure input is active.
+        case otherUserActive, privateWindow, excludedSite, secureInput
     }
 
     init(store: MemoryStore, jev: JevClient, updateStatus: @escaping StatusUpdate) {
@@ -104,6 +110,7 @@ final class CaptureScheduler: @unchecked Sendable {
         if FrameCapture.isScreenLocked { return .screenLocked }
         if FrameCapture.isDisplayAsleep { return .displayAsleep }
         if FrameCapture.isScreensaverRunning { return .screensaver }
+        if !CaptureExclusions.isOurSessionOnConsole { return .otherUserActive }
 
         guard ScreenCapture.hasPermission else {
             let prompted = lock.withLock { () -> Bool in
@@ -136,11 +143,17 @@ final class CaptureScheduler: @unchecked Sendable {
 
         let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
         guard let bundleID = front.bundleID, bundleID != Bundle.main.bundleIdentifier else { return .noFrontmostApp }
-        if cfg.excludedBundleIDs.contains(bundleID) { return .excludedApp(bundleID) }
+        if CaptureExclusions.isExcludedApp(bundleID, userExcluded: cfg.excludedBundleIDs) { return .excludedApp(bundleID) }
+        if CaptureExclusions.isPrivateWindowTitle(front.windowTitle) { return .privateWindow }
+        if await isPrivateBrowserWindow(bundleID: bundleID) { return .privateWindow }
         let url = await browserURL(bundleID: bundleID)
+        if CaptureExclusions.isExcludedSite(url: url, sites: cfg.excludedSites) { return .excludedSite }
+        if CaptureExclusions.isSecureInputActive { return .secureInput }
 
         do {
-            let frame = try await ScreenCapture.captureMainDisplay()
+            // Excluded apps' windows are cut out of the frame even when they sit behind the front app.
+            let hidden = CaptureExclusions.builtInBundleIDs.union(cfg.excludedBundleIDs)
+            let frame = try await ScreenCapture.captureMainDisplay(excludingBundleIDs: hidden)
             let hash = FrameCapture.dHash(frame.image)
             let prev = lock.withLock { previous }
             if let prev, prev.bundleID == bundleID, prev.title == front.windowTitle,
@@ -169,7 +182,7 @@ final class CaptureScheduler: @unchecked Sendable {
                 record.windowTitle = nil
                 record.url = nil
                 record.importance = 0
-                Log.memory.info("Sensitive frame in \(record.appName, privacy: .public); stored stub only")
+                Log.memory.info("Sensitive frame in \(record.appName, privacy: .private); stored stub only")
             } else {
                 record.ocrText = ocr
                 if cfg.keepScreenshots, let jpeg = FrameCapture.thumbnailJPEG(frame.image) {
@@ -194,6 +207,14 @@ final class CaptureScheduler: @unchecked Sendable {
             updateStatus { $0.lastError = "Capture failed: \(error.localizedDescription)" }
             return nil
         }
+    }
+
+    /// Incognito / private window in a Chromium browser or Arc (Apple Events; only once the
+    /// user allowed Automation for that browser — the URL probe below asks for it).
+    private func isPrivateBrowserWindow(bundleID: String) async -> Bool {
+        guard FrameCapture.browserBundleIDs.contains(bundleID), bundleID != "com.apple.Safari",
+              FrameCapture.automationPermitted(bundleID: bundleID, ask: false) else { return false }
+        return await MainActor.run { CaptureExclusions.isPrivateWindowViaScript(bundleID: bundleID) }
     }
 
     /// Front tab URL for browsers, only once Automation consent exists. The

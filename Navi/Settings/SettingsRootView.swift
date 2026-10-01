@@ -61,6 +61,7 @@ struct SettingsRootView: View {
         case .providers, .developer: ProvidersView()
         case .permissions: PermissionsView()
         case .memory: MemoryView()
+        case .privacy: PrivacyView()   // privacy workstream (Settings/PrivacyView.swift)
         case .agent: AgentSettingsView()
         case .calendars: CalendarSettingsView()
         case .voice: VoiceSettingsView()
