@@ -317,8 +317,9 @@ final class VaultWriter: @unchecked Sendable {
     # Navi Vault
 
     This vault is written automatically by **Navi → Screen Memory**. Every few minutes Navi
-    snapshots the screen, reads the text on it locally (Vision OCR), lets Jev decide whether
-    the moment matters, and asks a cheap model to summarise each stretch of activity.
+    snapshots the screen, reads the text on it on your Mac, decides whether
+    the moment matters, and summarises each stretch of activity. Notes Navi writes carry a `navi/…` tag;
+    Settings → Privacy & Data controls how long they are kept.
 
     ## Layout
 

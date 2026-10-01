@@ -299,7 +299,7 @@ final class VoiceSession: ObservableObject {
             switch ev {
             case .transcript(let finalized, let volatile):
                 self.echoFilter.update(finalized: finalized, volatile: volatile)
-                Log.voice.debug("mac-audio | final=…\(String(finalized.suffix(50)), privacy: .public) | volatile=\(volatile, privacy: .public)")
+                Log.voice.debug("mac-audio | final=…\(String(finalized.suffix(50)), privacy: .private) | volatile=\(volatile, privacy: .private)")
                 #if DEBUG
                 DebugTrace.log("voice mac-audio | final=“\(finalized.suffix(60))” volatile=“\(volatile)”")
                 #endif
@@ -427,7 +427,7 @@ final class VoiceSession: ObservableObject {
         // "Wait for more words" is honoured only until the give-up point.
         if let waited = waitedForText, waited == text, age < VoiceDecider.giveUpMs { return }
         guard age >= Self.watchdogStaleMs else { return }
-        Log.voice.warning("watchdog: “\(clause.head, privacy: .public)” had no decision for \(age) ms — deciding now")
+        Log.voice.warning("watchdog: “\(clause.head, privacy: .private)” had no decision for \(age) ms — deciding now")
         #if DEBUG
         DebugTrace.log("voice watchdog | head=“\(clause.head)” idle \(age)ms → decide")
         #endif
@@ -463,7 +463,7 @@ final class VoiceSession: ObservableObject {
         if trailing || echoFilter.classify(clause.head) == .echo {
             echoDecision = .drop(reason: "the Mac's own audio")
             lastEchoDropAt = Date()
-            Log.voice.info("echo: dropped “\(clause.head, privacy: .public)” (\(trailing ? "tail of what the Mac said" : "the Mac said it", privacy: .public))")
+            Log.voice.info("echo: dropped “\(clause.head, privacy: .private)” (\(trailing ? "tail of what the Mac said" : "the Mac said it", privacy: .public))")
             #if DEBUG
             DebugTrace.log("voice echo | dropped “\(clause.head)” | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
             #endif
@@ -509,7 +509,7 @@ final class VoiceSession: ObservableObject {
                 if case .wait = decision, let b = v.boundary, b.p(VoiceDecider.Boundary.complete.rawValue) >= VoiceDecider.commitP {
                     settled = (key, v, Date())
                 }
-                Log.voice.debug("decide “\(clause.head, privacy: .public)” | “\(clause.following.prefix(40), privacy: .public)” → \(String(describing: decision), privacy: .public)")
+                Log.voice.debug("decide “\(clause.head, privacy: .private)” | “\(clause.following.prefix(40), privacy: .private)” → \(String(describing: decision), privacy: .private)")
                 #if DEBUG
                 DebugTrace.log("voice decide | head=“\(clause.head)” conn=“\(clause.soft ? "(soft)" : clause.connector)” following=“\(clause.following)” silence=\(silence)→\(input.silenceMs)ms → \(v.boundary?.choice ?? "?") \(Int((v.boundary?.confidence ?? 0) * 100))% kind=\(v.kind?.choice ?? "?") \(v.latencyMs)ms ⇒ \(decision)")
                 #endif
@@ -548,7 +548,7 @@ final class VoiceSession: ObservableObject {
             hint = ""
             committed.append(clause.head)
             if committed.count > Self.maxCommittedShown { committed.removeFirst(committed.count - Self.maxCommittedShown) }
-            Log.voice.info("commit “\(clause.head, privacy: .public)” → \(command.label, privacy: .public)")
+            Log.voice.info("commit “\(clause.head, privacy: .private)” → \(command.label, privacy: .private)")
             dispatch(command)
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
         case .replace(let command):
@@ -561,7 +561,7 @@ final class VoiceSession: ObservableObject {
             committed.append(clause.head)
             if committed.count > Self.maxCommittedShown { committed.removeFirst(committed.count - Self.maxCommittedShown) }
             let busy = executor.busyLabel ?? ""
-            Log.voice.info("replace “\(busy, privacy: .public)” with “\(clause.head, privacy: .public)” → \(command.label, privacy: .public)")
+            Log.voice.info("replace “\(busy, privacy: .private)” with “\(clause.head, privacy: .private)” → \(command.label, privacy: .private)")
             VoiceSounds.play(.commit)
             executor.replaceCurrent(with: command)
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
@@ -570,13 +570,13 @@ final class VoiceSession: ObservableObject {
             hint = "…"
             scheduleDecision(after: 60)
         case .drop(let reason):
-            Log.voice.debug("drop “\(clause.head, privacy: .public)”: \(reason, privacy: .public)")
+            Log.voice.debug("drop “\(clause.head, privacy: .private)”: \(reason, privacy: .private)")
             segmenter.drop(clause)
             pendingText = segmenter.pendingText
             hint = ""
             if segmenter.pending() != nil { scheduleDecision(after: 60) }
         case .giveUp(let reason):
-            Log.voice.info("give up on “\(clause.head, privacy: .public)”: \(reason, privacy: .public)")
+            Log.voice.info("give up on “\(clause.head, privacy: .private)”: \(reason, privacy: .private)")
             #if DEBUG
             DebugTrace.log("voice give up | “\(clause.head)” — \(reason)")
             #endif

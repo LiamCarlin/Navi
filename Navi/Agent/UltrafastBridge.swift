@@ -192,10 +192,14 @@ enum UltrafastBridge {
     // MARK: Run
 
     /// Environment for the runner: Jev transport + keys, text-helper key.
+    /// Opt-outs honoured by browser-harness (`BH_TELEMETRY`) and browser-use (`ANONYMIZED_TELEMETRY`).
+    static let noTelemetry: [String: String] = ["BH_TELEMETRY": "0", "BROWSER_HARNESS_TELEMETRY": "0", "ANONYMIZED_TELEMETRY": "false"]
+
     static func environment() -> [String: String]? {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONUNBUFFERED"] = "1"
+        env.merge(noTelemetry) { $1 }   // Privacy: no third-party usage pings from the runner
         env["TYPESAFE_MODEL"] = UserDefaults.standard.string(forKey: "jevModel") ?? "jev-latest"
         let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
         switch JevClient.resolveTransport(preference: pref) {
@@ -389,20 +393,26 @@ enum UltrafastBridge {
         var stepIndex = 0
         var lastDecision = ""
         // Keep the raw event stream of the last run for debugging (local only).
-        let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-        let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
-        // A dictionary, not a bare string: NSJSONSerialization raises an ObjC exception
-        // (uncatchable by `try?`) for a top-level string without `.fragmentsAllowed`.
-        let startLine = (try? JSONSerialization.data(withJSONObject: ["event": "start", "url": url, "task": task])) ?? Data("{\"event\":\"start\"}".utf8)
-        FileManager.default.createFile(atPath: logURL.path, contents: startLine + Data("\n".utf8))
-        let logHandle = try? FileHandle(forWritingTo: logURL)
-        logHandle?.seekToEndOfFile()
+        // Privacy (`TaskLogs`): only while task logs are on; lines redacted, screenshots never kept.
+        var logHandle: FileHandle?
+        if TaskLogs.isEnabled {
+            let logDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
+            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            let logURL = logDir.appendingPathComponent("ultrafast-last-run.jsonl")
+            // A dictionary, not a bare string: NSJSONSerialization raises an ObjC exception
+            // (uncatchable by `try?`) for a top-level string without `.fragmentsAllowed`.
+            let startLine = (try? JSONSerialization.data(withJSONObject: ["event": "start", "url": url, "task": TaskLogs.redact(task)])) ?? Data("{\"event\":\"start\"}".utf8)
+            FileManager.default.createFile(atPath: logURL.path, contents: startLine + Data("\n".utf8))
+            logHandle = try? FileHandle(forWritingTo: logURL)
+            logHandle?.seekToEndOfFile()
+        }
         defer { try? logHandle?.close() }
         do {
             for try await line in out.fileHandleForReading.bytes.lines {
                 if Task.isCancelled { break }
-                logHandle?.write(Data((line + "\n").utf8))
+                if let logHandle, !line.contains("\"screenshot\"") {
+                    logHandle.write(Data((TaskLogs.redact(line) + "\n").utf8))
+                }
                 guard let data = line.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let event = json["event"] as? String else { continue }
@@ -600,6 +610,7 @@ enum UltrafastBridge {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env.merge(UltrafastBridge.noTelemetry) { $1 }   // Privacy: browser-harness / browser-use phone home otherwise
         env.merge(extraEnv) { $1 }
         p.environment = env
         let pipe = Pipe()

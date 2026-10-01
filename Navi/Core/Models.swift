@@ -244,6 +244,48 @@ enum NaviError: LocalizedError {
     case notEntitled(feature: String, tier: String)
     /// No Navi session (never signed in, or the refresh token was rejected).
     case signedOut
+    /// Navi Cloud 426 (or `/v1/me.config.minAppVersion`): this build is too old to be served.
+    case upgradeRequired(minAppVersion: String?, downloadURL: URL?)
+    /// Navi Cloud 503 `feature_disabled` (or `/v1/me.config.features`): switched off by the operator for now.
+    /// `feature` is a `config.features` key ("answers") or a `CloudFeature` raw value ("answer").
+    case featureDisabled(feature: String, message: String?)
+    /// Navi Cloud 403 `account_disabled`: the account is suspended; no cloud calls until support re-enables it.
+    case accountDisabled(message: String?)
+
+    /// What the user can do about an error — the button next to its one-line message.
+    enum Recovery: Equatable {
+        case signIn
+        case upgrade(recall: Bool)
+        case updateApp
+        case contactSupport
+        /// Nothing to press: the message says to try again later.
+        case tryLater
+    }
+
+    var recovery: Recovery? {
+        switch self {
+        case .signedOut: return .signIn
+        case .missingAPIKey: return NaviSettings.developerMode ? nil : .signIn
+        case .quotaExceeded: return .upgrade(recall: false)
+        case .notEntitled(let feature, _): return .upgrade(recall: feature.hasPrefix("recall"))
+        case .upgradeRequired: return .updateApp
+        case .featureDisabled: return .tryLater
+        case .accountDisabled: return .contactSupport
+        default: return nil
+        }
+    }
+
+    /// "answers" / "tasks" / "voice control" / "Recall" for a feature name in either spelling.
+    static func featureNoun(_ feature: String) -> String {
+        let key = CloudFeature(rawValue: feature).flatMap(CloudConfig.Features.key(for:)) ?? feature
+        switch key {
+        case "answers": return "answers"
+        case "tasks": return "tasks"
+        case "voice": return "voice control"
+        case "recall": return "Recall"
+        default: return key.isEmpty ? "this" : key.replacingOccurrences(of: "_", with: " ")
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -267,13 +309,23 @@ enum NaviError: LocalizedError {
             return "\(what.capitalized) isn't included in the \(plan.isEmpty ? "current" : plan) plan."
         case .signedOut:
             return "Sign in to Navi to keep going."
+        case .upgradeRequired:
+            return "Update Navi to keep using it."
+        case .featureDisabled(let feature, let message):
+            if let m = message?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty { return m }
+            let noun = Self.featureNoun(feature)
+            let capitalized = noun.prefix(1).uppercased() + noun.dropFirst()
+            return "\(capitalized) \(noun == "voice control" || noun == "Recall" ? "is" : "are") temporarily unavailable. Try again in a little while."
+        case .accountDisabled(let message):
+            if let m = message?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty { return m }
+            return "Your Navi account is disabled. Contact support to sort it out."
         }
     }
 
     /// True for the errors that come with an Upgrade / Sign in action.
     var isAccountError: Bool {
         switch self {
-        case .quotaExceeded, .notEntitled, .signedOut: return true
+        case .quotaExceeded, .notEntitled, .signedOut, .upgradeRequired, .featureDisabled, .accountDisabled: return true
         case .missingAPIKey: return !NaviSettings.developerMode
         default: return false
         }

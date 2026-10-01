@@ -77,6 +77,8 @@ final class MemoryStore: @unchecked Sendable {
 
     init(directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Screen memory is readable by this user only (the database, its WAL and the thumbnails).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         databaseURL = directory.appendingPathComponent("memory.sqlite")
         framesDirectory = directory.appendingPathComponent("frames", isDirectory: true)
         var handle: OpaquePointer?
@@ -89,6 +91,9 @@ final class MemoryStore: @unchecked Sendable {
         db = handle
         sqlite3_busy_timeout(handle, 2000)
         try queue.sync { try migrate() }
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path + suffix)
+        }
     }
 
     deinit {
@@ -100,6 +105,9 @@ final class MemoryStore: @unchecked Sendable {
     private func migrate() throws {
         try exec("PRAGMA journal_mode=WAL;")
         try exec("PRAGMA synchronous=NORMAL;")
+        // Deleted rows (pruned, redacted, "Delete everything") are overwritten with zeros
+        // instead of lingering in free pages where a file carver could read them back.
+        try exec("PRAGMA secure_delete=ON;")
         try exec("""
         CREATE TABLE IF NOT EXISTS frames(
             id INTEGER PRIMARY KEY,
@@ -518,28 +526,80 @@ final class MemoryStore: @unchecked Sendable {
 
     // MARK: Retention
 
+    /// What one retention pass removed.
+    struct PruneResult: Sendable, Equatable {
+        var frames = 0
+        var sessions = 0
+        /// Vault-relative note paths of the removed sessions (`Sessions/….md`), so
+        /// the vault can drop the notes Navi wrote for them.
+        var sessionNotePaths: [String] = []
+    }
+
     /// Deletes frames/sessions older than `days` and their thumbnails. Returns
     /// the number of frames removed.
     @discardableResult
     func pruneOlderThan(days: Int, now: Date = Date()) throws -> Int {
-        let cutoff = now.addingTimeInterval(-Double(days) * 86_400).timeIntervalSince1970
+        try prune(before: now.addingTimeInterval(-Double(days) * 86_400)).frames
+    }
+
+    /// Deletes every frame and session that ended before `cutoff`, their thumbnails,
+    /// and the search-index entries for them; then folds the WAL back so the deleted
+    /// text does not linger on disk.
+    @discardableResult
+    func prune(before cutoff: Date) throws -> PruneResult {
+        let cut = cutoff.timeIntervalSince1970
         return try queue.sync {
-            let old = try query("SELECT id, thumb_path FROM frames WHERE ts < ?", [cutoff])
+            let old = try query("SELECT id, thumb_path FROM frames WHERE ts < ?", [cut])
             for r in old {
                 if let p = r["thumb_path"] as? String { try? FileManager.default.removeItem(atPath: p) }
             }
+            let oldSessions = try query("SELECT id, note_path FROM sessions WHERE end_ts < ?", [cut])
             try exec("BEGIN;")
             do {
-                try run("DELETE FROM frames WHERE ts < ?", [cutoff])
-                try run("DELETE FROM sessions_fts WHERE rowid IN (SELECT id FROM sessions WHERE end_ts < ?)", [cutoff])
-                try run("DELETE FROM sessions WHERE end_ts < ?", [cutoff])
+                try run("DELETE FROM frames WHERE ts < ?", [cut])
+                try run("DELETE FROM sessions_fts WHERE rowid IN (SELECT id FROM sessions WHERE end_ts < ?)", [cut])
+                try run("DELETE FROM sessions WHERE end_ts < ?", [cut])
                 try exec("COMMIT;")
             } catch {
                 try? exec("ROLLBACK;")
                 throw error
             }
+            if !old.isEmpty || !oldSessions.isEmpty {
+                try? exec("INSERT INTO frames_fts(frames_fts) VALUES('optimize');")
+                try? exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize');")
+                try? exec("PRAGMA wal_checkpoint(TRUNCATE);")
+            }
             Self.removeEmptyDirectories(under: framesDirectory)
-            return old.count
+            return PruneResult(frames: old.count, sessions: oldSessions.count,
+                               sessionNotePaths: oldSessions.compactMap { $0["note_path"] as? String })
+        }
+    }
+
+    /// Settings → Privacy → "Delete everything": every frame, session, index entry and
+    /// thumbnail. The connection stays open, so screen memory keeps working afterwards.
+    @discardableResult
+    func deleteAll() throws -> PruneResult {
+        try queue.sync {
+            let frames = try query("SELECT count(*) AS n FROM frames", []).first?["n"] as? Int64 ?? 0
+            let sessions = try query("SELECT note_path FROM sessions", [])
+            try exec("BEGIN;")
+            do {
+                try exec("DELETE FROM frames;")
+                try exec("DELETE FROM sessions_fts;")
+                try exec("DELETE FROM sessions;")
+                try exec("COMMIT;")
+            } catch {
+                try? exec("ROLLBACK;")
+                throw error
+            }
+            // Deleted FTS terms live on in old index segments until they are merged away.
+            try? exec("INSERT INTO frames_fts(frames_fts) VALUES('rebuild');")
+            try? exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize');")
+            try? exec("VACUUM;")
+            try? exec("PRAGMA wal_checkpoint(TRUNCATE);")
+            try? FileManager.default.removeItem(at: framesDirectory)
+            return PruneResult(frames: Int(frames), sessions: sessions.count,
+                               sessionNotePaths: sessions.compactMap { $0["note_path"] as? String })
         }
     }
 

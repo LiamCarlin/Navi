@@ -297,7 +297,7 @@ final class AgentRun: @unchecked Sendable {
             }
             handle.finish()
         }
-        Log.agent.info("Agent run started (\(self.config.driver.rawValue, privacy: .public)): \(self.task.prefix(120), privacy: .public)")
+        Log.agent.info("Agent run started (\(self.config.driver.rawValue, privacy: .public)): \(self.task.prefix(120), privacy: .private)")
         let endActivity = AgentActivity.begin()
         defer { endActivity() }
 
@@ -314,7 +314,7 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.cancelled)
             } else {
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                Log.agent.error("Agent run failed: \(msg, privacy: .public)")
+                Log.agent.error("Agent run failed: \(msg, privacy: .private)")
                 handle.emit(.failed(msg))
             }
         }
@@ -1240,7 +1240,7 @@ final class AgentRun: @unchecked Sendable {
                     throw CancellationError()
                 } catch {
                     let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                    Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .public)")
+                    Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .private)")
                     line += " → refused: \(msg)"
                     failed = true
                     handle.emit(.status("Action failed: \(msg)"))
@@ -1578,7 +1578,7 @@ final class AgentRun: @unchecked Sendable {
                         throw CancellationError()
                     } catch {
                         let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
-                        Log.agent.error("Action failed (\(call.name, privacy: .public)): \(msg, privacy: .public)")
+                        Log.agent.error("Action failed (\(call.name, privacy: .public)): \(msg, privacy: .private)")
                         results.append(AgentToolResult.error(for: call, msg))
                         recentActions.append(AgentActionDescriber.technical(call) + " → error: \(msg)")
                         if call.isComputer { turnFailed = true }
@@ -1706,7 +1706,7 @@ final class AgentRun: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(60))
             let after = await AXSnapshotter.focusedField(target: target)
             if let note = AXSnapshotter.typingNote(before: before, after: after, text: text) {
-                Log.agent.notice("type: \(note, privacy: .public)")
+                Log.agent.notice("type: \(note, privacy: .private)")
                 handle.emit(.status("Typed, but the field may not have taken it — checking"))
                 return AgentToolResult.computer(id: call.id, text: note)
             }
@@ -1892,6 +1892,8 @@ final class AgentRun: @unchecked Sendable {
 /// after the panel is gone. The same lines are appended to `agent-runs.log`
 /// (rotated at ~2 MB) so a *pattern* of failures can be read back, not just
 /// the last one. Local only; never uploaded.
+///
+/// Privacy (`TaskLogs`): written only while task logs are on; every line passes `TaskLogs.redact`.
 final class AgentRunLog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "navi.agent.runlog")
     private let url: URL
@@ -1902,9 +1904,10 @@ final class AgentRunLog: @unchecked Sendable {
 
     init(task: String) {
         let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/Navi")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("agent-last-run.log")
-        let header = Data("\(Date())  task: \(task)\n".utf8)
+        guard TaskLogs.isEnabled else { return }   // Privacy: no file, every record() is a no-op
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let header = Data("\(Date())  task: \(TaskLogs.redact(task))\n".utf8)
         FileManager.default.createFile(atPath: url.path, contents: header)
         handle = try? FileHandle(forWritingTo: url)
         handle?.seekToEndOfFile()
@@ -1936,6 +1939,8 @@ final class AgentRunLog: @unchecked Sendable {
         }
         let t = String(format: "%7.2fs", Date().timeIntervalSince(start))
         queue.async { [self] in
+            guard handle != nil || history != nil else { return }
+            let line = TaskLogs.redact(line)
             let data = Data("\(t)  \(line.replacingOccurrences(of: "\n", with: "\n           "))\n".utf8)
             handle?.write(data)
             history?.write(data)
