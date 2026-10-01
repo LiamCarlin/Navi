@@ -121,8 +121,9 @@ function provider(f: FormData) {
 export async function setKeyAction(f: FormData) {
   await run("/admin/keys", async ({ db, actor }) => {
     const p = provider(f);
-    await ops.setKey(db, actor, p, f.get("key"), str(f, "rotating") === "1");
-    return `${PROVIDER_INFO[p].label} key stored (encrypted). The proxy uses it within a minute.`;
+    const rotating = str(f, "rotating") === "1";
+    await ops.setKey(db, actor, p, f.get("key"), rotating);
+    return `${PROVIDER_INFO[p].label} key ${rotating ? "rotated" : "stored"} (encrypted). Every server instance uses it within a minute.`;
   });
 }
 

@@ -53,9 +53,11 @@ export default async function Users({ searchParams }: { searchParams: Promise<Re
                 <td>{p.subscriptionStatus ?? <span className={s.muted}>—</span>}</td>
                 <td>{p.trialEndsAt ? `${dateOnly(p.trialEndsAt)} (${ago(p.trialEndsAt, now)})` : <span className={s.muted}>—</span>}</td>
                 <td title={p.createdAt}>{dateOnly(p.createdAt)}</td>
-                <td className={s.row}>
-                  {p.disabledAt && <span className={s.badgeBad}>disabled</span>}
-                  {p.tierOverride && <span className={s.badgeInfo}>override: {p.tierOverride}</span>}
+                <td>
+                  <div className={s.row}>
+                    {p.disabledAt && <span className={s.badgeBad}>disabled</span>}
+                    {p.tierOverride && <span className={s.badgeInfo}>override: {p.tierOverride}</span>}
+                  </div>
                 </td>
               </tr>
             ))}

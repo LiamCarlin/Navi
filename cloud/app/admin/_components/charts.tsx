@@ -7,7 +7,6 @@ import type { DayPoint } from "@/lib/admin/overview";
 import { usd } from "@/lib/admin/format";
 import s from "../admin.module.css";
 
-const W = 720;
 const PAD = { l: 48, r: 8, t: 8, b: 22 };
 
 function niceMax(v: number): number {
@@ -17,7 +16,7 @@ function niceMax(v: number): number {
   return 10 * p;
 }
 
-function Axis({ max, h, fmt }: { max: number; h: number; fmt: (n: number) => string }) {
+function Axis({ max, h, W, fmt }: { max: number; h: number; W: number; fmt: (n: number) => string }) {
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   return (
     <g>
@@ -34,7 +33,7 @@ function Axis({ max, h, fmt }: { max: number; h: number; fmt: (n: number) => str
   );
 }
 
-function XLabels({ days, h }: { days: DayPoint[]; h: number }) {
+function XLabels({ days, h, W }: { days: DayPoint[]; h: number; W: number }) {
   const step = (W - PAD.l - PAD.r) / days.length;
   return (
     <g>
@@ -49,7 +48,8 @@ function XLabels({ days, h }: { days: DayPoint[]; h: number }) {
 
 /** Daily vendor cost (bars) against revenue run-rate (line), both USD/day on one axis. */
 export function CostRevenueChart({ days }: { days: DayPoint[] }) {
-  const h = 200;
+  const W = 1000;
+  const h = 240;
   const max = niceMax(Math.max(...days.map((d) => Math.max(d.costUsd, d.revenueUsd)), 0.0001) * 1.1);
   const plotH = h - PAD.t - PAD.b;
   const step = (W - PAD.l - PAD.r) / days.length;
@@ -63,7 +63,7 @@ export function CostRevenueChart({ days }: { days: DayPoint[] }) {
         <span><span className={s.swatchLine} style={{ background: "var(--series-1)" }} />Revenue / day (MRR run-rate)</span>
       </div>
       <svg className={s.chart} viewBox={`0 0 ${W} ${h}`} role="img" aria-label="Vendor cost per day versus revenue per day, last 30 days">
-        <Axis max={max} h={h} fmt={(n) => usd(n, max >= 10 ? 0 : 2)} />
+        <Axis max={max} h={h} W={W} fmt={(n) => usd(n, max >= 10 ? 0 : 2)} />
         {days.map((d, i) => {
           const x = PAD.l + step * i + 1;
           const top = y(d.costUsd);
@@ -77,7 +77,7 @@ export function CostRevenueChart({ days }: { days: DayPoint[] }) {
           );
         })}
         <path d={line} fill="none" stroke="var(--series-1)" strokeWidth={2} pointerEvents="none" />
-        <XLabels days={days} h={h} />
+        <XLabels days={days} h={h} W={W} />
       </svg>
     </div>
   );
@@ -85,13 +85,15 @@ export function CostRevenueChart({ days }: { days: DayPoint[] }) {
 
 /** One series per day as bars (active users, signups). */
 export function DayBars({ days, pick, label, color = "var(--series-1)" }: { days: DayPoint[]; pick: (d: DayPoint) => number; label: string; color?: string }) {
-  const h = 130;
-  const max = niceMax(Math.max(...days.map(pick), 1));
+  const W = 480;
+  const h = 140;
+  // Counts: keep the four gridlines on whole numbers.
+  const max = Math.max(4, Math.ceil(niceMax(Math.max(...days.map(pick), 1)) / 4) * 4);
   const plotH = h - PAD.t - PAD.b;
   const step = (W - PAD.l - PAD.r) / days.length;
   return (
     <svg className={s.chart} viewBox={`0 0 ${W} ${h}`} role="img" aria-label={`${label} per day, last 30 days`}>
-      <Axis max={max} h={h} fmt={(n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))} />
+      <Axis max={max} h={h} W={W} fmt={(n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))} />
       {days.map((d, i) => {
         const v = pick(d);
         const top = PAD.t + plotH * (1 - v / max);
@@ -104,7 +106,7 @@ export function DayBars({ days, pick, label, color = "var(--series-1)" }: { days
           </g>
         );
       })}
-      <XLabels days={days} h={h} />
+      <XLabels days={days} h={h} W={W} />
     </svg>
   );
 }
