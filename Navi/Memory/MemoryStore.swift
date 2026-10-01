@@ -592,7 +592,9 @@ final class MemoryStore: @unchecked Sendable {
                 try? exec("ROLLBACK;")
                 throw error
             }
+            // Deleted FTS terms live on in old index segments until they are merged away.
             try? exec("INSERT INTO frames_fts(frames_fts) VALUES('rebuild');")
+            try? exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize');")
             try? exec("VACUUM;")
             try? exec("PRAGMA wal_checkpoint(TRUNCATE);")
             try? FileManager.default.removeItem(at: framesDirectory)
