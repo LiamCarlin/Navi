@@ -11,8 +11,11 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
 
     init(claude: ClaudeClient) { self.claude = claude }
 
-    static let missingKeyMessage =
-        "Navi needs an Anthropic API key to answer questions. Add one in **Navi → AI Providers** (open the Navi window from the menu bar)."
+    static var missingKeyMessage: String {
+        DeveloperMode.isEnabled
+            ? "Navi needs an Anthropic API key to answer questions. Add one in **Navi → Developer** (open the Navi window from the menu bar)."
+            : "Sign in to Navi to get answers. Open the Navi window from the menu bar and choose **Sign in**."
+    }
 
     // MARK: - AnswerProviding
 

@@ -15,8 +15,11 @@ export function mockJevResponse(body: unknown): Record<string, unknown> {
       case "choice": {
         const keys = q.criteria && typeof q.criteria === "object" && !Array.isArray(q.criteria) ? Object.keys(q.criteria) : ["a", "b"];
         const probabilities: Record<string, number> = {};
-        keys.forEach((k, i) => { probabilities[k] = i === 0 ? 0.82 : Number((0.18 / Math.max(1, keys.length - 1)).toFixed(4)); });
-        answers[name] = { type: "choice", choice: keys[0], probabilities, confidence: 0.82 };
+        // Probabilities must sum to 1: a lone option gets all of it (the runner's validator
+        // rejects a {"1": 0.82} distribution and the run stops on a one-element page).
+        const top = keys.length === 1 ? 1 : 0.82;
+        keys.forEach((k, i) => { probabilities[k] = i === 0 ? top : Number((0.18 / Math.max(1, keys.length - 1)).toFixed(4)); });
+        answers[name] = { type: "choice", choice: keys[0], probabilities, confidence: top };
         break;
       }
       case "score": {
