@@ -205,6 +205,10 @@ enum TaskPlanner {
         var habits = UserHabits.current?.plannerSection(task: task)
         let things = UserKnowledge.context(for: task)
         if !things.isEmpty { habits = (habits ?? ["source": "this user's own screen history (last 30 days) — how they actually do things"]).merging(["things_in_this_task": things]) { $1 } }
+        // How they did tasks like this themselves (procedures from their sessions, `UserMoves`).
+        if let moves = UserMoves.liveContext(for: task) {
+            habits = (habits ?? ["source": "this user's own screen history — how they actually do things"]).merging(["how_they_did_it_before": moves]) { $1 }
+        }
         let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost, habits: habits), options: [.sortedKeys])
         let start = Date()
         // Assistant prefill: Haiku continues `{"steps":[` instead of answering in

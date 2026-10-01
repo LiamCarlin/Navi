@@ -722,6 +722,8 @@ final class AgentRun: @unchecked Sendable {
         var typedTexts: [String] = []
         var announcedSkill: String?
         var lastActedFrame: CGRect?
+        /// The label of the item clicked last: `UserMoves` says what this user clicks after it.
+        var lastClickedLabel: String?
         var lastDeclined: AgentAction?
         var lastAnswer: CUWriter.Answer?
         /// Screens already re-read with OCR after Jev stopped on them.
@@ -866,13 +868,18 @@ final class AgentRun: @unchecked Sendable {
                 announcedSkill = skill.name
                 handle.emit(.status("Using the \(skill.name) playbook"))
             }
+            // How this user acts here (their clicks, shortcuts, procedures), from screen memory.
+            let moves = UserMoves.liveHints(goal: task, bundleID: screen.snapshot.bundleID, url: screen.url,
+                                            items: screen.items.map { ($0.index, $0.text) }, lastClicked: lastClickedLabel,
+                                            shortcuts: AppSkills.keyCombos(for: skill))
             let input = CUDecide.Input(goal: task, screen: screen, history: run.history, tried: tried, guidance: run.guidance,
-                                       shortcuts: AppSkills.keyCombos(for: skill), apps: appCandidates, sites: urlCandidates,
+                                       shortcuts: moves.shortcuts, apps: appCandidates, sites: urlCandidates,
                                        writerAvailable: writerAvailable,
                                        goalSpellsText: obvious.map { !typedTexts.contains($0) } ?? false,
                                        playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
-                                       conversation: context.conversation, userContext: userContext)
+                                       conversation: context.conversation, userContext: userContext,
+                                       userMoves: moves.isEmpty ? nil : moves)
 
             // The writer starts on the one obvious field while Jev decides; used only if Jev picks it.
             var speculative: (elementID: String, task: Task<CUWriter.Fill?, Never>)?
@@ -1102,6 +1109,11 @@ final class AgentRun: @unchecked Sendable {
                 if case .picked(let n)? = recipientOutcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
                 if !failed, !action.isReadOnly { redactedLog.append(action.human(in: screen.snapshot, text: nil)) }
                 if let f = action.elementID.flatMap({ screen.snapshot.element($0)?.frame }) { lastActedFrame = f }
+                switch action {
+                case .click(let id), .press(let id): lastClickedLabel = screen.snapshot.element(id)?.label
+                case .clickPoint(_, _, let label): lastClickedLabel = label
+                default: break
+                }
                 // No contact behind the name in a messaging/email app: writing the message now
                 // would text or mail nobody (or the wrong person). Stop and say so.
                 if let outcome = recipientOutcome, let field = recipientField, let typed = text,

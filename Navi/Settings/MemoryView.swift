@@ -64,6 +64,10 @@ struct MemoryView: View {
                     Text("7 days").tag(7); Text("14 days").tag(14); Text("30 days").tag(30); Text("90 days").tag(90)
                 }
                 Toggle("Keep screenshots (not just text)", isOn: $settings.memoryKeepScreenshots)
+                Toggle("Learn how I work from my clicks and shortcuts", isOn: $settings.memoryRecordActions)
+                Text("Navi notes which buttons, links, tabs and menu items you click and which keyboard shortcuts you press — never what you type, never password fields — so it can do tasks the way you do them. Kept for \(MemoryStore.actionRetentionDays) days; what Navi learns from them (your routines) for a year.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("Vault") {
@@ -172,7 +176,8 @@ struct MemoryView: View {
 
     private var cleanupTitle: String {
         guard let p = cleanupPlan else { return "" }
-        return "Redact \(p.sessions.count) of \(p.sessionsScanned) summaries and \(p.frameIDs.count) snapshots?"
+        return "Redact \(p.sessions.count) of \(p.sessionsScanned) summaries and \(p.frameIDs.count) snapshots"
+            + (p.actionRows > 0 ? " (and \(p.actionRows) recorded clicks or routines)?" : "?")
     }
 
     private func planCleanup() async {
@@ -181,7 +186,7 @@ struct MemoryView: View {
         defer { cleanupBusy = false }
         do {
             let plan = try await service.planPersonalDataCleanup()
-            if plan.sessions.isEmpty && plan.frameIDs.isEmpty {
+            if plan.sessions.isEmpty && plan.frameIDs.isEmpty && plan.actionRows == 0 {
                 cleanupMessage = "Nothing saved contains the details you block."
             } else {
                 cleanupPlan = plan
@@ -198,7 +203,8 @@ struct MemoryView: View {
         defer { cleanupBusy = false }
         do {
             let r = try await service.applyPersonalDataCleanup(plan)
-            cleanupMessage = "Redacted \(r.sessionsRedacted) summaries and \(r.framesRedacted) snapshots; removed \(r.attachmentsDeleted) screenshots."
+            cleanupMessage = "Redacted \(r.sessionsRedacted) summaries and \(r.framesRedacted) snapshots; removed \(r.attachmentsDeleted) screenshots"
+                + (r.actionRowsRedacted > 0 ? "; cleaned \(r.actionRowsRedacted) recorded clicks or routines." : ".")
         } catch {
             cleanupMessage = "Cleanup failed: \(error.localizedDescription)"
         }

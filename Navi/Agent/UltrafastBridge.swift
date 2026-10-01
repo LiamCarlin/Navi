@@ -352,8 +352,12 @@ enum UltrafastBridge {
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
         // The people/projects/documents the task names, as the user's screen memory knows them.
+        // …and how they did tasks like this themselves (`UserMoves` procedures and habits).
         let things = UserKnowledge.context(for: task)
-        if !things.isEmpty, let data = try? JSONSerialization.data(withJSONObject: ["note": CUDecide.userContextNote, "things": things], options: [.sortedKeys]) {
+        let moves = UserMoves.liveContext(for: task)
+        var userContext: [String: Any] = ["note": CUDecide.userContextNote, "things": things]
+        if let moves { userContext["how_this_user_works"] = moves }
+        if !things.isEmpty || moves != nil, let data = try? JSONSerialization.data(withJSONObject: userContext, options: [.sortedKeys]) {
             env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
         }
         let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true

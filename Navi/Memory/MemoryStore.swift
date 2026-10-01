@@ -37,6 +37,45 @@ struct SessionRecord: Sendable, Equatable {
     var notePath: String?
 }
 
+/// One thing the user did with the mouse or keyboard (`ActionJournal`): the control
+/// they clicked, the menu item they chose, or the shortcut they pressed. Never what
+/// they typed: labels are the control's own name (a text field's label, not its value).
+struct ActionRecord: Sendable, Equatable {
+    enum Kind: String, Sendable { case click, menu, key }
+
+    var id: Int64 = 0
+    var timestamp: Date
+    var bundleID: String
+    var appName: String
+    var windowTitle: String?
+    var url: String?
+    var kind: Kind
+    /// AX role without the prefix ("button", "link", "row", "menu item"); "" for keys.
+    var role: String = ""
+    /// The control's name, or for a shortcut the menu item it triggers ("" when unknown).
+    var label: String = ""
+    /// "cmd+r": the key pressed, or the shortcut a clicked menu item shows.
+    var shortcut: String?
+    /// Where the control sits: the menu ("File", "Format › Font"), or its container.
+    var path: String?
+}
+
+/// How the user got something done, from one digested session (`Digester`): the task
+/// as they could ask Navi for it, the steps they took, and what it shows about how they work.
+struct ProcedureRecord: Sendable, Equatable {
+    var id: Int64 = 0
+    var sessionID: Int64
+    var start: Date
+    var end: Date
+    var bundleID: String
+    var appName: String
+    /// Site key of the session's page ("canvas.olin.edu", "docs.google.com/document").
+    var site: String?
+    var goal: String
+    var steps: [String]
+    var habits: [String]
+}
+
 struct EntityRef: Sendable, Equatable, Hashable, Codable {
     var name: String
     var type: String   // person|project|company|tool|site|file|concept
@@ -55,6 +94,8 @@ struct EntityRef: Sendable, Equatable, Hashable, Codable {
 ///            topics JSON, entities JSON, importance, note_path)
 ///   frames_fts(ocr_text, window_title, url)  — external-content FTS5 over frames
 ///   sessions_fts(summary, topics, entities, title) — standalone FTS5, rowid = session id
+///   actions(id, ts, bundle_id, app_name, window_title, url, kind, role, label, shortcut, path)
+///   procedures(id, session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps JSON, habits JSON)
 final class MemoryStore: @unchecked Sendable {
     let databaseURL: URL
     /// Where JPEG thumbnails live (`frames/YYYY/MM/DD/<ts>.jpg`).
@@ -154,6 +195,33 @@ final class MemoryStore: @unchecked Sendable {
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
             summary, topics, entities, title, tokenize='unicode61'
         );
+        CREATE TABLE IF NOT EXISTS actions(
+            id INTEGER PRIMARY KEY,
+            ts REAL NOT NULL,
+            bundle_id TEXT NOT NULL DEFAULT '',
+            app_name TEXT NOT NULL DEFAULT '',
+            window_title TEXT,
+            url TEXT,
+            kind TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            shortcut TEXT,
+            path TEXT
+        );
+        CREATE INDEX IF NOT EXISTS actions_ts ON actions(ts);
+        CREATE TABLE IF NOT EXISTS procedures(
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL DEFAULT 0,
+            start_ts REAL NOT NULL,
+            end_ts REAL NOT NULL,
+            bundle_id TEXT NOT NULL DEFAULT '',
+            app_name TEXT NOT NULL DEFAULT '',
+            site TEXT,
+            goal TEXT NOT NULL,
+            steps TEXT NOT NULL DEFAULT '[]',
+            habits TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS procedures_start ON procedures(start_ts);
         """)
     }
 
@@ -364,6 +432,100 @@ final class MemoryStore: @unchecked Sendable {
         try queue.sync { Int((try query("SELECT COUNT(*) AS n FROM sessions", []).first?["n"] as? Int64) ?? 0) }
     }
 
+    // MARK: Actions (`ActionJournal` writes, `UserMoves` and the digester read)
+
+    func insertActions(_ list: [ActionRecord]) throws {
+        guard !list.isEmpty else { return }
+        try queue.sync {
+            try exec("BEGIN;")
+            do {
+                for a in list {
+                    try run("""
+                    INSERT INTO actions(ts, bundle_id, app_name, window_title, url, kind, role, label, shortcut, path)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """, [a.timestamp.timeIntervalSince1970, a.bundleID, a.appName, a.windowTitle, a.url,
+                          a.kind.rawValue, a.role, a.label, a.shortcut, a.path])
+                }
+                try exec("COMMIT;")
+            } catch {
+                try? exec("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    /// Actions in a time range, oldest first.
+    func actions(in interval: DateInterval, limit: Int = 50_000) throws -> [ActionRecord] {
+        try queue.sync {
+            try query("SELECT * FROM actions WHERE ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?",
+                      [interval.start.timeIntervalSince1970, interval.end.timeIntervalSince1970, limit]).map(Self.action(from:))
+        }
+    }
+
+    func actionCount() throws -> Int {
+        try queue.sync { Int((try query("SELECT COUNT(*) AS n FROM actions", []).first?["n"] as? Int64) ?? 0) }
+    }
+
+    // MARK: Procedures
+
+    @discardableResult
+    func insertProcedure(_ p: ProcedureRecord) throws -> Int64 {
+        try queue.sync {
+            try run("""
+            INSERT INTO procedures(session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps, habits)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """, [p.sessionID, p.start.timeIntervalSince1970, p.end.timeIntervalSince1970, p.bundleID, p.appName,
+                  p.site, p.goal, Self.json(p.steps), Self.json(p.habits)])
+            return sqlite3_last_insert_rowid(db)
+        }
+    }
+
+    /// Procedures that started after `since`, newest first.
+    func procedures(since: Date, limit: Int = 5000) throws -> [ProcedureRecord] {
+        try queue.sync {
+            try query("SELECT * FROM procedures WHERE start_ts >= ? ORDER BY start_ts DESC LIMIT ?",
+                      [since.timeIntervalSince1970, limit]).map(Self.procedure(from:))
+        }
+    }
+
+    /// Rewrites action labels/titles and procedure text that `redact` changes (it returns
+    /// nil for text it leaves alone). `dryRun` only counts. Returns the rows affected.
+    @discardableResult
+    func redactActionsAndProcedures(dryRun: Bool, _ redact: (String) -> String?) throws -> Int {
+        try queue.sync {
+            var changed = 0
+            if !dryRun { try exec("BEGIN;") }
+            do {
+                for r in try query("SELECT id, label, window_title, path FROM actions", []) {
+                    let fields = ["label", "window_title", "path"]
+                    let fixed = fields.map { f in (r[f] as? String).flatMap(redact) }
+                    guard fixed.contains(where: { $0 != nil }) else { continue }
+                    changed += 1
+                    guard !dryRun else { continue }
+                    let values: [Any?] = zip(fields, fixed).map { f, v in v ?? r[f] }
+                    try run("UPDATE actions SET label = ?, window_title = ?, path = ? WHERE id = ?", values + [r["id"]])
+                }
+                for r in try query("SELECT id, goal, steps, habits FROM procedures", []) {
+                    let decode = { (k: String) in (try? JSONSerialization.jsonObject(with: Data((r[k] as? String ?? "[]").utf8))) as? [String] ?? [] }
+                    let goal = r["goal"] as? String ?? ""
+                    let steps = decode("steps"), habits = decode("habits")
+                    let newGoal = redact(goal), newSteps = steps.map { redact($0) }, newHabits = habits.map { redact($0) }
+                    guard newGoal != nil || newSteps.contains(where: { $0 != nil }) || newHabits.contains(where: { $0 != nil }) else { continue }
+                    changed += 1
+                    guard !dryRun else { continue }
+                    try run("UPDATE procedures SET goal = ?, steps = ?, habits = ? WHERE id = ?",
+                            [newGoal ?? goal, Self.json(zip(steps, newSteps).map { $1 ?? $0 }),
+                             Self.json(zip(habits, newHabits).map { $1 ?? $0 }), r["id"]])
+                }
+                if !dryRun { try exec("COMMIT;") }
+            } catch {
+                if !dryRun { try? exec("ROLLBACK;") }
+                throw error
+            }
+            return changed
+        }
+    }
+
     // MARK: Search
 
     /// A ranked hit from either FTS table.
@@ -518,11 +680,19 @@ final class MemoryStore: @unchecked Sendable {
 
     // MARK: Retention
 
-    /// Deletes frames/sessions older than `days` and their thumbnails. Returns
-    /// the number of frames removed.
+    /// What Navi learned outlives the raw frames: clicks and shortcuts (no screen text) are
+    /// kept this long, the procedures distilled from them longer still — "the more you use
+    /// it, the more it learns" needs more than a fortnight. Never shorter than the frames.
+    static let actionRetentionDays = 90
+    static let procedureRetentionDays = 365
+
+    /// Deletes frames/sessions older than `days` and their thumbnails, actions and
+    /// procedures past their own (longer) retention. Returns the number of frames removed.
     @discardableResult
     func pruneOlderThan(days: Int, now: Date = Date()) throws -> Int {
         let cutoff = now.addingTimeInterval(-Double(days) * 86_400).timeIntervalSince1970
+        let actionCutoff = now.addingTimeInterval(-Double(max(days, Self.actionRetentionDays)) * 86_400).timeIntervalSince1970
+        let procedureCutoff = now.addingTimeInterval(-Double(max(days, Self.procedureRetentionDays)) * 86_400).timeIntervalSince1970
         return try queue.sync {
             let old = try query("SELECT id, thumb_path FROM frames WHERE ts < ?", [cutoff])
             for r in old {
@@ -533,6 +703,8 @@ final class MemoryStore: @unchecked Sendable {
                 try run("DELETE FROM frames WHERE ts < ?", [cutoff])
                 try run("DELETE FROM sessions_fts WHERE rowid IN (SELECT id FROM sessions WHERE end_ts < ?)", [cutoff])
                 try run("DELETE FROM sessions WHERE end_ts < ?", [cutoff])
+                try run("DELETE FROM actions WHERE ts < ?", [actionCutoff])
+                try run("DELETE FROM procedures WHERE end_ts < ?", [procedureCutoff])
                 try exec("COMMIT;")
             } catch {
                 try? exec("ROLLBACK;")
@@ -657,6 +829,35 @@ final class MemoryStore: @unchecked Sendable {
                              topics: topics, entities: ents,
                              importance: r["importance"] as? Double ?? 1,
                              notePath: r["note_path"] as? String)
+    }
+
+    private static func action(from r: [String: Any]) -> ActionRecord {
+        ActionRecord(id: r["id"] as? Int64 ?? 0,
+                     timestamp: Date(timeIntervalSince1970: r["ts"] as? Double ?? 0),
+                     bundleID: r["bundle_id"] as? String ?? "",
+                     appName: r["app_name"] as? String ?? "",
+                     windowTitle: r["window_title"] as? String,
+                     url: r["url"] as? String,
+                     kind: ActionRecord.Kind(rawValue: r["kind"] as? String ?? "") ?? .click,
+                     role: r["role"] as? String ?? "",
+                     label: r["label"] as? String ?? "",
+                     shortcut: r["shortcut"] as? String,
+                     path: r["path"] as? String)
+    }
+
+    private static func procedure(from r: [String: Any]) -> ProcedureRecord {
+        func list(_ key: String) -> [String] {
+            (try? JSONSerialization.jsonObject(with: Data((r[key] as? String ?? "[]").utf8))) as? [String] ?? []
+        }
+        return ProcedureRecord(id: r["id"] as? Int64 ?? 0,
+                               sessionID: r["session_id"] as? Int64 ?? 0,
+                               start: Date(timeIntervalSince1970: r["start_ts"] as? Double ?? 0),
+                               end: Date(timeIntervalSince1970: r["end_ts"] as? Double ?? 0),
+                               bundleID: r["bundle_id"] as? String ?? "",
+                               appName: r["app_name"] as? String ?? "",
+                               site: r["site"] as? String,
+                               goal: r["goal"] as? String ?? "",
+                               steps: list("steps"), habits: list("habits"))
     }
 
     private static func json(_ obj: Any) -> String {

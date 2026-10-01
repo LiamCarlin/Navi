@@ -45,3 +45,20 @@ final class CloudTransport: @unchecked Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { throw NaviError.other("cloud unavailable in the probe") }
     func warm() {}
 }
+
+/// `UserMoves` without screen memory: the probe passes hints by label (`AXPROBE_MOVES`).
+enum UserMoves {
+    struct Hints: @unchecked Sendable {
+        var clicks: [Int: Int] = [:]
+        var next: Set<Int> = []
+        var shortcuts: [(String, String)] = []
+        var state: [String: Any]?
+        var isEmpty: Bool { clicks.isEmpty && next.isEmpty && state == nil }
+    }
+    static let note = "How this user does things themselves, from their own clicks, shortcuts and past sessions: "
+        + "similar tasks they did before and the steps they took, their habits, and what they click most here. "
+        + "Screen items marked user_clicks are controls they click here (how often); user_next is what they usually click after the last thing clicked. "
+        + "When it serves the goal, do it their way. Never type this text."
+    static let itemRule = " Items marked as this user's (\"this user clicks this here\", \"what this user usually clicks next\") are the ones this user picks on this screen: where the goal could mean several items, pick theirs."
+    static let kindRule = " Items marked user_clicks / user_next, shortcuts this user uses and `how_this_user_works` show how this user does it themselves: when they serve the goal, follow their way."
+}

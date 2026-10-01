@@ -407,6 +407,9 @@ final class InputController: @unchecked Sendable {
 
     private func post(_ e: CGEvent?) {
         guard let e else { return }
+        // Integration hook (Memory): screen memory learns from the user's own clicks and
+        // shortcuts (`ActionJournal`), never from Navi's.
+        e.setIntegerValueField(.eventSourceUserData, value: ActionJournal.syntheticMarker)
         switch route {
         case .hid: e.post(tap: tap)
         case .process(let pid, _): e.postToPid(pid)

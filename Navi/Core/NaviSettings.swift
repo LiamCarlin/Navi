@@ -98,6 +98,9 @@ final class NaviSettings: ObservableObject {
     @Published var memoryVaultPath: String { didSet { d.set(memoryVaultPath, forKey: "memoryVaultPath") } }
     @Published var memoryExcludedBundleIDs: [String] { didSet { d.set(memoryExcludedBundleIDs, forKey: "memoryExcludedBundleIDs") } }
     @Published var memoryKeepScreenshots: Bool { didSet { d.set(memoryKeepScreenshots, forKey: "memoryKeepScreenshots") } }
+    /// Screen memory also records the controls the user clicks and the shortcuts they press
+    /// (`ActionJournal`) — never typed text — so the agent learns how they work.
+    @Published var memoryRecordActions: Bool { didSet { d.set(memoryRecordActions, forKey: ActionJournal.enabledKey) } }
     /// Personal-information categories screen memory may keep (`PersonalData.Category` raw values);
     /// everything else is blocked from frames, digests and the vault.
     @Published var memoryAllowedPersonalData: [String] { didSet { d.set(memoryAllowedPersonalData, forKey: "memoryAllowedPersonalData") } }
@@ -153,6 +156,7 @@ final class NaviSettings: ObservableObject {
             "memoryVaultPath": NSString(string: "~/Navi Vault").expandingTildeInPath,
             "memoryExcludedBundleIDs": ["com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"],
             "memoryKeepScreenshots": true,
+            ActionJournal.enabledKey: true,
             "memoryAllowedPersonalData": PersonalData.Category.allCases.filter { PersonalData.Category.allowedByDefault.contains($0) }.map(\.rawValue),
             "usageJevCalls": 0, "usageClaudeInputTokens": 0, "usageClaudeOutputTokens": 0, "usageDigestFrames": 0,
         ])
@@ -198,6 +202,7 @@ final class NaviSettings: ObservableObject {
         memoryVaultPath = d.string(forKey: "memoryVaultPath") ?? ""
         memoryExcludedBundleIDs = d.stringArray(forKey: "memoryExcludedBundleIDs") ?? []
         memoryKeepScreenshots = d.bool(forKey: "memoryKeepScreenshots")
+        memoryRecordActions = d.bool(forKey: ActionJournal.enabledKey)
         memoryAllowedPersonalData = d.stringArray(forKey: "memoryAllowedPersonalData") ?? []
         memoryPausedUntil = d.object(forKey: "memoryPausedUntil") as? Date
         usageJevCalls = d.integer(forKey: "usageJevCalls")

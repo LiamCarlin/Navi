@@ -419,6 +419,16 @@ enum PersonalData {
             if !keep { removed += 1 }
             return keep
         }
+        // The operational half: a redacted step still says how the work was done.
+        if let g = d.goal {
+            let r = redact(g, policy: policy)
+            if r.changed { out.goal = r.text; removed += r.values.count }
+        }
+        func redacted(_ list: [String]) -> [String] {
+            list.map { s in let r = redact(s, policy: policy); removed += r.values.count; return r.text }
+        }
+        out.steps = redacted(d.steps)
+        out.habits = redacted(d.habits)
         return (out, removed)
     }
 }

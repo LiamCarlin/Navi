@@ -20,6 +20,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         let recall: Recall
         let digester: Digester
         let scheduler: CaptureScheduler
+        let journal: ActionJournal
     }
 
     // Only touched on the main actor.
@@ -50,6 +51,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         guard let stack = ensureStack() else { return }
         guard !status.isRunning else { return }
         stack.scheduler.start()
+        stack.journal.start()
 
         digestTask?.cancel()
         digestTask = Task.detached(priority: .utility) { [weak self] in
@@ -78,6 +80,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
 
     @MainActor func stop() {
         stack?.scheduler.stop()
+        stack?.journal.stop()
         digestTask?.cancel(); digestTask = nil
         pruneTask?.cancel(); pruneTask = nil
         if status.isRunning { Log.memory.info("Memory service stopped") }
@@ -138,7 +141,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             // Vault path changed in settings: swap the writer, keep the store.
             let vault = VaultWriter(root: vaultURL)
             let digester = Digester(store: existing.store, vault: vault, claude: claude, gemini: gemini, updateStatus: statusUpdater)
-            stack = Stack(store: existing.store, vault: vault, recall: existing.recall, digester: digester, scheduler: existing.scheduler)
+            stack = Stack(store: existing.store, vault: vault, recall: existing.recall, digester: digester, scheduler: existing.scheduler,
+                          journal: existing.journal)
             return stack
         }
         do {
@@ -147,12 +151,15 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             let recall = Recall(store: store)
             let digester = Digester(store: store, vault: vault, claude: claude, gemini: gemini, updateStatus: statusUpdater)
             let scheduler = CaptureScheduler(store: store, jev: jev, updateStatus: statusUpdater)
-            let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler)
+            let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler,
+                          journal: ActionJournal(store: store))
             stack = s
             // Integration hook (Agent): the planner learns how this user does things from the same store,
-            // and the agent learns their people, projects and documents (`UserKnowledge`).
+            // the agent learns their people, projects and documents (`UserKnowledge`), and how they
+            // act — what they click, their shortcuts, the procedures they follow (`UserMoves`).
             UserHabits.install(store: store)
             UserKnowledge.install(store: store)
+            UserMoves.install(store: store)
             return s
         } catch {
             Log.memory.error("Memory store unavailable: \(error.localizedDescription)")
@@ -183,13 +190,17 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         }
     }
 
-    /// Integration hook (Agent): new sessions → fresh `UserKnowledge`, and the
-    /// vault's `Navi/How you work.md` shows the user what the agent now knows.
+    /// Integration hook (Agent): new sessions → fresh `UserKnowledge` and `UserMoves`, and
+    /// the vault's `Navi/How you work.md` shows the user what the agent now knows.
     private func refreshKnowledge(vault: VaultWriter) {
         guard let k = UserKnowledge.current else { return }
         k.invalidate()
         let now = Date()
-        let md = UserKnowledge.markdown(k.things(now: now), now: now)
+        var md = UserKnowledge.markdown(k.things(now: now), now: now)
+        if let m = UserMoves.current {
+            m.invalidate()
+            md += UserMoves.markdown(m.profile(now: now))
+        }
         do { try vault.writeGenerated("Navi/How you work.md", md) } catch {
             Log.memory.error("Could not write How you work: \(error.localizedDescription)")
         }

@@ -357,6 +357,10 @@ assert seen["body"]["state"]["user_context"] == ctx and "playbook" not in seen["
 for bad in ("not json", json.dumps({"things": []}), json.dumps([1])):
     os.environ["NAVI_USER_CONTEXT_JSON"] = bad
     assert nr.Playbook.user_context_from_env() is None
+# How the user did it before (UserMoves procedures) rides along even with no named things.
+ways = {"note": "n", "things": [], "how_this_user_works": {"did_before": ["submit hw (Chrome) → Courses › MTH3199 › Assignments"]}}
+os.environ["NAVI_USER_CONTEXT_JSON"] = json.dumps(ways)
+assert nr.Playbook.user_context_from_env() == ways
 os.environ.pop("NAVI_USER_CONTEXT_JSON")
 print("user context OK")
 
