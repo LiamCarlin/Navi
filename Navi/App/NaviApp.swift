@@ -98,16 +98,15 @@ struct MenuBarMenu: View {
     private var voiceActive: Bool { _ = voiceTick; return AppDelegate.shared?.voice?.isListening ?? false }
 
     var body: some View {
-        Button("Open Navi  ⌘Space") { AppDelegate.shared?.togglePanel() }
-        Button(voiceActive ? "Stop Voice Control" : "Start Voice Control…") { AppDelegate.shared?.toggleVoice() }
+        Button("Open Navi  \(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))") { AppDelegate.shared?.togglePanel() }
+        Button(voiceActive ? "Stop Listening" : "Start Listening") { AppDelegate.shared?.toggleVoice() }
             .onReceive(NotificationCenter.default.publisher(for: .naviVoiceStateChanged)) { _ in voiceTick &+= 1 }
         if let vm = AppDelegate.shared?.panelController.viewModel, vm.hasAgentToShow {
-            Button(vm.agentRun != nil ? "Show running task…" : "Show last task…") { AppDelegate.shared?.showCurrentTask() }
+            Button(vm.agentRun != nil ? "Show Running Task" : "Show Last Task") { AppDelegate.shared?.showCurrentTask() }
         }
-        Button("Navi App & Settings…") {
-            openWindow(id: WindowID.main)
-            AppActivation.showDock()
-        }
+        Divider()
+        Button("Settings…") { AppDelegate.shared?.openMainWindow(section: .home) }
+            .keyboardShortcut(",")
         Button("Account…") { AppDelegate.shared?.openMainWindow(section: .account) }
         Button("Check for Updates…") { Updater.shared.checkForUpdates(userInitiated: true) }
         Divider()
@@ -126,19 +125,19 @@ struct MenuBarMenu: View {
             }
             Divider()
         }
-        // Same setting as Settings → Agent; here so it can be flipped between tasks.
-        Toggle("Run tasks in background", isOn: $settings.agentRunInBackground)
+        // Same setting as Settings → Tasks; here so it can be flipped between tasks.
+        Toggle("Work in the Background", isOn: $settings.agentRunInBackground)
         Divider()
         if !NaviAccount.shared.entitlements.recall {
             Button("Unlock Recall…") { AppDelegate.shared?.openMainWindow(section: .memory) }
         } else {
-            Toggle("Screen Memory", isOn: $settings.memoryCaptureEnabled)
+            Toggle("Recall", isOn: $settings.memoryCaptureEnabled)
         }
         if settings.memoryCaptureEnabled, NaviAccount.shared.entitlements.recall {
             if settings.memoryIsPaused {
-                Button("Resume capture") { settings.memoryPausedUntil = nil }
+                Button("Resume Recall") { settings.memoryPausedUntil = nil }
             } else {
-                Button("Pause capture for 1 hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
+                Button("Pause Recall for 1 Hour") { settings.memoryPausedUntil = Date().addingTimeInterval(3600) }
             }
         }
         Divider()

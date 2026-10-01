@@ -76,49 +76,62 @@ struct HomeView: View {
 
     // MARK: Cards
 
+    /// One card per thing Navi needs; anything that needs attention comes first.
     @ViewBuilder private var cards: some View {
-        StatusCard(title: "Account", detail: accountDetail, level: accountLevel,
-                   fixTitle: account.isSignedIn ? "Open" : "Sign in") {
-            if account.isSignedIn { nav.go(.account) } else { account.signIn() }
+        ForEach(cardModels.sorted { $0.rank < $1.rank }, id: \.title) { c in
+            StatusCard(title: c.title, detail: c.detail, level: c.level, fixTitle: c.fixTitle, fix: c.fix)
         }
-        StatusCard(title: "Accessibility", detail: perms.accessibility == .granted ? "Granted. The agent can click and type." : "Needed for the agent to click and type.",
-                   level: perms.accessibility.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Screen Recording", detail: perms.screenRecording == .granted ? "Granted. Agent and Screen Memory can see the screen." : "Needed for the agent and Screen Memory.",
-                   level: perms.screenRecording.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Automation", detail: automationDetail, level: perms.automation.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Spotlight shortcut", detail: spotlightLoaded ? spotlight.summary : "Checking…",
-                   level: spotlightLoaded ? spotlight.level : .off, fixTitle: "Fix") { nav.go(.general) }
-        StatusCard(title: "Recall", detail: memoryDetail, level: memoryLevel,
-                   fixTitle: !account.entitlements.recall ? "Unlock" : (settings.memoryCaptureEnabled ? "Open" : "Turn on")) { nav.go(.memory) }
-        StatusCard(title: "Login item", detail: LoginItem.describe(loginStatus), level: LoginItem.level(loginStatus),
-                   fixTitle: "Enable") { nav.go(.general) }
+    }
+
+    private struct CardModel {
+        var title: String
+        var detail: String
+        var level: StatusLevel
+        var fixTitle: String
+        var fix: () -> Void
+        var rank: Int {
+            switch level {
+            case .bad: return 0
+            case .warn: return 1
+            case .ok: return 2
+            case .off: return 3
+            }
+        }
+    }
+
+    private var cardModels: [CardModel] {
+        [
+            CardModel(title: "Accessibility",
+                      detail: perms.accessibility == .granted ? "Allowed. Navi can click and type for you." : "Needed for Navi to click and type for you.",
+                      level: perms.accessibility.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Screen Recording",
+                      detail: perms.screenRecording == .granted ? "Allowed. Tasks and Recall can see the screen." : "Needed for tasks and Recall.",
+                      level: perms.screenRecording.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Automation", detail: automationDetail, level: perms.automation.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Shortcut", detail: spotlightLoaded ? spotlight.summary : "Checking…",
+                      level: spotlightLoaded ? spotlight.level : .off, fixTitle: "Fix") { nav.go(.general) },
+            CardModel(title: "Recall", detail: memoryDetail, level: memoryLevel,
+                      fixTitle: !account.entitlements.recall ? "Unlock" : (settings.memoryCaptureEnabled ? "Open" : "Turn On")) { nav.go(.memory) },
+            CardModel(title: "Open at login", detail: LoginItem.describe(loginStatus), level: LoginItem.level(loginStatus),
+                      fixTitle: "Turn On") { nav.go(.general) },
+        ]
     }
 
     private var automationDetail: String {
         switch perms.automation {
-        case .granted: return "Granted. Navi can read the current browser tab."
-        case .notDetermined: return "Not requested yet — needed to read browser tabs."
-        case .denied: return "Denied. Browser tab context and AppleScript actions are off."
-        case .unknown: return "Could not determine (System Events not running?)."
+        case .granted: return "Allowed. Navi can read the current browser tab."
+        case .notDetermined: return "Not asked yet — needed to read the current browser tab."
+        case .denied: return "Not allowed. Navi can't read the browser tab or control Finder and Safari."
+        case .unknown: return "Couldn't check right now."
         }
     }
 
-    private var accountDetail: String {
-        if account.isSignedIn { return "Signed in as \(account.email ?? "you") · \(account.tier.displayName)." }
-        if account.hasDeveloperKeys { return "Developer mode — your own keys are in use." }
-        return "Sign in for answers, tasks and voice control. 7-day free trial of Pro."
-    }
-
-    private var accountLevel: StatusLevel {
-        account.isSignedIn || account.hasDeveloperKeys ? .ok : .bad
-    }
-
     private var memoryDetail: String {
-        if !account.entitlements.recall { return "Not in your plan. Add Recall to ask \"what was I doing yesterday?\"" }
-        if !settings.memoryCaptureEnabled { return "Off. Turn it on to ask \"what was I doing yesterday?\"" }
+        if !account.entitlements.recall { return "Not in your plan. Add it to ask \u{201C}what was I doing yesterday?\u{201D}" }
+        if !settings.memoryCaptureEnabled { return "Off. Turn it on to ask \u{201C}what was I doing yesterday?\u{201D}" }
         if settings.memoryIsPaused, let u = settings.memoryPausedUntil { return "Paused until \(u.formatted(date: .omitted, time: .shortened))." }
-        if memoryStatus.isRunning { return "Running · \(memoryStatus.framesToday) frames today · \(memoryStatus.vaultNoteCount) notes." }
-        return "Enabled but not running."
+        if memoryStatus.isRunning { return "On · \(memoryStatus.framesToday) snapshots today · \(memoryStatus.vaultNoteCount) journal notes." }
+        return "On, but not running yet. Check Screen Recording."
     }
 
     private var memoryLevel: StatusLevel {
@@ -143,12 +156,12 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Try typing").font(.title3.weight(.semibold))
             LazyVGrid(columns: columns, spacing: 8) {
-                tip("maps", "opens Apple Maps — Navi decides in under a second")
+                tip("maps", "opens Apple Maps instantly")
                 tip("12% of 340", "instant math, currency and time zones")
                 tip("why is the sky blue", "streams an answer")
-                tip("open chrome and search for jev", "Navi does it for you")
-                tip("what was I reading yesterday", "asks Recall")
-                tip("sleep", "system commands: sleep, lock, dark mode, wifi")
+                tip("open chrome and search for flights to boston", "Navi does it for you")
+                tip("what was I reading yesterday", "answers from Recall")
+                tip("dark mode", "Mac controls: sleep, lock, dark mode, Wi-Fi")
             }
         }
     }
