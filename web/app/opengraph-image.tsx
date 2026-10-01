@@ -1,42 +1,43 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ImageResponse } from "next/og";
+import { FAR, MID, NEAR } from "@/lib/ridge";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const alt = "Navi: ⌘Space, but it does things.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
 const STAR =
   "M12 1.5c.6 5.4 4.1 9 9.5 10.5-5.4 1.5-8.9 5.1-9.5 10.5-.6-5.4-4.1-9-9.5-10.5C7.9 10.5 11.4 6.9 12 1.5z";
+const HEADLINE = "Space, but it does things.";
 
-function Star({ size, color }: { size: number; color: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24">
-      <path d={STAR} fill={color} />
-    </svg>
-  );
+type Font = { name: string; data: ArrayBuffer; style: "normal" | "italic"; weight: 500 | 600 };
+
+/** A Google font, subset to `text`. Empty if offline: the default font is used instead. */
+async function google(family: string, axes: string, name: string, weight: 500 | 600, text: string): Promise<Font[]> {
+  try {
+    const css = await (await fetch(`https://fonts.googleapis.com/css2?family=${family}:${axes}&text=${encodeURIComponent(text)}`)).text();
+    const faces = [...css.matchAll(/font-style: (normal|italic);[\s\S]*?src: url\((.+?)\) format\('(?:opentype|truetype)'\)/g)];
+    return await Promise.all(
+      faces.map(async ([, style, url]) => ({ name, data: await (await fetch(url)).arrayBuffer(), style: style as "normal" | "italic", weight })),
+    );
+  } catch {
+    return [];
+  }
 }
 
-/** ⌘, drawn: the OG renderer's default font has no glyph for it. */
-function Cmd({ size }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 9V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
-    </svg>
-  );
-}
-
-function Check({ size }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12l5 5 9-10" />
-    </svg>
-  );
-}
-
-/** The MacBook with the voice island down, plus the headline. Flexbox only (Satori). */
-export default function OpenGraphImage() {
-  const steps = ["Opening Chrome", "Searching flights to Tokyo", "Comparing prices", "Picked $412 · ANA, Oct 14"];
-  const bars = [8, 14, 18, 11, 16, 9, 13, 7];
+/** The hero as a card: sky, mountains, the headline, and the real ⌘Space bar rising out of the range. */
+export default async function OpenGraphImage() {
+  const [sans, serifFonts, poster] = await Promise.all([
+    google("Geist", "wght@600", "Geist", 600, "Navi"),
+    google("EB+Garamond", "ital,wght@0,500;1,500", "Garamond", 500, HEADLINE),
+    readFile(join(process.cwd(), "public/video/demo-poster.jpg")),
+  ]);
+  // The first font is Satori's default, so the sans goes first.
+  const fonts = [...sans, ...serifFonts];
+  const posterSrc = `data:image/jpeg;base64,${poster.toString("base64")}`;
+  const serif = serifFonts.length ? "Garamond" : "serif";
 
   return new ImageResponse(
     (
@@ -45,190 +46,104 @@ export default function OpenGraphImage() {
           width: "100%",
           height: "100%",
           display: "flex",
-          alignItems: "center",
-          background: "#0a0a0b",
-          backgroundImage: "radial-gradient(50% 60% at 70% 40%, rgba(191,90,242,0.16), transparent 70%)",
-          color: "#f4f4f5",
-          fontFamily: "sans-serif",
-          padding: "0 64px",
+          position: "relative",
+          background: "linear-gradient(180deg, #2c7fdc 0%, #4b9be8 30%, #8cc1f0 55%, #cfe4f8 72%, #ffffff 92%)",
         }}
       >
-        {/* Left: wordmark + headline */}
-        <div style={{ display: "flex", flexDirection: "column", width: 470 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 26, fontWeight: 600 }}>
-            <Star size={24} color="#bf5af2" />
+        {/* sun */}
+        <div
+          style={{
+            position: "absolute",
+            left: 1004,
+            top: 344,
+            width: 72,
+            height: 72,
+            borderRadius: 999,
+            background: "#fff",
+            boxShadow: "0 0 60px 40px rgba(255,250,235,0.85), 0 0 160px 90px rgba(255,245,225,0.4)",
+          }}
+        />
+
+        {/* mountains */}
+        <svg width="1200" height="390" viewBox="0 130 1600 390" style={{ position: "absolute", left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="far" x1="0" y1="200" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="#dbe9fa" />
+              <stop offset="1" stopColor="#b9d3f2" />
+            </linearGradient>
+            <linearGradient id="mid" x1="0" y1="120" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="#f4f8ff" />
+              <stop offset="0.12" stopColor="#bcd6f6" />
+              <stop offset="0.3" stopColor="#5d8fd8" />
+              <stop offset="0.62" stopColor="#3f6fc0" />
+              <stop offset="1" stopColor="#9bbfe9" />
+            </linearGradient>
+            <linearGradient id="mist" x1="0" y1="300" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="#ffffff" stopOpacity="0" />
+              <stop offset="0.6" stopColor="#ffffff" stopOpacity="0.7" />
+              <stop offset="1" stopColor="#ffffff" />
+            </linearGradient>
+          </defs>
+          <path d={FAR} fill="url(#far)" />
+          <path d={MID} fill="url(#mid)" />
+          <rect x="0" y="300" width="1600" height="220" fill="url(#mist)" />
+          <path d={NEAR} fill="#ffffff" fillOpacity="0.92" />
+        </svg>
+
+        {/* headline */}
+        <div style={{ position: "absolute", left: 0, right: 0, top: 50, display: "flex", flexDirection: "column", alignItems: "center", color: "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "Geist", fontSize: 24, fontWeight: 600 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 9, background: "#fff" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24">
+                <path d={STAR} fill="#bf5af2" />
+              </svg>
+            </div>
             Navi
           </div>
-          <div style={{ display: "flex", flexDirection: "column", fontSize: 72, fontWeight: 600, letterSpacing: -3, lineHeight: 1.02, marginTop: 36 }}>
-            <span style={{ display: "flex", alignItems: "center" }}>
-              <Cmd size={58} />
-              <span style={{ marginLeft: 6 }}>Space, but</span>
-            </span>
-            <span>it does things.</span>
-          </div>
-          <div style={{ display: "flex", fontSize: 24, color: "#a3a3ad", marginTop: 22, lineHeight: 1.4 }}>
-            Opens apps, answers questions, and does small jobs on your Mac in the background. Type it or say it.
+          <div style={{ display: "flex", alignItems: "center", marginTop: 26, fontFamily: serif, fontWeight: 500, fontSize: 76, lineHeight: 1, letterSpacing: -1 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 64,
+                height: 64,
+                marginRight: 16,
+                borderRadius: 13,
+                background: "rgba(255,255,255,0.22)",
+                border: "1.5px solid rgba(255,255,255,0.6)",
+              }}
+            >
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 9V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
+              </svg>
+            </div>
+            <span>Space, but it</span>
+            <span style={{ fontStyle: "italic", marginLeft: 18, marginRight: 18 }}>does</span>
+            <span>things.</span>
           </div>
         </div>
 
-        {/* Right: MacBook, lid only, island down */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginLeft: 36, width: 600 }}>
-          <div
-            style={{
-              display: "flex",
-              width: 600,
-              height: 392,
-              borderRadius: 22,
-              background: "linear-gradient(180deg,#2d2d31,#1c1c1f)",
-              padding: 5,
-              boxShadow: "0 40px 90px rgba(0,0,0,0.7)",
-            }}
-          >
-            <div style={{ display: "flex", flex: 1, borderRadius: 18, background: "#050506", padding: "12px 10px 12px" }}>
-              <div
-                style={{
-                  display: "flex",
-                  flex: 1,
-                  flexDirection: "column",
-                  alignItems: "center",
-                  position: "relative",
-                  borderRadius: 10,
-                  overflow: "hidden",
-                  backgroundImage:
-                    "radial-gradient(70% 60% at 22% 105%, rgba(139,140,248,0.55), transparent 62%), radial-gradient(55% 45% at 88% 10%, rgba(120,90,220,0.35), transparent 60%), linear-gradient(165deg,#1b1b30 0%,#131324 45%,#0c0c16 100%)",
-                }}
-              >
-                {/* Menu bar */}
-                <div
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    height: 22,
-                    alignItems: "center",
-                    padding: "0 12px",
-                    fontSize: 11,
-                    color: "rgba(255,255,255,0.8)",
-                    background: "rgba(0,0,0,0.25)",
-                  }}
-                >
-                  <span style={{ fontWeight: 600 }}>Finder</span>
-                  <span style={{ marginLeft: 12 }}>File</span>
-                  <span style={{ marginLeft: 12 }}>Edit</span>
-                  <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
-                    <Star size={11} color="#bf5af2" />
-                    Navi
-                  </span>
-                  <span style={{ marginLeft: 12 }}>Mon 9:41</span>
-                </div>
-
-                {/* Island (hanging from the notch, which is drawn on top) */}
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    width: 330,
-                    marginTop: -22,
-                    padding: "38px 16px 14px",
-                    borderRadius: "0 0 22px 22px",
-                    background: "#000",
-                    boxShadow: "0 18px 50px rgba(0,0,0,0.8)",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        width: 24,
-                        height: 24,
-                        borderRadius: 12,
-                        background: "rgba(139,140,248,0.16)",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <Star size={12} color="#bf5af2" />
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 3, height: 18 }}>
-                      {bars.map((h, i) => (
-                        <div key={i} style={{ display: "flex", width: 3, height: h, borderRadius: 2, background: "#bf5af2" }} />
-                      ))}
-                    </div>
-                    <span style={{ marginLeft: "auto", fontSize: 11, color: "#6e6e78" }}>Done</span>
-                  </div>
-                  <div style={{ display: "flex", fontSize: 14, marginTop: 10, lineHeight: 1.35, color: "#fff" }}>
-                    “open chrome, search flights to tokyo, and pick the cheapest”
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 6,
-                      marginTop: 10,
-                      paddingTop: 8,
-                      borderTop: "1px solid rgba(255,255,255,0.1)",
-                    }}
-                  >
-                    {steps.map((s) => (
-                      <div key={s} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "rgba(255,255,255,0.85)" }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            width: 14,
-                            height: 14,
-                            borderRadius: 7,
-                            background: "#bf5af2",
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Check size={9} />
-                        </div>
-                        {s}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Notch */}
-                <div
-                  style={{
-                    display: "flex",
-                    position: "absolute",
-                    top: 0,
-                    left: 227,
-                    width: 112,
-                    height: 26,
-                    borderRadius: "0 0 11px 11px",
-                    background: "#050506",
-                  }}
-                />
-
-                {/* Dock */}
-                <div
-                  style={{
-                    display: "flex",
-                    position: "absolute",
-                    bottom: 8,
-                    left: 165,
-                    gap: 6,
-                    padding: 5,
-                    borderRadius: 12,
-                    background: "rgba(255,255,255,0.1)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                  }}
-                >
-                  {["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6", "#64748b"].map((c) => (
-                    <div key={c} style={{ display: "flex", width: 22, height: 22, borderRadius: 6, background: c }} />
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-          {/* Base hint */}
-          <div style={{ display: "flex", width: 640, height: 14, borderRadius: "0 0 10px 10px", background: "linear-gradient(180deg,#232326,#151517)" }} />
+        {/* the real bar, rising out of the range */}
+        <div
+          style={{
+            position: "absolute",
+            left: 240,
+            top: 250,
+            width: 720,
+            height: 450,
+            display: "flex",
+            borderRadius: 18,
+            overflow: "hidden",
+            border: "2px solid rgba(255,255,255,0.7)",
+            boxShadow: "0 30px 80px rgba(20,40,90,0.45)",
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={posterSrc} width={720} height={450} alt="" style={{ objectFit: "cover" }} />
         </div>
       </div>
     ),
-    { ...size },
+    { ...size, fonts: fonts.length ? fonts : undefined },
   );
 }
