@@ -40,50 +40,19 @@ enum UsageCounters {
     }
 }
 
-struct UsageView: View {
-    @EnvironmentObject private var settings: NaviSettings
+/// "This month on this Mac: 12 answers · 3 tasks" — shown on the Account
+/// page (the Usage page it used to have folded into Account).
+struct LocalUsageRow: View {
     @AppStorage(UsageCounters.answersKey) private var answers = 0
     @AppStorage(UsageCounters.tasksKey) private var tasks = 0
-    @State private var confirmReset = false
 
     var body: some View {
-        FormPage(title: "Usage", subtitle: "What Navi has done for you this month, counted on this Mac.") {
-            Section {
-                HStack(spacing: 12) {
-                    tile("Answers this month", answers, "text.bubble")
-                    tile("Tasks this month", tasks, "cursorarrow.motionlines")
-                }
-                .padding(.vertical, 4)
-            } footer: {
-                Text("Answers are questions Navi answered in the panel; tasks are things it did for you on your Mac. Counters start over on the first of each month.")
-            }
-
-            Section {
-                HStack {
-                    Button("Reset counters", role: .destructive) { confirmReset = true }
-                    Spacer()
-                }
-                .confirmationDialog("Reset the usage counters?", isPresented: $confirmReset) {
-                    Button("Reset", role: .destructive) {
-                        UsageCounters.reset()
-                        settings.usageJevCalls = 0
-                        settings.usageClaudeInputTokens = 0
-                        settings.usageClaudeOutputTokens = 0
-                        settings.usageDigestFrames = 0
-                    }
-                }
-            }
+        LabeledContent {
+            Text("\(answers) answer\(answers == 1 ? "" : "s") · \(tasks) task\(tasks == 1 ? "" : "s")")
+                .monospacedDigit().foregroundStyle(.secondary)
+        } label: {
+            Text("This month on this Mac")
         }
         .onAppear { UsageCounters.rollOverIfNeeded(in: .standard, now: Date()) }
-    }
-
-    private func tile(_ label: String, _ value: Int, _ symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(label, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
-            Text(Fmt.tokens(value)).font(.title2.weight(.semibold)).monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

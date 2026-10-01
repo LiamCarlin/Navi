@@ -23,9 +23,9 @@ enum SpotlightShortcutFix {
 
         var summary: String {
             if let error { return "Could not read Spotlight shortcuts: \(error)" }
-            if !spotlightSearchEnabled { return "Spotlight's ⌘Space shortcut is disabled — Navi owns it." }
-            if conflict { return "Spotlight still owns ⌘Space. Navi's hotkey will not fire until it is disabled." }
-            return "Spotlight is bound to a different shortcut — no conflict."
+            if !spotlightSearchEnabled { return "Spotlight's shortcut is off, so nothing gets in Navi's way." }
+            if conflict { return "Spotlight still uses ⌘Space, so Navi can't. Turn off Spotlight's shortcut, or give Navi another one." }
+            return "Navi's shortcut doesn't clash with Spotlight."
         }
 
         var level: StatusLevel {
