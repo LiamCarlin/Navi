@@ -10,13 +10,13 @@ struct VoiceSettingsView: View {
     @State private var resolvedLocale: String = ""
 
     var body: some View {
-        FormPage(title: "Voice", subtitle: "Click the sparkle in the ⌘Space bar and talk. Navi acts on each instruction the moment it is complete — mid-sentence, while you keep talking.") {
+        FormPage(title: "Voice", subtitle: "Talk to Navi. It acts on each instruction the moment it is complete — while you keep talking.") {
             Section {
                 HStack(spacing: 12) {
                     Image(systemName: "waveform").font(.title2).foregroundStyle(PanelStyle.accentGradient)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(voiceActive ? "Voice control is listening" : "Voice control is off").font(.headline)
-                        Text("Also from the menu bar, or navi://voice from Shortcuts and Raycast.")
+                        Text(voiceHint)
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -27,7 +27,7 @@ struct VoiceSettingsView: View {
 
             Section {
                 PermissionRow(title: "Microphone",
-                              explanation: "Speech is recognized on this Mac by Apple's on-device model; audio never leaves the machine and no speech-recognition account is involved.",
+                              explanation: "Speech is recognized on this Mac by Apple's on-device model. Audio never leaves your Mac.",
                               state: permissions.microphone,
                               request: { Task { _ = await Permissions.requestMicrophone(); await permissions.refresh() } },
                               open: { Permissions.openSettings(.microphone) })
@@ -49,18 +49,9 @@ struct VoiceSettingsView: View {
             }
 
             Section {
-                Toggle(isOn: Binding(get: { settings.autoMode }, set: { settings.autoMode = $0 })) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto mode").font(.headline)
-                        Text(settings.autoMode
-                             ? "Navi acts on its own: Jev decides every step from what is on screen — native apps and any browser — and Claude is consulted only when Jev is stuck. Only sending, paying and deleting pause for a “yes”."
-                             : "Every action waits for your approval before it happens. Slower, but nothing moves without you.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
                 Toggle("Global shortcut to start talking", isOn: $settings.voiceHotKeyEnabled)
                 if settings.voiceHotKeyEnabled {
-                    ExplainedRow(title: "Voice shortcut", explanation: "Press it anywhere to drop the island out of the notch and start listening; press again to stop.") {
+                    ExplainedRow(title: "Voice shortcut", explanation: "Press it anywhere to start listening; press it again to stop.") {
                         HotKeyRecorderView(kind: .voice)
                     }
                 }
@@ -68,7 +59,7 @@ struct VoiceSettingsView: View {
             } header: {
                 Text("Hands-free")
             } footer: {
-                Text("Speech stays on this Mac. What Navi does with it — opening apps, driving them, browsing — is decided by Jev in about 200 ms per instruction.")
+                Text("Speech is recognized on this Mac. Navi works out what each instruction means in a fraction of a second.")
             }
 
             Section {
@@ -94,14 +85,18 @@ struct VoiceSettingsView: View {
             } header: {
                 Text("Acting")
             } footer: {
-                Text("Risky steps (sending, paying, deleting) still pause for approval — say “yes” or “no”, or click in the island. Approval mode is under Agent.")
+                HStack(spacing: 4) {
+                    Text("When Navi asks before acting is set under Tasks. When it asks, say “yes” or “no”, or click in the island.")
+                    Button("Open Tasks") { SettingsNavigator.shared.go(.agent) }
+                        .buttonStyle(.link)
+                }
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     how("1", "Listen", "Apple's on-device recognizer streams words as you say them; nothing waits for you to stop talking.")
-                    how("2", "Segment", "Navi splits the stream at “and”, “then” and pauses into candidate instructions.")
-                    how("3", "Decide", "For each candidate Navi decides: complete, or still coming? Open an app, do something, browse, answer, or a word for Navi? Which app, and could it be hard to undo?")
+                    how("2", "Split", "Navi splits what you say at “and”, “then” and pauses into separate instructions.")
+                    how("3", "Decide", "For each one Navi decides: is it complete, or is more coming? Should it open an app, do something, search the web or answer? Could it be hard to undo?")
                     how("4", "Act", "Apps launch instantly; tasks run on your Mac; answers stream into the island.")
                 }
                 .padding(.vertical, 2)
@@ -115,6 +110,16 @@ struct VoiceSettingsView: View {
     }
 
     private var voiceActive: Bool { AppDelegate.shared?.voice?.isListening ?? false }
+
+    /// How to start talking, with the user's own shortcuts.
+    private var voiceHint: String {
+        let bar = HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers)
+        if settings.voiceHotKeyEnabled {
+            let voice = HotKeyManager.describe(keyCode: settings.voiceHotKeyCode, modifiers: settings.voiceHotKeyModifiers)
+            return "Press \(voice) anywhere, or click the sparkle in the \(bar) bar."
+        }
+        return "Click the sparkle in the \(bar) bar, or use the menu bar icon."
+    }
 
     private var reaction: Binding<Double> {
         Binding(get: { Double(settings.voiceReactionMs) }, set: { settings.voiceReactionMs = Int($0) })

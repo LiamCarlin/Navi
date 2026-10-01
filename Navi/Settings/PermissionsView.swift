@@ -3,11 +3,11 @@ import AppKit
 
 struct PermissionsView: View {
     var body: some View {
-        FormPage(title: "Permissions", subtitle: "Navi asks only for what a feature needs. Status refreshes every two seconds.") {
+        FormPage(title: "Permissions", subtitle: "Navi asks only for what a feature needs.") {
             Section {
                 PermissionsList()
             } footer: {
-                Text("If a toggle in System Settings is on but Navi still shows Denied, quit and relaunch Navi — macOS applies Accessibility and Screen Recording grants at launch.")
+                Text("Turned a permission on in System Settings but Navi still says it's off? Quit and reopen Navi — macOS applies Accessibility and Screen Recording when an app starts.")
             }
         }
     }
@@ -19,18 +19,18 @@ struct PermissionsList: View {
 
     var body: some View {
         PermissionRow(title: "Accessibility",
-                      explanation: "Lets the agent click, type and read window titles in other apps.",
+                      explanation: "Lets Navi click, type and read window titles in other apps when it does a task for you.",
                       state: model.accessibility,
                       request: { Permissions.requestAccessibility() },
                       open: { Permissions.openSettings(.accessibility) })
             .task { await model.poll() }
         PermissionRow(title: "Screen Recording",
-                      explanation: "Lets the agent see the screen and Screen Memory take snapshots.",
+                      explanation: "Lets Navi see the screen during tasks, and Recall take snapshots.",
                       state: model.screenRecording,
                       request: { Permissions.requestScreenRecording() },
                       open: { Permissions.openSettings(.screenRecording) })
-        PermissionRow(title: "Automation (Apple Events)",
-                      explanation: "Lets Navi read the current browser tab and drive Finder, Safari and Chrome.",
+        PermissionRow(title: "Automation",
+                      explanation: "Lets Navi read the current browser tab and control Finder, Safari and Chrome.",
                       state: model.automation,
                       request: { _ = Permissions.requestAutomation() },
                       open: { Permissions.openSettings(.automation) })
@@ -40,7 +40,7 @@ struct PermissionsList: View {
                       request: { Task { _ = await Permissions.requestMicrophone(); await model.refresh() } },
                       open: { Permissions.openSettings(.microphone) })
         PermissionRow(title: "Notifications",
-                      explanation: "Tells you when a background task or long agent run finishes.",
+                      explanation: "Tells you when a task running in the background finishes.",
                       state: model.notifications,
                       request: { Task { _ = await Permissions.requestNotifications(); await model.refresh() } },
                       open: { Permissions.openSettings(.notifications) })
@@ -66,9 +66,10 @@ struct PermissionRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
-            if state != .granted {
-                Button("Request", action: request).controlSize(.small)
-                Button("Open Settings", action: open).controlSize(.small)
+            if state == .notDetermined || state == .unknown {
+                Button("Allow…", action: request).controlSize(.small)
+            } else if state != .granted {
+                Button("Open System Settings…", action: open).controlSize(.small)
             } else {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             }

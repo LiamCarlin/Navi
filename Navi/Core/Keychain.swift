@@ -58,9 +58,21 @@ enum Keychain {
     }
 
     private static func startLoadLocked() {
+        #if DEBUG
+        if DevCloud.current != nil {
+            // A Debug run against a local cloud never touches the real item (no ACL prompt, no writes).
+            state = .loaded
+            return
+        }
+        #endif
         state = .loading
         queue.async { load() }
     }
+
+    /// Writes made before the first read finished (a `navi://auth/callback`
+    /// that launched the app, a key pasted while the ACL prompt is up). They are
+    /// replayed over what the read returns, so neither side loses the other's keys.
+    private static var pendingWrites: [String: String?] = [:]
 
     private static func load() {
         var loaded: [String: String] = [:]
@@ -85,6 +97,10 @@ enum Keychain {
             }
         }
         lock.lock()
+        for (k, v) in pendingWrites {
+            if let v { loaded[k] = v } else { loaded.removeValue(forKey: k) }
+        }
+        pendingWrites = [:]
         cache = loaded
         state = (status == errSecSuccess || status == errSecItemNotFound) ? .loaded : .failed(status)
         lock.unlock()
@@ -99,11 +115,31 @@ enum Keychain {
     @discardableResult
     static func set(_ key: Key, value: String?) -> Bool {
         lock.lock()
-        if let value, !value.isEmpty { cache[key.rawValue] = value } else { cache.removeValue(forKey: key.rawValue) }
-        let snapshot = cache
+        let stored: String? = (value?.isEmpty ?? true) ? nil : value
+        if let stored { cache[key.rawValue] = stored } else { cache.removeValue(forKey: key.rawValue) }
+        if state == .notLoaded { startLoadLocked() }
+        if state == .loading { pendingWrites[key.rawValue] = stored }
         lock.unlock()
+        #if DEBUG
+        if DevCloud.current != nil {
+            NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
+            return true
+        }
+        #endif
         queue.async {
-            if !writeItem(snapshot) { Log.settings.error("Keychain write failed for \(key.rawValue)") }
+            // Runs after the first read (same serial queue), so the snapshot is the
+            // merged item — never a cache that missed the keys still being read.
+            lock.lock()
+            let snapshot = cache
+            let readFailed: Bool
+            if case .failed = state { readFailed = true } else { readFailed = false }
+            lock.unlock()
+            if readFailed {
+                // Writing now would replace an item we couldn't read with a partial copy.
+                Log.settings.error("Keychain write skipped for \(key.rawValue): the item couldn't be read")
+            } else if !writeItem(snapshot) {
+                Log.settings.error("Keychain write failed for \(key.rawValue)")
+            }
             NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
         }
         return true

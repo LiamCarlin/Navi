@@ -285,6 +285,7 @@ enum Pricing {
 
 struct TokenUsageSection: View {
     @EnvironmentObject private var settings: NaviSettings
+    @State private var confirmReset = false
 
     private var rate: Pricing.Rate { Pricing.claude(settings.answerModel) }
     private var claudeCost: Double {
@@ -306,10 +307,26 @@ struct TokenUsageSection: View {
             LabeledContent("Estimated total") {
                 Text(Fmt.usd(claudeCost + jevCost)).font(.title3.weight(.semibold)).monospacedDigit()
             }
+            HStack {
+                Spacer()
+                Button("Reset counters…", role: .destructive) { confirmReset = true }
+                    .controlSize(.small)
+            }
+            .confirmationDialog("Reset the usage counters?", isPresented: $confirmReset) {
+                Button("Reset", role: .destructive) {
+                    UsageCounters.reset()
+                    settings.usageJevCalls = 0
+                    settings.usageClaudeInputTokens = 0
+                    settings.usageClaudeOutputTokens = 0
+                    settings.usageDigestFrames = 0
+                }
+            } message: {
+                Text("Also starts this month's answer and task counts on the Account page over.")
+            }
         } header: {
             Text("Tokens & cost")
         } footer: {
-            Text("Counted on this Mac since the last reset (Usage → Reset counters). Dollar figures are estimates from list prices.")
+            Text("Counted on this Mac since the last reset. Dollar figures are estimates from list prices.")
         }
 
         Section("Prices used") {

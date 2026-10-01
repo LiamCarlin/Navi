@@ -161,7 +161,7 @@ final class Digester: @unchecked Sendable {
             written += 1
             let n = session.count
             await MainActor.run { NaviSettings.shared.usageDigestFrames += n }
-            Log.memory.info("Session #\(id) \"\(record.title, privacy: .public)\" (\(n) frames, \(usedProvider.label, privacy: .public))")
+            Log.memory.info("Session #\(id) \"\(record.title, privacy: .private)\" (\(n) frames, \(usedProvider.label, privacy: .public))")
         }
         let count = vault.noteCount()
         updateStatus { s in

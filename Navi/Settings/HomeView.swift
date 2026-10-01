@@ -18,6 +18,9 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if let notice = account.homeNotice {
+                    NoticeBanner(notice: notice, account: account)
+                }
                 hero
                 PlanCard()
                 VStack(alignment: .leading, spacing: 10) {
@@ -76,49 +79,62 @@ struct HomeView: View {
 
     // MARK: Cards
 
+    /// One card per thing Navi needs; anything that needs attention comes first.
     @ViewBuilder private var cards: some View {
-        StatusCard(title: "Account", detail: accountDetail, level: accountLevel,
-                   fixTitle: account.isSignedIn ? "Open" : "Sign in") {
-            if account.isSignedIn { nav.go(.account) } else { account.signIn() }
+        ForEach(cardModels.sorted { $0.rank < $1.rank }, id: \.title) { c in
+            StatusCard(title: c.title, detail: c.detail, level: c.level, fixTitle: c.fixTitle, fix: c.fix)
         }
-        StatusCard(title: "Accessibility", detail: perms.accessibility == .granted ? "Granted. The agent can click and type." : "Needed for the agent to click and type.",
-                   level: perms.accessibility.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Screen Recording", detail: perms.screenRecording == .granted ? "Granted. Agent and Screen Memory can see the screen." : "Needed for the agent and Screen Memory.",
-                   level: perms.screenRecording.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Automation", detail: automationDetail, level: perms.automation.level, fixTitle: "Grant") { nav.go(.permissions) }
-        StatusCard(title: "Spotlight shortcut", detail: spotlightLoaded ? spotlight.summary : "Checking…",
-                   level: spotlightLoaded ? spotlight.level : .off, fixTitle: "Fix") { nav.go(.general) }
-        StatusCard(title: "Recall", detail: memoryDetail, level: memoryLevel,
-                   fixTitle: !account.entitlements.recall ? "Unlock" : (settings.memoryCaptureEnabled ? "Open" : "Turn on")) { nav.go(.memory) }
-        StatusCard(title: "Login item", detail: LoginItem.describe(loginStatus), level: LoginItem.level(loginStatus),
-                   fixTitle: "Enable") { nav.go(.general) }
+    }
+
+    private struct CardModel {
+        var title: String
+        var detail: String
+        var level: StatusLevel
+        var fixTitle: String
+        var fix: () -> Void
+        var rank: Int {
+            switch level {
+            case .bad: return 0
+            case .warn: return 1
+            case .ok: return 2
+            case .off: return 3
+            }
+        }
+    }
+
+    private var cardModels: [CardModel] {
+        [
+            CardModel(title: "Accessibility",
+                      detail: perms.accessibility == .granted ? "Allowed. Navi can click and type for you." : "Needed for Navi to click and type for you.",
+                      level: perms.accessibility.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Screen Recording",
+                      detail: perms.screenRecording == .granted ? "Allowed. Tasks and Recall can see the screen." : "Needed for tasks and Recall.",
+                      level: perms.screenRecording.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Automation", detail: automationDetail, level: perms.automation.level, fixTitle: "Grant") { nav.go(.permissions) },
+            CardModel(title: "Shortcut", detail: spotlightLoaded ? spotlight.summary : "Checking…",
+                      level: spotlightLoaded ? spotlight.level : .off, fixTitle: "Fix") { nav.go(.general) },
+            CardModel(title: "Recall", detail: memoryDetail, level: memoryLevel,
+                      fixTitle: !account.entitlements.recall ? "Unlock" : (settings.memoryCaptureEnabled ? "Open" : "Turn On")) { nav.go(.memory) },
+            CardModel(title: "Open at login", detail: LoginItem.describe(loginStatus), level: LoginItem.level(loginStatus),
+                      fixTitle: "Turn On") { nav.go(.general) },
+        ]
     }
 
     private var automationDetail: String {
         switch perms.automation {
-        case .granted: return "Granted. Navi can read the current browser tab."
-        case .notDetermined: return "Not requested yet — needed to read browser tabs."
-        case .denied: return "Denied. Browser tab context and AppleScript actions are off."
-        case .unknown: return "Could not determine (System Events not running?)."
+        case .granted: return "Allowed. Navi can read the current browser tab."
+        case .notDetermined: return "Not asked yet — needed to read the current browser tab."
+        case .denied: return "Not allowed. Navi can't read the browser tab or control Finder and Safari."
+        case .unknown: return "Couldn't check right now."
         }
     }
 
-    private var accountDetail: String {
-        if account.isSignedIn { return "Signed in as \(account.email ?? "you") · \(account.tier.displayName)." }
-        if account.hasDeveloperKeys { return "Developer mode — your own keys are in use." }
-        return "Sign in for answers, tasks and voice control. 7-day free trial of Pro."
-    }
-
-    private var accountLevel: StatusLevel {
-        account.isSignedIn || account.hasDeveloperKeys ? .ok : .bad
-    }
-
     private var memoryDetail: String {
-        if !account.entitlements.recall { return "Not in your plan. Add Recall to ask \"what was I doing yesterday?\"" }
-        if !settings.memoryCaptureEnabled { return "Off. Turn it on to ask \"what was I doing yesterday?\"" }
+        if !account.entitlements.recall { return "Not in your plan. Add it to ask \u{201C}what was I doing yesterday?\u{201D}" }
+        if !settings.memoryCaptureEnabled { return "Off. Turn it on to ask \u{201C}what was I doing yesterday?\u{201D}" }
         if settings.memoryIsPaused, let u = settings.memoryPausedUntil { return "Paused until \(u.formatted(date: .omitted, time: .shortened))." }
-        if memoryStatus.isRunning { return "Running · \(memoryStatus.framesToday) frames today · \(memoryStatus.vaultNoteCount) notes." }
-        return "Enabled but not running."
+        if memoryStatus.isRunning { return "On · \(memoryStatus.framesToday) snapshots today · \(memoryStatus.vaultNoteCount) journal notes." }
+        return "On, but not running yet. Check Screen Recording."
     }
 
     private var memoryLevel: StatusLevel {
@@ -130,7 +146,7 @@ struct HomeView: View {
 
     private var readyLine: String {
         var issues = 0
-        if !(account.isSignedIn || account.hasDeveloperKeys) { issues += 1 }
+        if !(account.isSignedIn || account.hasDeveloperKeys) || account.isAccountDisabled || account.isUpdateRequired { issues += 1 }
         if perms.accessibility != .granted { issues += 1 }
         if perms.screenRecording != .granted { issues += 1 }
         if spotlightLoaded && spotlight.conflict { issues += 1 }
@@ -143,12 +159,12 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Try typing").font(.title3.weight(.semibold))
             LazyVGrid(columns: columns, spacing: 8) {
-                tip("maps", "opens Apple Maps — Navi decides in under a second")
+                tip("maps", "opens Apple Maps instantly")
                 tip("12% of 340", "instant math, currency and time zones")
                 tip("why is the sky blue", "streams an answer")
-                tip("open chrome and search for jev", "Navi does it for you")
-                tip("what was I reading yesterday", "asks Recall")
-                tip("sleep", "system commands: sleep, lock, dark mode, wifi")
+                tip("open chrome and search for flights to boston", "Navi does it for you")
+                tip("what was I reading yesterday", "answers from Recall")
+                tip("dark mode", "Mac controls: sleep, lock, dark mode, Wi-Fi")
             }
         }
     }
@@ -214,19 +230,15 @@ struct PlanCard: View {
                     Text("Your own keys are in use. Sign in to use a Navi plan instead.").font(.callout).foregroundStyle(.secondary)
                 } else {
                     Text("Sign in to Navi").font(.title3.weight(.semibold))
-                    Text("One account, one subscription, no API keys. 7-day free trial of Pro.").font(.callout).foregroundStyle(.secondary)
+                    Text("Answers, tasks and voice control need an account; apps, files and math work without one. 7-day free trial of Pro.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()
             if account.isSignedIn {
                 Button("Manage") { nav.go(.account) }.buttonStyle(.bordered)
             } else {
-                Button {
-                    account.signIn()
-                } label: {
-                    Label("Sign in with your browser", systemImage: "safari").padding(.horizontal, 4)
-                }
-                .buttonStyle(.glassProminent)
+                SignInButton(account: account, large: false)
             }
         }
         .padding(18)
@@ -237,5 +249,53 @@ struct PlanCard: View {
         var parts = [account.answersLine, account.tasksLine]
         if account.entitlements.recall { parts.append("Recall on") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The account's banner on Home: an operator notice (dismissible, remembered
+/// by id), "Update Navi", or "account disabled".
+struct NoticeBanner: View {
+    let notice: AccountNotice
+    @ObservedObject var account: NaviAccount
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 18, weight: .semibold)).foregroundStyle(tint)
+            Text(notice.message).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if let title = notice.actionTitle {
+                Button(title) { account.perform(notice) }
+                    .buttonStyle(.borderedProminent).tint(notice.level == .info ? .accentColor : tint)
+            }
+            Button {
+                withAnimation(.spring(duration: 0.3)) { account.dismiss(notice) }
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.primary.opacity(0.07)))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(tint.opacity(0.25)))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var tint: Color {
+        switch notice.level {
+        case .info: return .accentColor
+        case .warning: return .orange
+        case .critical: return .red
+        }
+    }
+
+    private var symbol: String {
+        switch notice.kind {
+        case .updateRequired: return "arrow.down.circle.fill"
+        case .accountDisabled: return "person.crop.circle.badge.exclamationmark"
+        case .config: return notice.level == .info ? "info.circle.fill" : "exclamationmark.triangle.fill"
+        }
     }
 }

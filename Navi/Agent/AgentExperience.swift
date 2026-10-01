@@ -48,6 +48,14 @@ final class AgentExperience: @unchecked Sendable {
         return base.appendingPathComponent("Navi/agent-experience.json")
     }
 
+    // MARK: Privacy hook (Settings → Privacy & Data)
+
+    /// Forgets everything and deletes the file ("Delete everything Navi has stored").
+    func removeAll() {
+        lock.lock(); entries = []; lock.unlock()
+        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+    }
+
     // MARK: Record / recall
 
     /// Stores a completed step. Replaces an earlier entry for the same app and

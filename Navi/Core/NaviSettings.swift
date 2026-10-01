@@ -106,6 +106,15 @@ final class NaviSettings: ObservableObject {
     @Published var memoryAllowedPersonalData: [String] { didSet { d.set(memoryAllowedPersonalData, forKey: "memoryAllowedPersonalData") } }
     @Published var memoryPausedUntil: Date? { didSet { d.set(memoryPausedUntil, forKey: "memoryPausedUntil") } }
 
+    // MARK: Privacy & Data (privacy workstream — Settings/PrivacyView.swift)
+    // `memoryRetentionDays` above: 0 = keep forever; enforced daily by `PrivacyMaintenance`.
+    /// Retention also removes the journal notes Navi wrote for expired sessions (never the user's own notes).
+    @Published var memoryRetentionIncludesVault: Bool { didSet { d.set(memoryRetentionIncludesVault, forKey: "memoryRetentionIncludesVault") } }
+    /// Sites screen memory never captures (domains; subdomains match). See `CaptureExclusions`.
+    @Published var memoryExcludedSites: [String] { didSet { d.set(memoryExcludedSites, forKey: "memoryExcludedSites") } }
+    /// "Keep task logs for troubleshooting" (`TaskLogs`). Off for users unless they opt in.
+    @Published var keepTaskLogs: Bool { didSet { d.set(keepTaskLogs, forKey: TaskLogs.keepKey) } }
+
     // MARK: Usage / cost tracking (rough, local only)
     @Published var usageJevCalls: Int { didSet { d.set(usageJevCalls, forKey: "usageJevCalls") } }
     @Published var usageClaudeInputTokens: Int { didSet { d.set(usageClaudeInputTokens, forKey: "usageClaudeInputTokens") } }
@@ -152,7 +161,9 @@ final class NaviSettings: ObservableObject {
             "memoryCaptureEnabled": false,
             "memoryCaptureIntervalSeconds": 30,
             "memoryDigestIntervalMinutes": 10,
-            "memoryRetentionDays": 14,
+            "memoryRetentionDays": 30,
+            "memoryRetentionIncludesVault": true,
+            "memoryExcludedSites": CaptureExclusions.defaultSites,
             "memoryVaultPath": NSString(string: "~/Navi Vault").expandingTildeInPath,
             "memoryExcludedBundleIDs": ["com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"],
             "memoryKeepScreenshots": true,
@@ -205,6 +216,9 @@ final class NaviSettings: ObservableObject {
         memoryRecordActions = d.bool(forKey: ActionJournal.enabledKey)
         memoryAllowedPersonalData = d.stringArray(forKey: "memoryAllowedPersonalData") ?? []
         memoryPausedUntil = d.object(forKey: "memoryPausedUntil") as? Date
+        memoryRetentionIncludesVault = d.bool(forKey: "memoryRetentionIncludesVault")
+        memoryExcludedSites = d.stringArray(forKey: "memoryExcludedSites") ?? []
+        keepTaskLogs = TaskLogs.isEnabled
         usageJevCalls = d.integer(forKey: "usageJevCalls")
         usageClaudeInputTokens = d.integer(forKey: "usageClaudeInputTokens")
         usageClaudeOutputTokens = d.integer(forKey: "usageClaudeOutputTokens")
