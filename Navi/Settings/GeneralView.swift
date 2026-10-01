@@ -6,9 +6,9 @@ struct GeneralView: View {
     @EnvironmentObject private var settings: NaviSettings
 
     var body: some View {
-        FormPage(title: "General", subtitle: "Hotkey, startup and appearance.") {
-            Section("Hotkey") {
-                ExplainedRow(title: "Open Navi", explanation: "Works anywhere, in any app. Default is ⌘Space.") {
+        FormPage(title: "General", subtitle: "Shortcut, startup and appearance.") {
+            Section("Shortcut") {
+                ExplainedRow(title: "Open Navi", explanation: "Works in any app. Click, then press a new shortcut to change it.") {
                     HotKeyRecorderView()
                 }
             }
@@ -17,8 +17,8 @@ struct GeneralView: View {
                 LoginItemRow()
             }
 
-            Section("Appearance") {
-                Picker("Window appearance", selection: $settings.appearance) {
+            Section {
+                Picker("Appearance", selection: $settings.appearance) {
                     Text("Match system").tag(Appearance.system)
                     Text("Light").tag(Appearance.light)
                     Text("Dark").tag(Appearance.dark)
@@ -31,7 +31,7 @@ struct GeneralView: View {
             } header: {
                 Text("Spotlight shortcut")
             } footer: {
-                Text("macOS gives ⌘Space to Spotlight by default. Navi can't receive the shortcut until Spotlight releases it.")
+                Text("macOS gives ⌘Space to Spotlight. If you want ⌘Space for Navi, Spotlight has to let it go — Navi can turn Spotlight's shortcut off for you.")
             }
         }
     }
@@ -45,7 +45,7 @@ struct LoginItemRow: View {
     @State private var error: String?
 
     var body: some View {
-        ExplainedRow(title: "Launch at login", explanation: LoginItem.describe(status)) {
+        ExplainedRow(title: "Open at login", explanation: LoginItem.describe(status)) {
             HStack(spacing: 8) {
                 if status == .requiresApproval {
                     Button("Open Login Items…") { LoginItem.openSettings() }.controlSize(.small)
@@ -105,14 +105,16 @@ struct SpotlightFixView: View {
             Spacer()
         }
         HStack(spacing: 10) {
-            Button("Open Keyboard Shortcuts…") { SpotlightShortcutFix.openKeyboardShortcuts() }
-            Button {
-                Task { await disable() }
-            } label: {
-                if busy { ProgressView().controlSize(.small) } else { Text("Disable Spotlight's ⌘Space for me") }
+            if loaded && status.conflict {
+                Button {
+                    Task { await disable() }
+                } label: {
+                    if busy { ProgressView().controlSize(.small) } else { Text("Turn Off Spotlight's ⌘Space") }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(busy || (loaded && !status.conflict))
+            Button("Open Keyboard Shortcuts…") { SpotlightShortcutFix.openKeyboardShortcuts() }
             Spacer()
             Button("Recheck") { Task { await refresh() } }.controlSize(.small).buttonStyle(.borderless)
         }
@@ -129,7 +131,7 @@ struct SpotlightFixView: View {
         defer { busy = false }
         do {
             try await SpotlightShortcutFix.disableSpotlightCmdSpace()
-            message = "Done. If ⌘Space still opens Spotlight, log out and back in (macOS caches the shortcut table)."
+            message = "Done. If ⌘Space still opens Spotlight, log out and back in — macOS only rereads shortcuts at login."
         } catch {
             message = error.localizedDescription
         }
