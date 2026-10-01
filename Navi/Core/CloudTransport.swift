@@ -65,18 +65,18 @@ final class KeychainTokenStore: CloudTokenStore, @unchecked Sendable {
     var accessToken: String? { Keychain.get(.naviAccess) }
     var refreshToken: String? { Keychain.get(.naviRefresh) }
     var accessExpiresAt: Date? {
-        let t = UserDefaults.standard.double(forKey: Self.expiresKey)
+        let t = UserDefaults.navi.double(forKey: Self.expiresKey)
         return t > 0 ? Date(timeIntervalSince1970: t) : nil
     }
     func store(access: String, refresh: String?, expiresAt: Date?) {
         Keychain.set(.naviAccess, value: access)
         if let refresh { Keychain.set(.naviRefresh, value: refresh) }
-        UserDefaults.standard.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
+        UserDefaults.navi.set(expiresAt?.timeIntervalSince1970 ?? 0, forKey: Self.expiresKey)
     }
     func clear() {
         Keychain.set(.naviAccess, value: nil)
         Keychain.set(.naviRefresh, value: nil)
-        UserDefaults.standard.removeObject(forKey: Self.expiresKey)
+        UserDefaults.navi.removeObject(forKey: Self.expiresKey)
     }
 }
 
@@ -146,7 +146,7 @@ final class CloudTransport: @unchecked Sendable {
             cfg.timeoutIntervalForRequest = 600     // streaming answers and agent turns
             cfg.waitsForConnectivity = false
             cfg.httpAdditionalHeaders = ["User-Agent": "Navi/\(Self.appVersion) (macOS)"]
-            self.session = URLSession(configuration: cfg)
+            self.session = URLSession(configuration: TestHost.guarded(cfg))
         }
         self.baseURLOverride = baseURL
         self.tokens = tokens
@@ -169,7 +169,7 @@ final class CloudTransport: @unchecked Sendable {
     /// at a mock server.
     var baseURL: URL {
         if let baseURLOverride { return baseURLOverride }
-        if let s = UserDefaults.standard.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let s = UserDefaults.navi.string(forKey: Self.baseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !s.isEmpty, let u = URL(string: s.hasSuffix("/") ? String(s.dropLast()) : s) {
             return u
         }
@@ -178,7 +178,7 @@ final class CloudTransport: @unchecked Sendable {
 
     /// `NaviSettings.useCloud` (default true), read off the main actor.
     var useCloud: Bool {
-        UserDefaults.standard.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.standard.bool(forKey: Self.useCloudKey)
+        UserDefaults.navi.object(forKey: Self.useCloudKey) == nil ? true : UserDefaults.navi.bool(forKey: Self.useCloudKey)
     }
 
     /// A session exists (tokens in the store).

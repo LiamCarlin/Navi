@@ -497,14 +497,14 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
     }
 
     static func recentQueries() -> [String] {
-        UserDefaults.standard.stringArray(forKey: recentQueriesKey) ?? []
+        UserDefaults.navi.stringArray(forKey: recentQueriesKey) ?? []
     }
 
     static func recordQuery(_ q: String) {
         var list = recentQueries().filter { $0 != q }
         list.insert(q, at: 0)
         if list.count > recentQueriesCap { list = Array(list.prefix(recentQueriesCap)) }
-        UserDefaults.standard.set(list, forKey: recentQueriesKey)
+        UserDefaults.navi.set(list, forKey: recentQueriesKey)
     }
 
     /// Wraps each row's `perform` so the query is remembered when the row is used.

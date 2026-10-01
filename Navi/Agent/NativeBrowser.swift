@@ -39,7 +39,7 @@ enum NativeBrowser {
     /// Is the jev-ultrafast runner the right tool for this browser right now?
     /// Cheap: a file check plus a set lookup — no doctor script on the hot path.
     static func runnerUsable(for bundleID: String) -> Bool {
-        guard UserDefaults.standard.object(forKey: "ultrafastEnabled") as? Bool ?? true else { return false }
+        guard UserDefaults.navi.object(forKey: "ultrafastEnabled") as? Bool ?? true else { return false }
         guard AXSnapshotter.chromiumBundles.contains(bundleID) else { return false }
         guard let vendor = UltrafastBridge.vendorDir else { return false }
         return FileManager.default.isExecutableFile(atPath: vendor.appendingPathComponent(".venv/bin/python").path)

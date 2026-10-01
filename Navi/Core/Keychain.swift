@@ -15,6 +15,9 @@ import Security
 /// immediately and writes through in the background.
 ///
 /// Environment variables (`TYPESAFE_API_KEY`, …) override the store for dev.
+///
+/// Under the test host (`TestHost`) the store is in-memory only: it starts empty
+/// and never reads or writes the real item.
 enum Keychain {
     static let service = "com.liamcarlin.navi"
     static let account = "keys"
@@ -49,6 +52,16 @@ enum Keychain {
 
     static func has(_ key: Key) -> Bool { !(get(key) ?? "").isEmpty }
 
+    /// No SecItem calls at all: under the test host, and (Debug) a run against a
+    /// local cloud — no ACL prompt, no writes to the real item.
+    static var isInMemory: Bool {
+        if TestHost.isActive { return true }
+        #if DEBUG
+        if DevCloud.current != nil { return true }
+        #endif
+        return false
+    }
+
     static var loadState: LoadState { lock.lock(); defer { lock.unlock() }; return state }
 
     /// Kick off the one-time background read. Call early at launch.
@@ -58,13 +71,7 @@ enum Keychain {
     }
 
     private static func startLoadLocked() {
-        #if DEBUG
-        if DevCloud.current != nil {
-            // A Debug run against a local cloud never touches the real item (no ACL prompt, no writes).
-            state = .loaded
-            return
-        }
-        #endif
+        if isInMemory { state = .loaded; return }
         state = .loading
         queue.async { load() }
     }
@@ -120,12 +127,10 @@ enum Keychain {
         if state == .notLoaded { startLoadLocked() }
         if state == .loading { pendingWrites[key.rawValue] = stored }
         lock.unlock()
-        #if DEBUG
-        if DevCloud.current != nil {
+        if isInMemory {
             NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
             return true
         }
-        #endif
         queue.async {
             // Runs after the first read (same serial queue), so the snapshot is the
             // merged item — never a cache that missed the keys still being read.

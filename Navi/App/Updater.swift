@@ -10,12 +10,12 @@ extension NaviSettings {
     /// the DMG — docs/RELEASE.md). Override for a local test feed:
     /// `defaults write com.liamcarlin.navi updateFeedURL http://localhost:8000/appcast.json`.
     nonisolated static var updateFeedURL: URL {
-        if let s = UserDefaults.standard.string(forKey: "updateFeedURL"), let u = URL(string: s), u.scheme != nil { return u }
+        if let s = UserDefaults.navi.string(forKey: "updateFeedURL"), let u = URL(string: s), u.scheme != nil { return u }
         return URL(string: "https://navi.app/appcast.json")!
     }
     /// `defaults write com.liamcarlin.navi updateChecksEnabled -bool NO` turns the daily check off.
     nonisolated static var updateChecksEnabled: Bool {
-        UserDefaults.standard.object(forKey: "updateChecksEnabled") as? Bool ?? true
+        UserDefaults.navi.object(forKey: "updateChecksEnabled") as? Bool ?? true
     }
 }
 
@@ -163,7 +163,7 @@ final class Updater: ObservableObject {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: c)
+        return URLSession(configuration: TestHost.guarded(c))
     }()
 
     static var currentVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
@@ -206,7 +206,7 @@ final class Updater: ObservableObject {
         do {
             let appcast = try await fetchAppcast()
             guard SemanticVersion(appcast.version) != nil else { throw UpdateError.badVersion(appcast.version) }
-            let skipped = UserDefaults.standard.string(forKey: "updateSkippedVersion")
+            let skipped = UserDefaults.navi.string(forKey: "updateSkippedVersion")
             if Self.shouldOffer(remote: appcast.version, local: Self.currentVersion, skipped: skipped, userInitiated: userInitiated) {
                 guard Self.osSatisfies(appcast.minOS) else {
                     state = .upToDate
@@ -245,7 +245,7 @@ final class Updater: ObservableObject {
     }
 
     func skipPending() {
-        if let v = pending?.version { UserDefaults.standard.set(v, forKey: "updateSkippedVersion") }
+        if let v = pending?.version { UserDefaults.navi.set(v, forKey: "updateSkippedVersion") }
         pending = nil; state = .idle; closeWindow()
     }
 

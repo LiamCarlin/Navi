@@ -69,7 +69,7 @@ enum UltrafastBridge {
     static var repoRoot: URL? {
         let fm = FileManager.default
         var candidates: [URL] = []
-        if let p = UserDefaults.standard.string(forKey: "ultrafastRepoRoot"), !p.isEmpty {
+        if let p = UserDefaults.navi.string(forKey: "ultrafastRepoRoot"), !p.isEmpty {
             candidates.append(URL(fileURLWithPath: p))
         }
         if let res = Bundle.main.resourceURL { candidates.append(res.appendingPathComponent("ultrafast")) }
@@ -200,8 +200,8 @@ enum UltrafastBridge {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONUNBUFFERED"] = "1"
         env.merge(noTelemetry) { $1 }   // Privacy: no third-party usage pings from the runner
-        env["TYPESAFE_MODEL"] = UserDefaults.standard.string(forKey: "jevModel") ?? "jev-latest"
-        let pref = JevProvider(rawValue: UserDefaults.standard.string(forKey: "jevProvider") ?? "") ?? .auto
+        env["TYPESAFE_MODEL"] = UserDefaults.navi.string(forKey: "jevModel") ?? "jev-latest"
+        let pref = JevProvider(rawValue: UserDefaults.navi.string(forKey: "jevProvider") ?? "") ?? .auto
         switch JevClient.resolveTransport(preference: pref) {
         case .typesafe:
             env["TYPESAFE_API_KEY"] = Keychain.get(.typesafe)
@@ -218,9 +218,9 @@ enum UltrafastBridge {
         // Text helper for TYPE_TEXT: Claude Haiku on the Anthropic key. Developers can
         // instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL / TEXT_MODEL (upstream's
         // OpenAI-compatible helper) before launching Navi; those pass through untouched.
-        env["NAVI_TEXT_MODEL"] = UserDefaults.standard.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
+        env["NAVI_TEXT_MODEL"] = UserDefaults.navi.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
         // Coach (Claude diagnoses a failing run once): the agent model from Settings.
-        env["NAVI_AGENT_MODEL"] = UserDefaults.standard.string(forKey: "agentModel") ?? "claude-sonnet-5"
+        env["NAVI_AGENT_MODEL"] = UserDefaults.navi.string(forKey: "agentModel") ?? "claude-sonnet-5"
         // Web-app playbooks (`AppSkills`): the runner adds the one matching each page to Jev's state.
         env["NAVI_PLAYBOOKS_JSON"] = AppSkills.webPlaybooksJSON()
         if let rt = runtime {
@@ -360,7 +360,7 @@ enum UltrafastBridge {
         if !things.isEmpty, let data = try? JSONSerialization.data(withJSONObject: ["note": CUDecide.userContextNote, "things": things], options: [.sortedKeys]) {
             env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
         }
-        let reveal = UserDefaults.standard.object(forKey: "agentRevealWhenDone") as? Bool ?? true
+        let reveal = UserDefaults.navi.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy
         lastTabPolicy = policy
