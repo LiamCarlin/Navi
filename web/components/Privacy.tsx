@@ -1,4 +1,4 @@
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 
 const STAYS = [
   "The index of your apps, files and settings, and the calculator",
@@ -18,61 +18,49 @@ const LEAVES = [
 
 export function Privacy() {
   return (
-    <section id="privacy" className="scroll-mt-16 border-t border-line px-4 py-24 sm:px-6 md:py-36">
-      <div className="mx-auto max-w-7xl">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["What stays on your Mac,", "and what doesn’t."]} />
-          <Reveal className="lg:col-span-5 lg:pt-3">
-            <p className="lede">
-              Navi needs a server to decide and to write. Here’s exactly what it sends, and when. Navi’s servers pass requests on and
-              keep your account and usage counts, not the content. Nothing is sold, and nothing is used to train models.
-            </p>
-          </Reveal>
-        </div>
-
-        <div className="mt-16 grid grid-cols-1 gap-12 lg:mt-20 lg:grid-cols-12 lg:gap-8">
-          <div className="lg:col-span-5">
-            <Reveal>
-              <h3 className="flex items-center gap-2.5 text-[15px] font-medium">
-                <span className="h-2 w-2 rounded-full bg-[#30d158]" />
-                Never leaves your Mac
-              </h3>
-            </Reveal>
-            <ul className="mt-5 divide-y divide-line border-y border-line">
-              {STAYS.map((s, i) => (
-                <Reveal as="li" key={s} i={i} className="py-3.5 text-[15.5px]">
-                  {s}
-                </Reveal>
-              ))}
-            </ul>
-          </div>
-          <div className="lg:col-span-6 lg:col-start-7">
-            <Reveal>
-              <h3 className="flex items-center gap-2.5 text-[15px] font-medium">
-                <span className="h-2 w-2 rounded-full bg-[#ff9f0a]" />
-                Sent, only to do what you asked
-              </h3>
-            </Reveal>
-            <dl className="mt-5 divide-y divide-line border-y border-line">
-              {LEAVES.map(([k, v], i) => (
-                <Reveal key={k} i={i} className="grid grid-cols-1 gap-1 py-4 sm:grid-cols-[10rem_1fr] sm:gap-6">
-                  <dt className="text-[15.5px] font-medium">{k}</dt>
-                  <dd className="body">{v}</dd>
-                </Reveal>
-              ))}
-            </dl>
-            <Reveal>
-              <p className="label mt-5 leading-relaxed">
-                Recall is off until you turn it on, skips password managers, private windows and anything you exclude, and keeps
-                notes 30 days by default (7, 30, 90 days or forever). Settings → Privacy &amp; Data deletes everything Navi has stored.{" "}
-                <a href="/privacy" className="underline underline-offset-2 hover:text-fg">
-                  Full privacy policy
-                </a>
-              </p>
-            </Reveal>
-          </div>
-        </div>
+    <section id="privacy" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <Head
+        title={["What stays on your Mac,", "and what doesn’t"]}
+        sub="Navi needs a server to decide and to write. Its servers pass requests on and keep your account and usage counts, not the content. Nothing is sold, and nothing is used to train models."
+      />
+      <div className="mx-auto mt-14 grid max-w-6xl grid-cols-1 gap-5 lg:mt-16 lg:grid-cols-2">
+        <Reveal className="card p-6 sm:p-8">
+          <h3 className="flex items-center gap-2.5 text-[17px] font-medium">
+            <span className="h-2.5 w-2.5 rounded-full bg-[#30d158] shadow-[0_0_0_4px_rgba(48,209,88,0.15)]" />
+            Never leaves your Mac
+          </h3>
+          <ul className="mt-5 divide-y divide-line">
+            {STAYS.map((s) => (
+              <li key={s} className="py-3.5 text-[15px] text-fg-muted">
+                {s}
+              </li>
+            ))}
+          </ul>
+        </Reveal>
+        <Reveal i={1} className="card p-6 sm:p-8">
+          <h3 className="flex items-center gap-2.5 text-[17px] font-medium">
+            <span className="h-2.5 w-2.5 rounded-full bg-[#ff9f0a] shadow-[0_0_0_4px_rgba(255,159,10,0.15)]" />
+            Sent, only to do what you asked
+          </h3>
+          <dl className="mt-5 divide-y divide-line">
+            {LEAVES.map(([k, v]) => (
+              <div key={k} className="py-4">
+                <dt className="text-[15px] font-medium">{k}</dt>
+                <dd className="body mt-1 text-[14.5px]">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </Reveal>
       </div>
+      <Reveal>
+        <p className="mx-auto mt-8 max-w-3xl text-center text-[13.5px] leading-relaxed text-fg-dim">
+          Recall is off until you turn it on, skips password managers, private windows and anything you exclude, and keeps notes 30
+          days by default (7, 30, 90 days or forever). Settings → Privacy &amp; Data deletes everything Navi has stored.{" "}
+          <a href="/privacy" className="font-medium text-accent hover:underline">
+            Read the privacy policy
+          </a>
+        </p>
+      </Reveal>
     </section>
   );
 }

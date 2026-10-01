@@ -4,7 +4,7 @@ import { motion, useReducedMotion, useScroll, useSpring } from "framer-motion";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Bar } from "./bar/Bar";
 import { exampleBody } from "./bar/bodies";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head } from "./motion/Reveal";
 import { EXAMPLES, KIND_LABEL, KIND_TINT, type Kind } from "@/lib/demo";
 
 type Step = { kind: Kind; title: string; body: ReactNode; facts: string[]; sure: number; runs: string; asks: string };
@@ -100,17 +100,12 @@ export function Kinds() {
   }, []);
 
   return (
-    <section id="what" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-36">
-      <div className="mx-auto max-w-7xl">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["One bar.", "Seven kinds of answer."]} />
-          <Reveal className="lg:col-span-5 lg:pt-3">
-            <p className="lede">
-              You don’t pick a mode. Navi reads what you typed and decides what it is: something to open, a sum, a question, a job,
-              a meeting, a reminder or a memory. Scroll to see each one.
-            </p>
-          </Reveal>
-        </div>
+    <section id="what" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-6xl">
+        <Head
+          title={["One bar,", "seven kinds of answer"]}
+          sub="You don’t pick a mode. Navi decides whether you meant something to open, a sum, a question, a job, a meeting, a reminder or a memory."
+        />
 
         <div className="relative mt-16 grid grid-cols-1 gap-8 lg:mt-24 lg:grid-cols-12">
           {/* Steps */}
@@ -128,13 +123,13 @@ export function Kinds() {
                   <div className="flex items-center gap-2.5">
                     <span className="h-2 w-2 rounded-full" style={{ background: KIND_TINT[s.kind] }} />
                     <span className="text-sm font-medium">{KIND_LABEL[s.kind]}</span>
-                    <span className="label ml-1">“{exampleFor(s.kind).q}”</span>
+                    <span className="mono ml-1">“{exampleFor(s.kind).q}”</span>
                   </div>
-                  <h3 className="mt-4 font-serif text-[1.9rem] leading-[1.08] tracking-[-0.02em] sm:text-[2.2rem]">{s.title}</h3>
+                  <h3 className="mt-4 text-[1.75rem] font-medium leading-[1.12] tracking-[-0.03em] sm:text-[2rem]">{s.title}</h3>
                   <p className="body mt-4 max-w-[46ch] text-[1.03rem]">{s.body}</p>
                   <ul className="mt-5 flex flex-wrap gap-2">
                     {s.facts.map((f) => (
-                      <li key={f} className="rounded-full border border-line px-3 py-1 text-[13px] text-fg-muted">
+                      <li key={f} className="rounded-full bg-bg-soft px-3 py-1 text-[13px] text-fg-muted ring-1 ring-line">
                         {f}
                       </li>
                     ))}
@@ -187,11 +182,11 @@ function MiniDesk({ step, live, index = 0 }: { step: Step; live: boolean; index?
 
   return (
     <div
-      className="relative h-full min-h-[420px] overflow-hidden rounded-[22px] border border-line sm:rounded-[28px]"
+      className="relative h-full min-h-[420px] overflow-hidden rounded-[24px] shadow-[0_30px_80px_-40px_rgba(30,40,90,0.5)] sm:rounded-[32px]"
       style={{ background: "var(--wall)" }}
     >
       {live && (
-        <div className="label absolute left-5 top-4 z-10 flex items-center gap-2 !text-[var(--menubar-fg)] opacity-70">
+        <div className="mono absolute left-5 top-4 z-10 flex items-center gap-2 !text-white/80">
           <span className="tnum">{String(index + 1).padStart(2, "0")} / {String(STEPS.length).padStart(2, "0")}</span>
         </div>
       )}

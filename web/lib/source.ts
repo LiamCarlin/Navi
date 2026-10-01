@@ -8,7 +8,6 @@
 const SOURCE_KEY = "navi-source";
 const REF_KEY = "navi-ref";
 const JOINED_KEY = "navi-joined";
-const DISMISSED_KEY = "navi-cta-dismissed";
 
 function get(store: Storage | null, key: string): string | null {
   try {
@@ -51,8 +50,4 @@ export function getRef(): string | null {
 export const joined = {
   get: () => get(local(), JOINED_KEY) === "1",
   set: () => set(local(), JOINED_KEY, "1"),
-};
-export const ctaDismissed = {
-  get: () => get(local(), DISMISSED_KEY) === "1",
-  set: () => set(local(), DISMISSED_KEY, "1"),
 };

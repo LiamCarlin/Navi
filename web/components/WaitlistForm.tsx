@@ -16,12 +16,15 @@ const SHARE_TEXT = "I just joined the waitlist for Navi: ⌘Space, but it does t
 export function WaitlistForm({
   source,
   compact = false,
+  pill = false,
   note = false,
   takePending = false,
   className = "",
 }: {
   source: string;
   compact?: boolean;
+  /** Glass pill for the sky: input and button in one rounded bar. */
+  pill?: boolean;
   note?: boolean;
   takePending?: boolean;
   className?: string;
@@ -60,8 +63,42 @@ export function WaitlistForm({
 
   if (state.kind === "done") return <Share done={state.done} compact={compact} className={className} />;
 
+  if (pill)
+    return (
+      <div className={className}>
+      <form
+        onSubmit={submit}
+        className={`flex items-center gap-1 rounded-full bg-white/85 p-1.5 shadow-[inset_0_1px_0_#fff,0_0_0_1px_rgba(255,255,255,0.7),0_14px_40px_-12px_rgba(20,60,140,0.45)] backdrop-blur-xl`}
+        aria-busy={state.kind === "busy"}
+      >
+        <label className="sr-only" htmlFor={`${id}-email`}>
+          Email
+        </label>
+        <input
+          id={`${id}-email`}
+          name="email"
+          type="email"
+          required
+          autoComplete="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="h-10 min-w-0 flex-1 bg-transparent px-4 text-[15px] text-fg outline-none placeholder:text-fg-dim focus-visible:outline-none"
+        />
+        <button type="submit" disabled={state.kind === "busy"} className="btn-primary !h-10 shrink-0">
+          {state.kind === "busy" ? "Adding…" : "Join the waitlist"}
+        </button>
+      </form>
+      {state.kind === "error" && (
+        <p role="alert" className="mt-2 text-sm font-medium text-white">
+          {state.message}
+        </p>
+      )}
+      </div>
+    );
+
   const field =
-    "h-11 w-full rounded-[12px] border border-line-strong bg-bg-elev px-4 text-[15px] text-fg outline-none transition-colors duration-150 placeholder:text-fg-dim focus:border-accent focus-visible:outline-none";
+    "h-11 w-full rounded-[14px] border border-line-strong bg-white px-4 text-[15px] text-fg outline-none transition-colors duration-150 placeholder:text-fg-dim focus:border-accent focus-visible:outline-none";
 
   return (
     <form onSubmit={submit} className={`${compact ? "flex flex-col gap-2 sm:flex-row" : "flex flex-col gap-3"} ${className}`} aria-busy={state.kind === "busy"}>

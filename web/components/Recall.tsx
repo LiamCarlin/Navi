@@ -2,7 +2,7 @@
 
 import { motion, useMotionValueEvent, useReducedMotion, useScroll } from "framer-motion";
 import { useRef, useState } from "react";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 import { EASE, progress } from "@/lib/motion";
 
 type Node = { id: string; x: number; y: number; label: string; day?: boolean };
@@ -62,21 +62,16 @@ export function Recall() {
   const at = (id: string) => NODES.find((n) => n.id === id)!;
 
   return (
-    <section id="recall" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-36">
-      <div className="mx-auto max-w-7xl">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["Recall: ask what", "you were doing."]} />
-          <Reveal className="lg:col-span-5 lg:pt-3">
-            <p className="lede">
-              An optional part of Navi. It keeps a diary of your screen as plain notes, so “what was I working on yesterday
-              afternoon” or “that article about annual billing I read last week” has an answer.
-            </p>
-          </Reveal>
-        </div>
+    <section id="recall" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-6xl">
+        <Head
+          title={["Recall: ask what", "you were doing"]}
+          sub="Optional. Navi keeps a diary of your screen as plain notes on your Mac, so “what was I working on yesterday afternoon” has an answer."
+        />
 
         <div ref={ref} className="mt-16 grid grid-cols-1 items-center gap-10 lg:mt-20 lg:grid-cols-12 lg:gap-8">
           <div className="relative lg:col-span-7">
-            <div className="card relative overflow-hidden p-2 sm:p-4">
+            <div className="card-white relative overflow-hidden p-2 sm:p-4">
               <svg viewBox="0 0 620 420" className="h-auto w-full" role="img" aria-label="A graph of linked notes: days, documents, people and projects">
                 {EDGES.map(([a, b], i) => {
                   const A = at(a);
@@ -121,14 +116,14 @@ export function Recall() {
 
           <div className="lg:col-span-5">
             <motion.div
-              className="card overflow-hidden"
+              className="card-white overflow-hidden"
               initial={false}
               animate={{ opacity: p > 0.35 ? 1 : 0.0, y: p > 0.35 ? 0 : 20 }}
               transition={{ duration: 0.6, ease: EASE }}
             >
               <div className="flex items-center justify-between border-b border-line px-5 py-3">
-                <span className="label">Navi/2026-09-30.md</span>
-                <span className="label">Markdown</span>
+                <span className="mono">Navi Vault/2026-09-30.md</span>
+                <span className="mono">Markdown</span>
               </div>
               <div className="space-y-3 px-5 py-4 font-mono text-[12.5px] leading-relaxed text-fg-muted">
                 <p className="text-fg"># Tuesday, September 30</p>
@@ -151,14 +146,13 @@ export function Recall() {
         {/* pipeline */}
         <div className="mt-24 md:mt-32">
           <Reveal>
-            <h3 className="font-serif text-[2rem] leading-tight tracking-[-0.02em]">From a frame on your screen to a note on your disk.</h3>
+            <h3 className="text-center text-[1.75rem] font-medium leading-tight tracking-[-0.03em]">From a frame on your screen to a note on your disk</h3>
           </Reveal>
-          <ol className="relative mt-10 grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-5 lg:gap-6">
+          <ol className="relative mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {PIPE.map(([k, v], i) => (
-              <Reveal as="li" key={k} i={i} className="relative border-t border-line pt-5">
-                <span className="absolute -top-px left-0 h-px w-10" style={{ background: "var(--grad)" }} />
+              <Reveal as="li" key={k} i={i} className="card relative p-5">
                 <div className="flex items-baseline gap-3">
-                  <span className="label tnum">{i + 1}</span>
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[12px] font-medium text-fg-muted ring-1 ring-line">{i + 1}</span>
                   <span className="font-medium">{k}</span>
                 </div>
                 <p className="body mt-2 text-[14.5px]">{v}</p>
@@ -170,7 +164,7 @@ export function Recall() {
         {/* personal data */}
         <div className="mt-24 grid grid-cols-1 gap-10 md:mt-32 lg:grid-cols-12 lg:gap-8">
           <Reveal className="lg:col-span-5">
-            <h3 className="font-serif text-[2rem] leading-tight tracking-[-0.02em]">You decide what it may remember.</h3>
+            <h3 className="text-[1.75rem] font-medium leading-tight tracking-[-0.03em]">You decide what it may remember</h3>
             <p className="body mt-4 max-w-[46ch]">
               Settings → Recall has a switch for each kind of personal detail. These are the defaults. For anything switched off, a
               check on your Mac runs before anything is sent anywhere, and the frame is dropped if it matches. A cleanup can also
@@ -178,7 +172,7 @@ export function Recall() {
             </p>
           </Reveal>
           <div className="lg:col-span-6 lg:col-start-7">
-            <ul className="divide-y divide-line border-y border-line">
+            <ul className="card divide-y divide-line px-6">
               {DATA.map(([k, on], i) => (
                 <Reveal as="li" key={k} i={i} className="flex items-center justify-between py-3.5">
                   <span>{k}</span>
@@ -189,7 +183,7 @@ export function Recall() {
                 <span>
                   Passwords and one-time codes <span className="text-fg-dim">· always blocked</span>
                 </span>
-                <span className="label">locked</span>
+                <span className="mono">locked</span>
               </Reveal>
             </ul>
           </div>
@@ -201,8 +195,8 @@ export function Recall() {
 
 function L({ children }: { children: React.ReactNode }) {
   return (
-    <span className="text-accent">
-      [[<span className="underline decoration-accent/40 underline-offset-2">{children}</span>]]
+    <span className="text-[#7c3aed]">
+      [[<span className="underline decoration-[#7c3aed]/40 underline-offset-2">{children}</span>]]
     </span>
   );
 }

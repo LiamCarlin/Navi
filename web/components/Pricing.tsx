@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useState } from "react";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 import { setSource } from "@/lib/source";
 import { EASE } from "@/lib/motion";
 
@@ -36,7 +36,7 @@ export function Pricing() {
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.span
           key={`${p.id}-${yearly}`}
-          className="tnum font-serif text-[2.6rem] leading-none tracking-[-0.03em]"
+          className="tnum text-[2.6rem] font-medium leading-none tracking-[-0.04em]"
           initial={reduce ? false : { y: "100%", opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={reduce ? undefined : { y: "-100%", opacity: 0 }}
@@ -56,22 +56,20 @@ export function Pricing() {
   );
 
   return (
-    <section id="pricing" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-36">
-      <div className="mx-auto max-w-7xl">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["One subscription.", "No keys, no model menus."]} />
-          <Reveal className="flex flex-col items-start gap-6 lg:col-span-5 lg:pt-3">
-            <p className="lede">Start free. Everything that runs on your Mac stays free. Upgrade when you hit the limits.</p>
-            <div role="group" aria-label="Billing period" className="relative inline-flex rounded-full border border-line p-1 text-sm">
+    <section id="pricing" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-6xl">
+        <Head title={["Simple pricing"]} sub="Start free. Everything that runs on your Mac stays free. Upgrade when you hit the limits." />
+          <Reveal className="mt-8 flex justify-center">
+            <div role="group" aria-label="Billing period" className="relative inline-flex rounded-full bg-bg-soft p-1 text-sm ring-1 ring-line">
               {[false, true].map((y) => (
                 <button
                   key={String(y)}
                   type="button"
                   aria-pressed={yearly === y}
                   onClick={() => setYearly(y)}
-                  className={`relative rounded-full px-4 py-1.5 transition-colors duration-200 ${yearly === y ? "text-bg" : "text-fg-muted hover:text-fg"}`}
+                  className={`relative rounded-full px-4 py-1.5 transition-colors duration-200 ${yearly === y ? "text-fg" : "text-fg-muted hover:text-fg"}`}
                 >
-                  {yearly === y && <motion.span layoutId="billing" className="absolute inset-0 rounded-full bg-fg" transition={{ duration: 0.4, ease: EASE }} />}
+                  {yearly === y && <motion.span layoutId="billing" className="absolute inset-0 rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.12)]" transition={{ duration: 0.4, ease: EASE }} />}
                   <span className="relative">
                     {y ? "Yearly" : "Monthly"}
                     {y && <span className="tnum ml-1 text-xs opacity-70">−20%</span>}
@@ -80,7 +78,6 @@ export function Pricing() {
               ))}
             </div>
           </Reveal>
-        </div>
 
         {/* Desktop: a real comparison table */}
         <Reveal className="mt-16 hidden md:block">
@@ -89,9 +86,10 @@ export function Pricing() {
               <tr>
                 <th className="w-[34%]" />
                 {PLANS.map((p) => (
-                  <th key={p.id} className={`px-6 pb-6 pt-7 align-top font-normal ${p.id === "pro" ? "rounded-t-[20px] bg-bg-elev" : ""}`}>
+                  <th key={p.id} className={`px-6 pb-6 pt-7 align-top font-normal ${p.id === "pro" ? "rounded-t-[28px] bg-bg-soft" : ""}`}>
                     <div className="flex items-baseline justify-between">
                       <span className="text-[17px] font-medium">{p.name}</span>
+                      {p.id === "pro" && <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">7-day trial</span>}
                     </div>
                     <p className="mt-1 min-h-[2.6em] text-sm text-fg-muted">{p.blurb}</p>
                     <div className="mt-4">{price(p)}</div>
@@ -109,7 +107,7 @@ export function Pricing() {
                     {label}
                   </th>
                   {cells.map((c, i) => (
-                    <td key={i} className={`px-6 py-3.5 text-[15px] ${PLANS[i].id === "pro" ? "bg-bg-elev" : ""}`}>
+                    <td key={i} className={`px-6 py-3.5 text-[15px] ${PLANS[i].id === "pro" ? "bg-bg-soft" : ""}`}>
                       <CellView c={c} />
                     </td>
                   ))}
@@ -118,7 +116,7 @@ export function Pricing() {
               <tr>
                 <td />
                 {PLANS.map((p) => (
-                  <td key={p.id} className={`px-6 pb-7 pt-4 ${p.id === "pro" ? "rounded-b-[20px] bg-bg-elev" : ""}`}>
+                  <td key={p.id} className={`px-6 pb-7 pt-4 ${p.id === "pro" ? "rounded-b-[28px] bg-bg-soft" : ""}`}>
                     {cta(p)}
                   </td>
                 ))}
@@ -130,7 +128,7 @@ export function Pricing() {
         {/* Phones: one card per plan */}
         <div className="mt-12 grid gap-4 md:hidden">
           {PLANS.map((p, pi) => (
-            <Reveal key={p.id} i={pi} className={`rounded-[20px] border border-line p-5 ${p.id === "pro" ? "bg-bg-elev" : ""}`}>
+            <Reveal key={p.id} i={pi} className={`card p-5`}>
               <div className="text-[17px] font-medium">{p.name}</div>
               <p className="mt-1 text-sm text-fg-muted">{p.blurb}</p>
               <div className="mt-4">{price(p)}</div>

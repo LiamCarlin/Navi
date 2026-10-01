@@ -3,9 +3,8 @@
 import { motion, useInView, useReducedMotion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bar } from "./Bar";
-import { Glyph } from "../Glyph";
 import { exampleBody, liveRows, visitorBody } from "./bodies";
-import { decide, EXAMPLES, KIND_LABEL, KIND_TINT, type Decision, type Kind } from "@/lib/demo";
+import { decide, EXAMPLES, KIND_LABEL, type Decision, type Kind } from "@/lib/demo";
 import { EASE } from "@/lib/motion";
 
 type Auto = { i: number; typed: number; phase: "typing" | "hold" | "erasing"; since: number };
@@ -117,42 +116,13 @@ export function LiveBar() {
     );
 
   return (
-    <div ref={wrap}>
-      <Desk>
-        <div className="stage mx-auto w-full max-w-[680px]">
+    <div ref={wrap} className="flex h-full flex-col">
+      <div className="stage relative min-h-[230px] w-full flex-1 sm:min-h-[340px]">
+        <div className="absolute inset-x-0 top-0">
           <Bar query={text} input={input} body={view?.body} bodyKey={view?.key} hints={view?.hints} />
         </div>
-      </Desk>
-      <div className="mx-auto max-w-[680px]">
-        <Meter decision={decision} mode={mode} />
       </div>
-    </div>
-  );
-}
-
-/** A slice of a Mac desktop: the wallpaper and a menu bar, with the bar where Spotlight sits. */
-function Desk({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="relative h-[460px] overflow-hidden rounded-[22px] border border-line sm:h-[540px] sm:rounded-[28px]" style={{ background: "var(--wall)" }}>
-      <div
-        className="absolute inset-x-0 top-0 flex h-7 items-center gap-4 px-4 text-[12px] backdrop-blur-md"
-        style={{ background: "var(--menubar)", color: "var(--menubar-fg)" }}
-        aria-hidden="true"
-      >
-        <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
-          <path d="M16.4 12.7c0-2.4 2-3.6 2-3.7-1.1-1.6-2.8-1.8-3.4-1.9-1.5-.1-2.8.9-3.6.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.1.8c1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.6 1.3-2.7 0 0-2.6-1-2.6-3.8zM14 5.6c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z" />
-        </svg>
-        <span className="font-semibold">Finder</span>
-        <span className="hidden sm:inline">File</span>
-        <span className="hidden sm:inline">Edit</span>
-        <span className="hidden sm:inline">View</span>
-        <span className="ml-auto flex items-center gap-1.5">
-          <Glyph className="h-3 w-3" style={{ color: "#bf5af2" }} />
-          Navi
-        </span>
-        <span className="tnum">Tue 9:41</span>
-      </div>
-      <div className="absolute inset-x-0 top-[13%] px-3 sm:top-[16%] sm:px-8">{children}</div>
+      <Meter decision={decision} mode={mode} />
     </div>
   );
 }
@@ -162,22 +132,22 @@ const ORDER: Kind[] = ["open", "calc", "answer", "task", "schedule", "remind", "
 /** What the decision looked like: one probability per kind, the winner lit in its app tint. */
 function Meter({ decision, mode }: { decision: Decision | null; mode: "auto" | "user" }) {
   return (
-    <div className="mt-5 px-1">
+    <div className="mt-6 px-1">
       <div className="grid grid-cols-7 gap-1.5 sm:gap-3" aria-live="polite">
         {ORDER.map((k) => {
           const p = decision?.probs[k] ?? 0;
           const win = decision?.kind === k;
           return (
             <div key={k} className="min-w-0">
-              <div className="relative h-[3px] overflow-hidden rounded-full bg-line">
+              <div className="relative h-[3px] overflow-hidden rounded-full bg-white/20">
                 <motion.div
-                  className="absolute inset-y-0 left-0 rounded-full"
-                  style={{ background: win ? KIND_TINT[k] : "var(--fg-dim)", originX: 0 }}
+                  className="absolute inset-y-0 left-0 rounded-full bg-white"
+                  style={{ originX: 0 }}
                   animate={{ width: `${Math.round(p * 100)}%`, opacity: win ? 1 : 0.45 }}
                   transition={{ duration: 0.45, ease: EASE }}
                 />
               </div>
-              <div className={`mt-2 flex items-baseline justify-between gap-1 text-[11px] sm:text-xs ${win ? "text-fg" : "text-fg-dim"}`}>
+              <div className={`mt-2 flex items-baseline justify-between gap-1 text-[11px] transition-colors duration-300 sm:text-xs ${win ? "text-white" : "text-white/55"}`}>
                 <span className="truncate font-medium">{KIND_LABEL[k]}</span>
                 <span className="tnum hidden font-mono sm:inline">{decision ? Math.round(p * 100) : "–"}</span>
               </div>
@@ -185,8 +155,8 @@ function Meter({ decision, mode }: { decision: Decision | null; mode: "auto" | "
           );
         })}
       </div>
-      <p className="label mt-4 leading-relaxed">
-        {decision?.asks ? <span className="text-fg-muted">Would stop and ask {decision.asks}. </span> : null}
+      <p className="mt-4 text-[13px] leading-relaxed text-white/75">
+        {decision?.asks ? <span className="text-white">Would stop and ask {decision.asks}. </span> : null}
         {mode === "auto" ? "Click the bar and type your own. " : "Toy router running in your browser. "}
         In the app, one call to a small decision model makes this choice in about a tenth of a second.
       </p>

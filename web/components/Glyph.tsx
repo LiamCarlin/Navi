@@ -24,7 +24,9 @@ export function Glyph({ className = "h-5 w-5", style, gradient = false }: { clas
 export function Wordmark({ className = "" }: { className?: string }) {
   return (
     <span className={`inline-flex items-center gap-2 font-semibold tracking-tight ${className}`}>
-      <Glyph gradient className="h-[1.05em] w-[1.05em]" />
+      <span className="flex h-[1.4em] w-[1.4em] items-center justify-center rounded-[0.38em] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.15)]">
+        <Glyph gradient className="h-[0.95em] w-[0.95em]" />
+      </span>
       <span>Navi</span>
     </span>
   );

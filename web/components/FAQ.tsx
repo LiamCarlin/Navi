@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useState } from "react";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 import { EASE } from "@/lib/motion";
 
 const items = [
@@ -44,24 +44,17 @@ export function FAQ() {
   const [open, setOpen] = useState<number | null>(0);
   const reduce = useReducedMotion();
   return (
-    <section id="faq" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-36">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-8 lg:grid-cols-12">
-        <div className="lg:col-span-4">
-          <Lines className="h-section" lines={["Questions."]} />
-          <Reveal>
-            <p className="body mt-5 max-w-[32ch]">
-              Something else? <a className="navlink !text-fg" href="mailto:hello@navi.app">hello@navi.app</a>
-            </p>
-          </Reveal>
-        </div>
-        <div className="divide-y divide-line border-y border-line lg:col-span-7 lg:col-start-6">
+    <section id="faq" className="scroll-mt-16 px-4 py-24 sm:px-6 md:py-32">
+      <div className="mx-auto max-w-3xl">
+        <Head title={["Frequently asked questions"]} />
+        <div className="mt-12 divide-y divide-line border-y border-line">
           {items.map((it, i) => {
             const isOpen = open === i;
             return (
               <div key={it.q}>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between gap-4 py-5 text-left text-[17px] font-medium text-fg transition-colors duration-150 hover:text-fg-muted sm:text-[18px]"
+                  className="flex w-full items-center justify-between gap-4 py-5 text-left text-[16px] font-medium text-fg transition-colors duration-150 hover:text-fg-muted sm:text-[17px]"
                   aria-expanded={isOpen}
                   aria-controls={`faq-${i}`}
                   onClick={() => setOpen(isOpen ? null : i)}
@@ -98,6 +91,14 @@ export function FAQ() {
             );
           })}
         </div>
+        <Reveal>
+          <p className="mt-8 text-center text-[14.5px] text-fg-muted">
+            Something else?{" "}
+            <a className="font-medium text-accent hover:underline" href="mailto:hello@navi.app">
+              hello@navi.app
+            </a>
+          </p>
+        </Reveal>
       </div>
     </section>
   );

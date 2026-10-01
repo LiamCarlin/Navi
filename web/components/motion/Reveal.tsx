@@ -55,3 +55,17 @@ export function Lines({ lines, className = "", as = "h2" }: { lines: React.React
     </H>
   );
 }
+
+/** A centred section header: the title rises line by line, the subline follows. */
+export function Head({ title, sub, className = "" }: { title: React.ReactNode[]; sub?: React.ReactNode; className?: string }) {
+  return (
+    <div className={`mx-auto max-w-3xl text-center ${className}`}>
+      <Lines className="h-section" lines={title} />
+      {sub && (
+        <Reveal delay={0.15}>
+          <p className="sub mx-auto mt-4 max-w-[38rem]">{sub}</p>
+        </Reveal>
+      )}
+    </div>
+  );
+}

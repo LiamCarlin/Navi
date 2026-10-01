@@ -2,7 +2,7 @@
 
 import { motion, type MotionValue, useMotionValueEvent, useReducedMotion, useScroll, useTransform } from "framer-motion";
 import { useRef, useState } from "react";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 import { EASE } from "@/lib/motion";
 
 type Lane = "mac" | "decide" | "write";
@@ -38,16 +38,11 @@ const EVENTS: Ev[] = [
 export function Anatomy() {
   return (
     <section id="how" className="scroll-mt-16">
-      <div className="px-4 pt-24 sm:px-6 md:pt-36">
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["What happens", <>after you press <span className="keycap-xl">⏎</span></>]} />
-          <Reveal className="lg:col-span-5 lg:pt-3">
-            <p className="lede">
-              Navi splits the work. A fast model only makes choices and says how sure it is. A slower one only writes, and only
-              when something needs writing. Everything else happens on your Mac. Here’s one ordinary task, slowed down.
-            </p>
-          </Reveal>
-        </div>
+      <div className="px-4 pt-24 sm:px-6 md:pt-32">
+        <Head
+          title={["What happens", "after you press ⏎"]}
+          sub="A fast model only makes choices and says how sure it is. A slower one only writes, and only when something needs writing. Everything else happens on your Mac."
+        />
       </div>
       <Scrubbed />
       <Stacked />
@@ -70,11 +65,11 @@ function Scrubbed() {
   return (
     <div ref={outer} className="relative hidden h-[320vh] lg:block">
       <div className="sticky top-0 flex h-screen items-center px-6">
-        <div className="mx-auto w-full max-w-7xl">
+        <div className="mx-auto w-full max-w-6xl">
           <div className="mb-6 flex items-baseline justify-between">
             <div className="flex items-baseline gap-3">
               <span className="text-sm text-fg-muted">You typed</span>
-              <span className="rounded-full border border-line-strong px-3 py-1 text-[15px]">text sam i’m 10 minutes late</span>
+              <span className="glass-dark rounded-full px-3.5 py-1.5 text-[14px]">text sam i’m 10 minutes late</span>
             </div>
             <div className="tnum font-mono text-[2.4rem] leading-none tracking-tight">
               {t.toFixed(2)}
@@ -82,11 +77,11 @@ function Scrubbed() {
             </div>
           </div>
 
-          <div className="card relative overflow-hidden">
+          <div className="card relative overflow-hidden bg-white">
             {/* time axis */}
             <div className="relative ml-[220px] mr-8 flex h-10 items-end justify-between border-b border-line pb-2">
               {Array.from({ length: Math.round(T / 0.5) + 1 }, (_, i) => i * 0.5).map((s) => (
-                <span key={s} className="label tnum -translate-x-1/2 first:translate-x-0">
+                <span key={s} className="mono -translate-x-1/2 first:translate-x-0">
                   {s.toFixed(1)}
                 </span>
               ))}
@@ -115,7 +110,7 @@ function Scrubbed() {
                       >
                         <span
                           className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full"
-                          style={{ width: 10, height: 10, background: e.flag ? "#ff9f0a" : lane.tint, boxShadow: `0 0 0 4px var(--bg-elev)` }}
+                          style={{ width: 10, height: 10, background: e.flag ? "#ff9f0a" : lane.tint, boxShadow: `0 0 0 4px #fff` }}
                         />
                         <span
                           className={`absolute -translate-x-1/2 whitespace-nowrap text-[12px] font-medium ${up ? "-top-8" : "top-4"} ${current === e ? "text-fg" : "text-fg-muted"}`}
@@ -128,7 +123,7 @@ function Scrubbed() {
                   {lane.id === "write" && (
                     <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center gap-4">
                       <span className="h-px flex-1 border-t border-dashed border-line-strong" />
-                      <span className="shrink-0 rounded-full border border-line bg-bg-elev px-3 py-1 text-[12.5px] text-fg-muted">
+                      <span className="shrink-0 rounded-full bg-bg-soft px-3 py-1 text-[12.5px] text-fg-muted ring-1 ring-line">
                         Idle: nothing here needed writing. It would run for “tell Sam why I’m late, nicely”.
                       </span>
                       <span className="h-px w-10 border-t border-dashed border-line-strong" />
@@ -148,12 +143,12 @@ function Scrubbed() {
                 initial={reduce ? false : { opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, ease: EASE }}
-                className="font-serif text-[1.65rem] leading-[1.25] tracking-[-0.015em]"
+                className="text-[1.5rem] font-medium leading-[1.3] tracking-[-0.025em]"
               >
                 {current?.long}
               </motion.p>
             </div>
-            <p className="label col-span-4 col-start-9 leading-relaxed">
+            <p className="col-span-4 col-start-9 text-[13px] leading-relaxed text-fg-dim">
               Scroll moves the clock. Timings are typical for this kind of task, not a benchmark; your network and your Mac
               change them. The pause before picking the contact is Messages filling in its suggestion list.
             </p>
@@ -179,7 +174,7 @@ function Stacked() {
     <div className="px-4 pb-24 pt-12 sm:px-6 lg:hidden">
       <div className="mb-6 flex flex-wrap items-baseline gap-2">
         <span className="text-sm text-fg-muted">You typed</span>
-        <span className="rounded-full border border-line-strong px-3 py-1 text-[15px]">text sam i’m 10 minutes late</span>
+        <span className="glass-dark rounded-full px-3.5 py-1.5 text-[14px]">text sam i’m 10 minutes late</span>
       </div>
       <ol className="relative border-l border-line">
         {EVENTS.map((e, i) => {
@@ -188,13 +183,13 @@ function Stacked() {
             <Reveal as="li" key={e.t} i={0} className="relative pb-7 pl-6 last:pb-0">
               <span className="absolute -left-[5px] top-1.5 h-[9px] w-[9px] rounded-full" style={{ background: e.flag ? "#ff9f0a" : lane.tint }} />
               <div className="flex items-baseline gap-3">
-                <span className="label tnum">{e.t.toFixed(2)} s</span>
+                <span className="mono">{e.t.toFixed(2)} s</span>
                 <span className="text-[13px] font-medium" style={{ color: lane.tint }}>
                   {lane.name}
                 </span>
               </div>
               <p className="body mt-1 text-fg">{e.long}</p>
-              {i === EVENTS.length - 1 && <p className="label mt-4">Timings are typical, not a benchmark.</p>}
+              {i === EVENTS.length - 1 && <p className="mt-4 text-[13px] text-fg-dim">Timings are typical, not a benchmark.</p>}
             </Reveal>
           );
         })}

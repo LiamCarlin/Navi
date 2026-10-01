@@ -3,7 +3,7 @@
 import { motion, useMotionValueEvent, useReducedMotion, useScroll, useTransform } from "framer-motion";
 import { useRef, useState } from "react";
 import { Glyph } from "./Glyph";
-import { Lines, Reveal } from "./motion/Reveal";
+import { Head, Reveal } from "./motion/Reveal";
 import { EASE } from "@/lib/motion";
 import { progress } from "@/lib/motion";
 
@@ -35,10 +35,8 @@ export function Voice() {
   const wrap = useRef<HTMLElement>(null);
   const pin = useRef<HTMLDivElement>(null);
 
-  const { scrollYProgress: enter } = useScroll({ target: wrap, offset: ["start end", "start start"] });
-  const inset = useTransform(enter, [0, 1], [4, 0]);
-  const radius = useTransform(enter, [0, 1], [40, 0]);
-  const clip = useTransform([inset, radius], ([i, r]) => `inset(0 ${i}% round ${r}px)`);
+  const { scrollYProgress: enter } = useScroll({ target: pin, offset: ["start end", "start start"] });
+  const screenScale = useTransform(enter, [0, 1], [0.9, 1]);
 
   const { scrollYProgress } = useScroll({ target: pin, offset: ["start start", "end end"] });
   const [p, setP] = useState(reduce ? 1 : 0);
@@ -56,28 +54,22 @@ export function Voice() {
   const allDone = CLAUSES.every((c) => state(c) === "done");
 
   return (
-    <motion.section id="voice" ref={wrap} className="stage-dark relative scroll-mt-0 bg-[#050506]" style={reduce ? undefined : { clipPath: clip }}>
-      <div className="px-4 pb-10 pt-28 sm:px-6 md:pt-40">
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
-          <Lines className="h-section lg:col-span-7" lines={["Say three things", "in one breath."]} />
-          <Reveal className="lg:col-span-5 lg:pt-3">
-            <p className="lede">
-              Press <span className="keycap !align-baseline">⌥ Space</span> and the island drops out of the notch. Talk the way
-              you’d ask someone sitting next to you. Navi hears where one instruction ends and the next begins, and gets going on
-              each.
-            </p>
-          </Reveal>
-        </div>
+    <section id="voice" ref={wrap} className="relative scroll-mt-16">
+      <div className="px-4 pt-24 sm:px-6 md:pt-32">
+        <Head
+          title={["Talk to it like someone", "sitting next to you"]}
+          sub="Press ⌥Space and the island drops out of the notch. Navi hears where one instruction ends and the next begins, and gets going on each."
+        />
       </div>
 
       <div ref={pin} className="relative h-[240vh]">
         <div className="sticky top-0 flex h-screen flex-col justify-center overflow-hidden px-4 sm:px-6">
           {/* The top edge of a screen: menu bar, notch, island */}
-          <div className="relative mx-auto w-full max-w-5xl">
-            <div className="relative h-8 rounded-t-[18px] border-x border-t border-white/10 bg-[radial-gradient(120%_200%_at_50%_0%,#1b1b2a,#0a0a0f)]">
-              <div className="flex h-full items-center justify-between px-4 text-[11px] text-white/55">
+          <motion.div className="relative mx-auto w-full max-w-5xl overflow-hidden rounded-[24px] shadow-[0_40px_100px_-40px_rgba(30,40,90,0.55)] sm:rounded-[32px]" style={reduce ? undefined : { scale: screenScale, background: "var(--wall)" }}>
+            <div className="relative h-8" style={{ background: "var(--menubar)" }}>
+              <div className="flex h-full items-center justify-between px-4 text-[11px]" style={{ color: "var(--menubar-fg)" }}>
                 <span className="flex gap-4">
-                  <span className="font-semibold text-white/80">Spotify</span>
+                  <span className="font-semibold">Spotify</span>
                   <span className="hidden sm:inline">File</span>
                   <span className="hidden sm:inline">Edit</span>
                 </span>
@@ -158,28 +150,28 @@ export function Voice() {
                 </motion.div>
               </motion.div>
             </div>
-            <div className="relative h-[420px] overflow-hidden rounded-b-[18px] border-x border-b border-white/10 bg-[linear-gradient(180deg,#0a0a0f,#050506)] sm:h-[460px]">
+            <div className="relative h-[420px] overflow-hidden sm:h-[480px]">
               <ScreenBelow s={CLAUSES.map(state)} />
             </div>
-          </div>
-          <p className="label mx-auto mt-6 w-full max-w-5xl text-center !text-white/45">
+          </motion.div>
+          <p className="mx-auto mt-6 w-full max-w-5xl text-center text-[13px] text-fg-dim">
             Joiners like “and” and “then” mark where one instruction ends. Without one, a new verb does: “open chrome search for
             cats” is two.
           </p>
         </div>
       </div>
 
-      <div className="px-4 pb-28 sm:px-6 md:pb-40">
-        <dl className="mx-auto grid max-w-7xl grid-cols-1 gap-x-8 gap-y-10 border-t border-white/10 pt-12 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="px-4 pb-24 sm:px-6 md:pb-32">
+        <dl className="mx-auto grid max-w-6xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           {FACTS.map(([k, v], i) => (
-            <Reveal key={k} i={i}>
+            <Reveal key={k} i={i} className="card p-5">
               <dt className="text-[15px] font-medium">{k}</dt>
-              <dd className="body mt-2 text-[14.5px]">{v}</dd>
+              <dd className="body mt-2 text-[14px]">{v}</dd>
             </Reveal>
           ))}
         </dl>
       </div>
-    </motion.section>
+    </section>
   );
 }
 
@@ -189,7 +181,7 @@ function ScreenBelow({ s }: { s: string[] }) {
   return (
     <>
       <motion.div
-        className="absolute bottom-[8%] left-[4%] w-[62%] overflow-hidden rounded-[12px] border border-white/10 bg-[#121214] text-white/80 shadow-[0_30px_60px_-20px_rgba(0,0,0,0.9)] sm:w-[52%]"
+        className="absolute bottom-[8%] left-[4%] w-[62%] overflow-hidden rounded-[12px] border border-white/10 bg-[#121214] text-white/80 shadow-[0_30px_60px_-20px_rgba(40,20,80,0.6)] sm:w-[52%]"
         initial={false}
         animate={show(s[0] !== "none")}
         transition={{ duration: 0.6, ease: EASE }}
@@ -222,20 +214,20 @@ function ScreenBelow({ s }: { s: string[] }) {
       </motion.div>
 
       <motion.div
-        className="absolute bottom-[8%] right-[4%] flex w-[250px] max-w-[42%] items-center gap-3 rounded-[14px] border border-white/10 bg-white/[0.08] px-3 py-2.5 text-white backdrop-blur-xl"
+        className="glass absolute bottom-[8%] right-[4%] flex w-[250px] max-w-[42%] items-center gap-3 rounded-[14px] px-3 py-2.5"
         initial={false}
         animate={show(s[2] === "done")}
         transition={{ duration: 0.6, ease: EASE }}
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-white">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
           <span className="h-3 w-3 rounded-full border-2 border-[#ff9f0a]" />
         </span>
         <div className="min-w-0">
           <div className="flex items-baseline justify-between gap-2">
             <span className="truncate text-[12px] font-medium">Stretch</span>
-            <span className="shrink-0 text-[10px] text-white/50">Reminders</span>
+            <span className="shrink-0 text-[10px] text-panel-dim">Reminders</span>
           </div>
-          <div className="truncate text-[11px] text-white/60">Today, 4:00 PM</div>
+          <div className="truncate text-[11px] text-panel-muted">Today, 4:00 PM</div>
         </div>
       </motion.div>
     </>

@@ -14,25 +14,22 @@ npm run lint
 
 | Path | What |
 |---|---|
-| `app/page.tsx` | The single landing page, in order: hero (typeable ⌘Space bar), the real recording, "One bar, seven kinds of answer", "What happens after you press ⏎", voice, background mode, app playbooks, Recall, privacy, pricing, FAQ, waitlist |
-| `lib/motion.ts`, `components/motion/*` | The motion system: one curve (`EASE`), three durations, one entrance (`Reveal`: rise + unblur), masked headline lines (`Lines`), Lenis smooth scrolling (`SmoothScroll`, off under reduced motion), the gradient read-progress hairline |
-| `components/bar/Bar.tsx` | The ⌘Space bar drawn from the app's `PanelStyle` (680 pt, 28 pt corners, 64 pt bar, 52 pt rows, key-hint footer) plus its bodies: rows, answer, calculator, task steps + approval, scheduler card, reminder card, Recall answer. Sized in `--u` inside a `.stage` |
-| `components/bar/LiveBar.tsx`, `lib/demo.ts` | The hero bar: types scripted examples and routes on every keystroke; click it and a toy router in `lib/demo.ts` decides what Navi would do with anything typed. The page says it's a demo |
-| `components/Film.tsx` | `public/video/demo.mp4` (a real screen recording) in the CSS MacBook; tilts flat as it scrolls in; chapters seek the video |
-| `components/Kinds.tsx` | Pinned scrollytelling: steps scroll on the left, the bar on the right changes to match (phones: a bar per step) |
-| `components/Anatomy.tsx` | One task scrubbed by the scroll on three lanes (your Mac / decides / writes); phones get a vertical list |
-| `components/Voice.tsx` | Dark stage (`.stage-dark`) that opens to full bleed, then pins while the island hears a sentence and splits it into three jobs. The nav and sticky bar switch palette over it (`lib/useOverDark.ts`) |
-| `components/Background.tsx`, `Apps.tsx`, `Recall.tsx`, `Privacy.tsx` | Background mode + what it asks before; the playbook marquee and habits/people/browser cards; the notes graph, pipeline and personal-data switches; what stays on the Mac vs. what's sent |
-| `components/MacBook.tsx`, `components/Windows.tsx` | CSS 14" MacBook Pro and mini macOS windows |
+| `app/page.tsx` | The single landing page, in order: hero (sky + real recording), app strip, "How Navi helps" (type / say), "One bar, seven kinds of answer", stats, "What happens after you press ⏎", voice, background mode, habits, Recall, privacy, pricing, FAQ, waitlist band |
+| `app/globals.css` | One light palette: white page, ink→slate gradient titles, blue pill buttons, pale blue-grey cards (`.card`), a bright blue card (`.card-blue`), light and dark glass, the sunset wallpaper (`--wall`) in Navi's colours |
+| `lib/motion.ts`, `components/motion/*` | The motion system: one curve (`EASE`), three durations, one entrance (`Reveal`: rise + unblur), masked title lines (`Lines`) and the centred section header (`Head`), Lenis smooth scrolling (`SmoothScroll`, off under reduced motion), the read-progress hairline |
+| `components/Sky.tsx`, `components/Hero.tsx` | The hero sky: gradient, sun, drifting clouds, three seeded SVG mountain ranges that part on scroll. `public/video/demo.mp4` (a real screen recording) rises out of it; chips seek the video |
+| `components/bar/Bar.tsx` | The ⌘Space bar drawn from the app's `PanelStyle` plus its bodies: rows, answer, calculator, task steps + approval, scheduler card, reminder card, Recall answer. Sized in `--u` inside a `.stage` |
+| `components/bar/LiveBar.tsx`, `lib/demo.ts` | The typeable bar on the blue card: scripted examples routed on every keystroke; click it and a toy router decides what Navi would do with anything typed. The page says it's a demo |
+| `components/TypeTalk.tsx`, `Kinds.tsx`, `Stats.tsx`, `Anatomy.tsx`, `Voice.tsx`, `Background.tsx`, `Apps.tsx`, `Recall.tsx`, `Privacy.tsx` | The story sections. `Kinds`, `Anatomy` and `Voice` pin and are driven by the scroll; phones get stacked versions where pinning doesn't fit |
 | `components/SeenOn.tsx`, `lib/seenOn.ts` | The "As seen on" press strip. Every entry ships `enabled: false`, so it renders nothing. **Flip `enabled: true` once Navi is actually posted there.** |
-| `components/WaitlistForm.tsx`, `StickyCTA.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: one form used in the hero, the sticky bar (a button on phones) and the waitlist section; every CTA sends a `source` (`hero`, `sticky`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons |
+| `components/WaitlistForm.tsx`, `Waitlist.tsx`, `WaitlistCount.tsx`, `lib/source.ts` | The signup funnel: the glass pill in the hero and the full form in the closing band; every CTA sends a `source` (`hero`, `waitlist`, `pricing-pro`, …, plus `.ref-<id>` from a `?ref=` link). After signup: place in line and share buttons |
 | `app/api/waitlist/route.ts`, `app/api/waitlist/count/route.ts`, `lib/waitlist.ts` | Signup + count; Supabase when configured, else `web/.waitlist.local.jsonl` |
-| `components/Nav.tsx` | Nav with the active-section underline and the sun/moon theme toggle; `app/layout.tsx` sets `data-theme` before first paint |
+| `components/Nav.tsx` | Fixed nav: white over the sky, white glass once the hero is behind you |
 | `app/opengraph-image.tsx`, `app/icon.tsx`, `app/apple-icon.tsx` | OG image and icons |
 
 Copy rules: the site never names a model or an AI vendor; it is all "Navi". Claims about what is sent off the Mac
-must match the app (typed queries are routed by the server; local rows don't wait for it). Type: Newsreader for
-headlines, Geist for interface, Geist Mono for timings and footnotes.
+must match `app/privacy/page.tsx`. Type: EB Garamond for the hero headline only, Geist for everything else, Geist
+Mono for timings.
 
 ## Environment
 
