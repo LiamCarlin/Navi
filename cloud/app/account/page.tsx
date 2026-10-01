@@ -112,7 +112,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
           <div className="nv-banner nv-banner-warn" role="alert">
             <strong>This account is disabled</strong>
             Navi can’t be used with it right now. You can still export or delete your data
-            {profile?.stripeCustomerId ? ", and manage or cancel billing" : ""}. Questions: hello@navi.app.
+            {profile?.stripeCustomerId ? ", and manage or cancel billing" : ""}. Questions: hello@buildnavi.com.
           </div>
         )}
 

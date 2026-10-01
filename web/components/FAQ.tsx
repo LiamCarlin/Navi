@@ -94,8 +94,8 @@ export function FAQ() {
         <Reveal>
           <p className="mt-8 text-center text-[14.5px] text-fg-muted">
             Something else?{" "}
-            <a className="font-medium text-accent hover:underline" href="mailto:hello@navi.app">
-              hello@navi.app
+            <a className="font-medium text-accent hover:underline" href="mailto:hello@buildnavi.com">
+              hello@buildnavi.com
             </a>
           </p>
         </Reveal>

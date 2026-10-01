@@ -89,7 +89,7 @@ vendor keys. `POST /auth/dev-login` only exists while `DEV_LOGIN_SECRET` is set.
   "notice": { "id": "1bd17969122e", "message": "…", "level": "info|warning|critical", "url": "https://…" },
   "minAppVersion": "1.2.0",
   "latestVersion": "1.3.0",
-  "downloadURL": "https://navi.app/download"
+  "downloadURL": "https://buildnavi.com/download"
 }
 ```
 
@@ -175,8 +175,8 @@ All new tables: RLS on, no policies (service role only).
    (Settings → API) the **JWT Secret** into the env vars below.
 2. Apply the schema: `supabase link --project-ref <ref> && supabase db push`
    (or paste `supabase/migrations/0001_init.sql`, then `0002_admin.sql`, into the SQL editor).
-3. Auth → URL configuration: **Site URL** = `https://api.navi.app`, add
-   `https://api.navi.app/auth/callback` and `https://api.navi.app/admin/auth/callback`
+3. Auth → URL configuration: **Site URL** = `https://api.buildnavi.com`, add
+   `https://api.buildnavi.com/auth/callback` and `https://api.buildnavi.com/admin/auth/callback`
    (and the `http://localhost:3100/…` twins) to **Redirect URLs**.
 4. Auth → Providers → Email: enabled. The default magic-link template works with the PKCE flow
    used by `/auth/start`. Optionally Google: paste the OAuth client id/secret there, and set
@@ -194,7 +194,7 @@ Create two products with four recurring prices and put the ids in env:
 | `STRIPE_PRICE_PRO_RECALL_MONTH` | Navi Pro + Recall | monthly | $30 |
 | `STRIPE_PRICE_PRO_RECALL_YEAR` | Navi Pro + Recall | yearly | $288 |
 
-Then: Developers → Webhooks → add `https://api.navi.app/billing/webhook` with events
+Then: Developers → Webhooks → add `https://api.buildnavi.com/billing/webhook` with events
 `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
 `customer.subscription.deleted`, `invoice.payment_failed` → `STRIPE_WEBHOOK_SECRET`.
 Enable the Customer Portal (Settings → Billing → Customer portal). Locally:
@@ -210,7 +210,7 @@ session and the subscription, so the webhook can set `profiles.tier` even before
 Project root `cloud/`. Environment variables (see `.env.example` for all of them):
 
 ```
-NAVI_CLOUD_BASE_URL=https://api.navi.app
+NAVI_CLOUD_BASE_URL=https://api.buildnavi.com
 SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET
 TYPESAFE_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY   (or store them in /admin → Keys)
 AI_GATEWAY_API_KEY                                (optional: Jev via Vercel AI Gateway)

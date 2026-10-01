@@ -69,15 +69,15 @@ describe("gates on the real proxy path", () => {
   });
 
   it("426 upgrade_required below minAppVersion on /v1/*, but /v1/me answers with the config", async () => {
-    await db.adminSetConfig(CONFIG_KEY, { minAppVersion: "1.2.0", latestVersion: "1.3.0", downloadURL: "https://navi.app/download", notice: makeNotice("Update please", "warning") }, "t");
+    await db.adminSetConfig(CONFIG_KEY, { minAppVersion: "1.2.0", latestVersion: "1.3.0", downloadURL: "https://buildnavi.com/download", notice: makeNotice("Update please", "warning") }, "t");
     const res = await jev(post("/v1/jev", { state: {}, model: "jev-latest", questions: {} }, { "x-navi-version": "1.0.4" }));
     expect(res.status).toBe(426);
-    expect(await res.json()).toMatchObject({ error: "upgrade_required", minAppVersion: "1.2.0", downloadURL: "https://navi.app/download" });
+    expect(await res.json()).toMatchObject({ error: "upgrade_required", minAppVersion: "1.2.0", downloadURL: "https://buildnavi.com/download" });
 
     const m = await getMe({ "x-navi-version": "1.0.4" });
     expect(m.status).toBe(200);
     const body = await m.json();
-    expect(body.config).toMatchObject({ minAppVersion: "1.2.0", latestVersion: "1.3.0", downloadURL: "https://navi.app/download", notice: { level: "warning", message: "Update please" } });
+    expect(body.config).toMatchObject({ minAppVersion: "1.2.0", latestVersion: "1.3.0", downloadURL: "https://buildnavi.com/download", notice: { level: "warning", message: "Update please" } });
     expect(body.config.features).toEqual({ answers: true, tasks: true, voice: true, recall: true });
   });
 

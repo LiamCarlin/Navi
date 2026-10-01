@@ -13,7 +13,7 @@ Code session can do it from the repo (open a PR; Liam merges).
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
 | ☐ | Pricing + Free limits (roadmap §2: Free 20 answers/5 tasks a day, Pro $20, Pro+Recall $30, 7-day trial) | Liam | `cloud/lib/plans.ts` and the site's pricing section show the same numbers |
-| ☐ | Domain for the site and the API (e.g. `navi.app` + `api.navi.app`; today the site is `navi-site-self.vercel.app` and `api.navi.app` does not resolve) | Liam | `dig +short api.<domain>` returns Vercel's address |
+| ☐ | Domain for the site and the API: `buildnavi.com` (bought 2026-10-01 at GoDaddy, attached to Vercel `navi-site`) + `api.buildnavi.com` (not yet attached to `navi-cloud`) | Liam | `dig +short api.<domain>` returns Vercel's address |
 | ☐ | Apple Developer Program membership ($99/yr, team `M8ZP994J4T`) — needed for Developer ID + notarization; nothing ships to strangers without it | Liam | developer.apple.com → Membership shows "Active" |
 
 ## 1. Navi Cloud (`cloud/`) on Vercel
@@ -52,9 +52,9 @@ Code session can do it from the repo (open a PR; Liam merges).
 
 | ☐ | Item | Owner | Verify |
 |---|---|---|---|
-| ☑ | `NaviCloudBaseURL` in `project.yml` = the deployed API — `https://navi-cloud.vercel.app` since 2026-10-01 (read by `CloudTransport.defaultBaseURL`; `https://api.navi.app` is only the code fallback). Change it again when the custom domain is attached | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
+| ☑ | `NaviCloudBaseURL` in `project.yml` = the deployed API — `https://navi-cloud.vercel.app` since 2026-10-01 (read by `CloudTransport.defaultBaseURL`; `https://api.buildnavi.com` is only the code fallback). Change it again when the custom domain is attached | Agent | a fresh user account (no `cloudBaseURL` default) signs in against production |
 | ☐ | `NaviUpdateFeedURL` in `project.yml` = where `appcast.json` is served (default: the latest GitHub Release — works as is) | Agent | `curl -sL <url> \| python3 -m json.tool` |
-| ☐ | Privacy/terms/support links (`AboutView`: `https://navi.app/privacy`, `/terms`, `support@navi.app`) point at pages and a mailbox that exist | Liam (pages) + Agent (URLs) | each link opens; a test mail to support arrives |
+| ☐ | Privacy/terms/support links (`AboutView`: `https://buildnavi.com/privacy`, `/terms`, `support@buildnavi.com`) point at pages and a mailbox that exist | Liam (pages) + Agent (URLs) | each link opens; a test mail to support arrives |
 | ☐ | Version bump (`CFBundleShortVersionString` 1.0.0 / `CFBundleVersion`) via PR | Agent | About shows the version |
 | ☐ | No vendor names anywhere a user looks (re-check after every UI PR) | Agent | `grep -rniE 'claude\|anthropic\|jev\|typesafe\|gemini' Navi/Settings Navi/Panel` hits only Developer/Providers views, `Log.` and comments |
 

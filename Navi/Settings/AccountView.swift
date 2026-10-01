@@ -53,7 +53,7 @@ struct AccountView: View {
                     HStack {
                         Text("Cloud URL")
                         Spacer()
-                        TextField("https://api.navi.app", text: $settings.cloudBaseURL)
+                        TextField("https://api.buildnavi.com", text: $settings.cloudBaseURL)
                             .textFieldStyle(.roundedBorder).frame(width: 280)
                             .font(.callout.monospaced())
                     }

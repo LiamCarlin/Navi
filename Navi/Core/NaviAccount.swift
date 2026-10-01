@@ -5,10 +5,10 @@ import UniformTypeIdentifiers
 
 /// Navi's public web addresses. One place, so the app and the site never disagree.
 enum NaviLinks {
-    static let site = URL(string: "https://navi.app")!
-    static let privacy = URL(string: "https://navi.app/privacy")!
-    static let terms = URL(string: "https://navi.app/terms")!
-    static let supportEmail = "support@navi.app"
+    static let site = URL(string: "https://buildnavi.com")!
+    static let privacy = URL(string: "https://buildnavi.com/privacy")!
+    static let terms = URL(string: "https://buildnavi.com/terms")!
+    static let supportEmail = "support@buildnavi.com"
 
     /// `mailto:` for support, with a subject and (when known) the account's email in the body.
     static func supportMail(subject: String = "Navi account", account email: String? = nil) -> URL {

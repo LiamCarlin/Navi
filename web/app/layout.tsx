@@ -7,7 +7,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 const garamond = EB_Garamond({ variable: "--font-garamond", subsets: ["latin"], weight: ["400", "500"], style: ["normal", "italic"] });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://navi.app";
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://buildnavi.com";
 const title = "Navi: ⌘Space, but it does things";
 const description =
   "Navi replaces Spotlight on your Mac. Open apps, get answers, and hand it tasks it does in the background, by keyboard or voice.";

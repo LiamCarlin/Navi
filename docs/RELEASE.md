@@ -141,7 +141,7 @@ The bundled runner never sees a vendor key on a customer's Mac. `UltrafastBridge
 | Variable | Value |
 |---|---|
 | `NAVI_JEV_TRANSPORT` | `navi` |
-| `NAVI_CLOUD_URL` | `CloudTransport.baseURL` (`cloudBaseURL` default, else the build's `NaviCloudBaseURL` Info.plist key, else `https://api.navi.app`) |
+| `NAVI_CLOUD_URL` | `CloudTransport.baseURL` (`cloudBaseURL` default, else the build's `NaviCloudBaseURL` Info.plist key, else `https://api.buildnavi.com`) |
 | `NAVI_CLOUD_TOKEN` | `CloudTransport.accessToken(validFor: 20 min)` — refreshed first through the shared single-flight refresher if it would lapse sooner (the refresh token stays in the app) |
 | `NAVI_CLOUD_FEATURE` / `NAVI_CLOUD_RUN` | the task's `CloudRun` (`task`, or `voice` for spoken tasks) — the runner's calls are metered as part of that one task |
 
