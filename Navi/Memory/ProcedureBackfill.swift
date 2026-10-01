@@ -9,7 +9,8 @@ import Foundation
 /// procedure and the session note gets its How section. Newest first, a few calls at
 /// a time, text only (no screenshots: cheaper, and old sessions have no recorded clicks
 /// for a picture to add to). Progress is a cursor in UserDefaults, so a quit or a
-/// failure resumes where it stopped; `doneKey` is set once every session was tried.
+/// failure resumes where it stopped (a batch that failed whole is retried — the Mac
+/// slept or went offline); `doneKey` is set once every session was tried.
 /// Runs only while "Learn how I work" (`memoryRecordActions`) is on and a model is
 /// available (the local digest names no goal).
 final class ProcedureBackfill: @unchecked Sendable {
@@ -72,9 +73,12 @@ final class ProcedureBackfill: @unchecked Sendable {
                 Log.memory.warning("Procedure backfill paused after \(failuresInARow) failures in a row")
                 break
             }
-            // A failed session is skipped, not retried forever: the cursor moves past the whole batch.
-            cursor = batch.map(\.id).min() ?? cursor
-            d.set(Int(cursor), forKey: Self.cursorKey)
+            // A batch where every call failed (asleep, offline) is tried again, not skipped; one
+            // session that keeps failing among working ones is skipped, so it can't stall the run.
+            if failed.count < results.count {
+                cursor = batch.map(\.id).min() ?? cursor
+                d.set(Int(cursor), forKey: Self.cursorKey)
+            }
             onProgress(report)
         }
         Log.memory.info("Procedure backfill: \(report.sessions) sessions, \(report.procedures) procedures, \(report.failures) failed\(report.finished ? ", finished" : "")")
