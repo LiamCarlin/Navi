@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /auth/oauth?provider=google|apple&redirect=navi|account
+ * GET /auth/oauth?provider=google|github|apple&redirect=navi|account
  * → 302 to the provider's consent page (PKCE verifier cookie set here) → … → /auth/callback.
  * Providers are switched on in the Supabase dashboard (see DEPLOY.md).
  */

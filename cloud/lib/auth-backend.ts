@@ -9,7 +9,7 @@
  *                    when the flow started, so it only works in the same browser
  *   sessionFromFragment  the magic link in Supabase's default template: email OTPs are sent
  *                    without PKCE, so the session lands in the URL fragment of any browser
- *   oauthUrl         "Continue with Google / Apple" → the provider's consent page
+ *   oauthUrl         "Continue with Google / GitHub / Apple" → the provider's consent page
  *
  * Drivers: `supabase` (Supabase Auth, server-side — the browser never talks to Supabase, so
  * the CSP stays `connect-src 'self'`), and `memory` for local dev and tests: codes are kept in
@@ -111,8 +111,8 @@ function fragmentTokens(accessToken: string, refreshToken: string): SessionToken
 
 // MARK: - Interface
 
-export type OAuthProvider = "google" | "apple";
-export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["google", "apple"];
+export type OAuthProvider = "google" | "github" | "apple";
+export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["google", "github", "apple"];
 
 /** Request cookies in, response cookies out (the PKCE verifier lives in one). */
 export interface CookieJar {

@@ -12,7 +12,7 @@ const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : u
 /**
  * GET /auth/start?redirect=navi|account[&error=<kind>][&email=]
  * The hosted sign-in page. Email (one message with a magic link and a 6-digit code), plus
- * "Continue with Google / Apple" when those providers are switched on. `redirect=navi` (the
+ * "Continue with Google / GitHub / Apple" when those providers are switched on. `redirect=navi` (the
  * default, §3.1) ends in navi://auth/callback?code=…; `redirect=account` ends on /account.
  */
 export default async function AuthStart({ searchParams }: { searchParams: Promise<Search> }) {
