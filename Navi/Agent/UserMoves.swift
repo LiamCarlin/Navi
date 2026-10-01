@@ -92,7 +92,6 @@ final class UserMoves: @unchecked Sendable {
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var installed: UserMoves?
-    private static let isUnderTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     static func install(store: MemoryStore) {
         lock.lock()
@@ -105,7 +104,7 @@ final class UserMoves: @unchecked Sendable {
 
     /// nil when memory has no store, the user turned habits off, or under unit tests.
     static var current: UserMoves? {
-        guard !isUnderTests, UserDefaults.standard.object(forKey: "agentUsesScreenHabits") as? Bool ?? true else { return nil }
+        guard !TestHost.isActive, UserDefaults.navi.object(forKey: "agentUsesScreenHabits") as? Bool ?? true else { return nil }
         lock.lock(); defer { lock.unlock() }
         return installed
     }
