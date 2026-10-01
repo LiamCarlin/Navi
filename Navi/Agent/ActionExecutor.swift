@@ -48,7 +48,11 @@ final class ActionExecutor: @unchecked Sendable {
         case .press(let id):
             // Off-screen: AXPress needs no pixel, and there is none to fall back on.
             guard let el = snapshot.element(id), let ref = el.ref else { throw NaviError.other("The off-screen control \(id) is gone") }
-            let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
+            // A sidebar row takes no press: selecting it is what a click would do.
+            let err = await AXQueue.run {
+                el.selectsByRow && !el.hasPress ? AXUIElementSetAttributeValue(ref, kAXSelectedAttribute as CFString, kCFBooleanTrue)
+                                                : AXUIElementPerformAction(ref, kAXPressAction as CFString)
+            }
             if err != .success { throw NaviError.other("\(el.displayName) did not accept the press") }
         case .select(let id, let option):
             guard let el = snapshot.element(id) else { throw NaviError.other("Element \(id) is no longer on screen") }

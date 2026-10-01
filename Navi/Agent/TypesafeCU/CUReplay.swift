@@ -158,6 +158,10 @@ final class CUReplay: @unchecked Sendable {
                 let pool = step.kind == .select ? screen.snapshot.elements : screen.snapshot.elements + screen.offscreen
                 var hits = pool.filter { $0.role == step.role && CUFacts.matchesLiteral($0.label, step.label) }
                 if hits.count > 1 { hits = hits.filter { $0.path == step.path } }
+                // A row's cell clicked while it was on screen comes back, scrolled away, as the row.
+                if hits.isEmpty, step.kind != .select, ["AXCell", "AXRow", "AXStaticText"].contains(step.role) {
+                    hits = screen.offscreen.filter { $0.role == "AXRow" && CUFacts.matchesLiteral($0.label, step.label) }
+                }
                 if hits.count == 1, let e = hits.first {
                     switch step.kind {
                     case .select:

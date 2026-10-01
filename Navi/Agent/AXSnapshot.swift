@@ -64,6 +64,9 @@ struct AXElement: @unchecked Sendable {
 
     var center: CGPoint { CGPoint(x: frame.midX, y: frame.midY) }
     var hasPress: Bool { actions.contains("AXPress") }
+    /// A list/outline row that takes `AXSelected` but no `AXPress` (System Settings' sidebar):
+    /// selecting it is the press. Marked by the walk (`AXSnapshotter.selectRowAction`).
+    var selectsByRow: Bool { actions.contains(AXSnapshotter.selectRowAction) }
     var isMenuBarItem: Bool { role == "AXMenuBarItem" }
     var isSecure: Bool { role == "AXSecureTextField" || subrole == "AXSecureTextField" }
     var isTextInput: Bool {
@@ -653,15 +656,25 @@ final class AXSnapshotter: @unchecked Sendable {
     static let offscreenRoles: Set<String> = ["AXButton", "AXLink", "AXRow", "AXCell", "AXMenuButton", "AXPopUpButton",
                                               "AXCheckBox", "AXRadioButton", "AXTab", "AXDisclosureTriangle", "AXMenuBarItem"]
 
+    /// Pseudo action on a row whose `AXSelected` is settable: how a sidebar row is "pressed".
+    static let selectRowAction = "NaviSelectRow"
+
     /// A pruned node as an off-screen control: labelled (its own title/description, or for a
-    /// row/cell the first static text within two levels) and accepting `AXPress`.
+    /// row/cell the first static text within two levels) and accepting `AXPress` — or, for a row,
+    /// a settable `AXSelected`: System Settings' sidebar rows take no press at all, so a pane whose
+    /// row was scrolled out of view was not on offer and Jev had to scroll for it (2026-10-01).
     static func offscreenControl(_ el: AXUIElement, role: String, vals: [AnyObject?], frame f: CGRect,
                                  path: [String], pid: pid_t) -> AXElement? {
         var label = firstNonEmpty([(vals[2] as? String) ?? "", (vals[3] as? String) ?? "", (vals[11] as? String) ?? ""])
         if label.isEmpty, role == "AXRow" || role == "AXCell" { label = descendantLabel(el) }
         guard !label.isEmpty else { return nil }
-        let actions = actionNames(el)
-        guard actions.contains("AXPress") else { return nil }
+        var actions = actionNames(el)
+        if !actions.contains("AXPress") {
+            var settable = DarwinBoolean(false)
+            guard role == "AXRow", AXUIElementIsAttributeSettable(el, kAXSelectedAttribute as CFString, &settable) == .success,
+                  settable.boolValue else { return nil }
+            actions.append(selectRowAction)
+        }
         return AXElement(role: role, subrole: vals[1] as? String, label: String(label.prefix(80)), frame: f,
                          path: path.suffix(3).joined(separator: " › "), actions: actions, pid: pid, ref: el)
     }
