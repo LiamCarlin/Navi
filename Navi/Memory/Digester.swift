@@ -331,20 +331,21 @@ final class Digester: @unchecked Sendable {
 
     // MARK: LLM calls
 
+    /// `images: false` sends text only (the backfill: cheaper, the screens' text is enough there).
     func summarize(_ frames: [FrameRecord], actions: [ActionRecord] = [], provider: Provider,
-                   policy: PersonalData.Policy = .strict) async throws -> DigestResult {
+                   policy: PersonalData.Policy = .strict, images: Bool = true) async throws -> DigestResult {
         guard provider != .local else { return Self.localDigest(frames, actions: actions) }
         // One cloud run per digested session (`X-Navi-Run`), routed to `/v1/digest` under `recall_digest`.
         return try await CloudRun.$current.withValue(CloudRun(feature: .recallDigest)) {
-            try await summarizeWithModel(frames, actions: actions, provider: provider, policy: policy)
+            try await summarizeWithModel(frames, actions: actions, provider: provider, policy: policy, withImages: images)
         }
     }
 
     private func summarizeWithModel(_ frames: [FrameRecord], actions: [ActionRecord], provider: Provider,
-                                    policy: PersonalData.Policy) async throws -> DigestResult {
+                                    policy: PersonalData.Policy, withImages: Bool) async throws -> DigestResult {
         let (prompt, thumbs) = Self.buildPrompt(for: frames, actions: actions, policy: policy)
         let system = Self.systemPrompt(policy: policy)
-        let images: [Data] = thumbs.compactMap { FileManager.default.contents(atPath: $0) }
+        let images: [Data] = withImages ? thumbs.compactMap { FileManager.default.contents(atPath: $0) } : []
         var text = try await complete(prompt: prompt, system: system, images: images, provider: provider)
         do {
             return try Self.parse(text)

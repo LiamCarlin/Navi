@@ -104,6 +104,28 @@ final class VaultWriter: @unchecked Sendable {
         }
     }
 
+    /// Adds the operational half (goal, steps, habits) to a session note written before it
+    /// existed (`ProcedureBackfill`). A note that already has a How section is left alone.
+    func appendHow(notePath: String, digest: DigestResult) throws {
+        guard digest.goal != nil || !digest.steps.isEmpty || !digest.habits.isEmpty else { return }
+        try queue.sync {
+            let url = root.appendingPathComponent(notePath)
+            guard let text = try? String(contentsOf: url, encoding: .utf8), !text.contains("\n## How\n") else { return }
+            var note = MarkdownNote.parse(text)
+            if let g = digest.goal, !g.isEmpty { note.set("goal", Self.yaml(g)) }
+            for line in Self.howLines(digest) { note.append(line, toSection: "How", dedupe: false) }
+            try atomicWrite(url, note.render())
+        }
+    }
+
+    static func howLines(_ digest: DigestResult) -> [String] {
+        var out: [String] = []
+        if let g = digest.goal, !g.isEmpty { out.append("**Goal:** \(g)") }
+        out += digest.steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
+        out += digest.habits.map { "- *How you work:* \($0)" }
+        return out
+    }
+
     // MARK: Note builders
 
     static func sessionNote(session: SessionRecord, digest: DigestResult, day: String, appNote: String,

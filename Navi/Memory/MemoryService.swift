@@ -27,6 +27,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     @MainActor private var stack: Stack?
     @MainActor private var digestTask: Task<Void, Never>?
     @MainActor private var pruneTask: Task<Void, Never>?
+    @MainActor private var backfillTask: Task<Void, Never>?
 
     init(jev: JevClient, claude: ClaudeClient) {
         self.jev = jev
@@ -66,6 +67,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
                 wait = .infinity
                 guard !Task.isCancelled, let self else { return }
                 await self.runDigest(includeOpen: false)
+                await self.startBackfillIfNeeded()
             }
         }
 
@@ -92,6 +94,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         stack?.journal.stop()
         digestTask?.cancel(); digestTask = nil
         pruneTask?.cancel(); pruneTask = nil
+        backfillTask?.cancel(); backfillTask = nil
         if status.isRunning { Log.memory.info("Memory service stopped") }
         status.isRunning = false
         status.needsEntitlement = false
@@ -196,6 +199,29 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         } catch {
             Log.memory.error("Digest run failed: \(error.localizedDescription)")
             await MainActor.run { status.lastError = "Digest failed: \(error.localizedDescription)" }
+        }
+    }
+
+    /// Once the regular digest has caught up: give sessions from before the operational
+    /// digest their routines (`ProcedureBackfill`), one run at a time, resumable.
+    @MainActor private func startBackfillIfNeeded() {
+        guard backfillTask == nil, let stack, !UserDefaults.navi.bool(forKey: ProcedureBackfill.doneKey) else { return }
+        let settings = NaviSettings.shared
+        guard settings.memoryRecordActions else { return }
+        let provider = Digester.selectProvider(setting: settings.digestProvider, hasGemini: gemini.isConfigured, hasClaude: claude.isConfigured)
+        let policy = settings.personalDataPolicy
+        let backfill = ProcedureBackfill(store: stack.store, digester: stack.digester, vault: stack.vault)
+        backfillTask = Task.detached(priority: .background) { [weak self] in
+            var refreshedAt = 0
+            let report = await backfill.run(provider: provider, policy: policy) { r in
+                // The routines show up for the agent (and in How you work) as they come in.
+                guard r.procedures - refreshedAt >= 50, let self else { return }
+                refreshedAt = r.procedures
+                self.refreshKnowledge(vault: stack.vault)
+            }
+            guard let self else { return }
+            if report.procedures > 0 { self.refreshKnowledge(vault: stack.vault) }
+            await MainActor.run { self.backfillTask = nil }
         }
     }
 
