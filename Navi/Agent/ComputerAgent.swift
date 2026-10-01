@@ -768,10 +768,12 @@ final class AgentRun: @unchecked Sendable {
 
         /// Some apps answer late (System Settings loads a pane after its row is selected): while the
         /// screen still reads as before, look again for up to ~0.75 s. True once it changed or the
-        /// control named `label` is the selected one.
-        func awaitAnswer(before: CUSignature, label: String?) async -> Bool {
+        /// control named `label` became the selected one — not one that was selected already: live, a
+        /// leftover search kept "Displays" highlighted while the pane showed General, and that read as done.
+        func awaitAnswer(before: CUScreen, label: String?) async -> Bool {
+            let wasSelected = label.map { CUFacts.literalSelected($0, in: before.snapshot) } ?? true
             func answered() -> Bool {
-                !screen.signature.same(as: before) || label.map { CUFacts.literalSelected($0, in: screen.snapshot) } == true
+                !screen.signature.same(as: before.signature) || (!wasSelected && CUFacts.literalSelected(label!, in: screen.snapshot))
             }
             var polls = 0
             while !answered(), polls < 3, !isCancelled {
@@ -957,7 +959,7 @@ final class AgentRun: @unchecked Sendable {
                 let acted = screen
                 _ = run.screenMoved(acted.signature)
                 screen = await observe()
-                let moved = await awaitAnswer(before: acted.signature, label: st.kind == .click || st.kind == .press ? st.label : nil)
+                let moved = await awaitAnswer(before: acted, label: st.kind == .click || st.kind == .press ? st.label : nil)
                 _ = run.recordAction(st.human + " (replayed)", waiting: false)
                 humanLog.append(human)
                 redactedLog.append(human)
@@ -1307,7 +1309,7 @@ final class AgentRun: @unchecked Sendable {
             previousLabels = (Set(screen.items.map { CUFacts.plainLabel($0.text) }), screen.usedOCR)
             screen = await observe()
             // A one-click goal's click: give a late pane its moment before judging it.
-            let answered = literalLanded ? await awaitAnswer(before: before, label: literal) : !screen.signature.same(as: before)
+            let answered = literalLanded ? await awaitAnswer(before: acted, label: literal) : !screen.signature.same(as: before)
             if let action, actionRan {
                 let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
                 recordReplay(action, on: acted, itemText: itemText, moved: answered)
