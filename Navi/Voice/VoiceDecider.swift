@@ -96,6 +96,8 @@ enum VoiceDecider {
         /// The last words of HEAD begin a longer installed app name ("visual
         /// studio" → Visual Studio Code): an open can't be acted on early.
         var headMayContinueAppName = false
+        /// Display names of the running (Dock) apps, for "quit Messages" / "close out of Slack".
+        var runningApps: [String] = []
     }
 
     struct Input: Sendable {
@@ -309,7 +311,7 @@ enum VoiceDecider {
             }
             if !c.hasBoundary {
                 // Nothing marks the end yet: let the pause prove it (or a very sure Jev after a shorter one).
-                let need = isClearOpen(v, input: input) ? openSettleMs
+                let need = isClearOpen(v, input: input) || windowCommand(input) != nil ? openSettleMs
                     : b.confidence >= settleFastConfidence ? settleFastMs : settleMs
                 if silence < need { return .wait(reason: "…", retryAfterMs: need - silence) }
             }
@@ -411,6 +413,11 @@ enum VoiceDecider {
                 return .browser(b, text: text)
             }
         }
+        // "Quit Messages", "close out of this", "minimize it": the app or window itself, directly.
+        if kind != .answer, kind != .control, let w = windowCommand(input) { return .window(w, text: text) }
+        // "Calculate 22 + 34", "what's 15% of 340", "5 miles in km": answered on the spot, not by
+        // clicking through Calculator — unless the user asked for the Calculator app itself.
+        if kind != .control, localMath(text) != nil { return .answer(question: text, wantsMemory: false) }
         switch kind {
         case .control:
             let ctl = v.control.flatMap { Control(rawValue: $0.choice) } ?? .none
@@ -451,10 +458,27 @@ enum VoiceDecider {
         }
     }
 
+    /// Arithmetic, a unit / time-zone conversion or date math `Calculator` can do locally, unless the
+    /// user named the Calculator app ("open calculator and add 2 and 2" wants the app).
+    static func localMath(_ text: String) -> CalcResult? {
+        var t = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.contains("calculator") || t.range(of: #"\b(type|enter|write|paste|put)\b"#, options: .regularExpression) != nil { return nil }
+        for p in ["can you calculate ", "can you compute ", "can you tell me ", "tell me ", "how much is ", "work out ", "compute ", "calculate ", "figure out "]
+        where t.hasPrefix(p) { t = String(t.dropFirst(p.count)); break }
+        return Calculator.evaluate(t)
+    }
+
+    /// The window/app command HEAD is, against the apps that are running.
+    static func windowCommand(_ input: Input) -> WindowControls.Command? {
+        let apps = input.context.runningApps
+        return WindowControls.match(normalizedGoal(input.clause.head)) { WindowControls.bestName($0, in: apps) }
+    }
+
     static func heuristicCommand(_ input: Input) -> VoiceCommand {
         let text = normalizedGoal(input.clause.head)
         if let ctl = heuristicControl(text) { return .control(ctl, text: text) }
         if let b = BrowserControls.match(text) { return .browser(b, text: text) }
+        if let w = windowCommand(input) { return .window(w, text: text) }
         if looksLikeOpen(text), let app = input.context.appCandidates.first, app.score >= 0.9 { return .openApp(app.entry, text: text) }
         if let url = URLAndWeb.detect(text) { return .openURL(url, text: text) }
         if let url = knownSiteToOpen(text) { return .openURL(url, text: text) }
@@ -582,11 +606,13 @@ enum VoiceCommand: Equatable, Sendable {
     case control(VoiceDecider.Control, text: String)
     /// A browser-level command (tab, history, reload, scroll, zoom): one key press, no agent.
     case browser(BrowserControls.Command, text: String)
+    /// Quit / close / hide / minimize an app or its window (`WindowControls`).
+    case window(WindowControls.Command, text: String)
 
     /// What the user said, for the transcript and logs.
     var spoken: String {
         switch self {
-        case .openApp(_, let t), .openAppNamed(_, let t), .openURL(_, let t), .webSearch(_, let t), .system(_, _, let t, _), .control(_, let t), .browser(_, let t): return t
+        case .openApp(_, let t), .openAppNamed(_, let t), .openURL(_, let t), .webSearch(_, let t), .system(_, _, let t, _), .control(_, let t), .browser(_, let t), .window(_, let t): return t
         case .task(let g, _, _, _, _): return g
         case .answer(let q, _): return q
         }
@@ -603,6 +629,7 @@ enum VoiceCommand: Equatable, Sendable {
         case .answer: return "Thinking"
         case .system(_, let title, _, _): return title
         case .browser(let b, _): return b.title
+        case .window(let w, _): return w.title
         case .control(let c, _):
             switch c {
             case .stop: return "Stopping"
