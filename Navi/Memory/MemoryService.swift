@@ -57,9 +57,13 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
 
         digestTask?.cancel()
         digestTask = Task.detached(priority: .utility) { [weak self] in
+            // The first pass comes soon after launch: waiting a whole interval from every launch
+            // left frames undigested for hours on a day of relaunches (installs, updates).
+            var wait = Self.firstDigestDelay
             while !Task.isCancelled {
                 let minutes = await MainActor.run { max(1, NaviSettings.shared.memoryDigestIntervalMinutes) }
-                try? await Task.sleep(for: .seconds(minutes * 60))
+                try? await Task.sleep(for: .seconds(min(wait, Double(minutes * 60))))
+                wait = .infinity
                 guard !Task.isCancelled, let self else { return }
                 await self.runDigest(includeOpen: false)
             }
@@ -79,6 +83,9 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         refreshCounts()
         Log.memory.info("Memory service started (vault: \(stack.vault.root.path, privacy: .public))")
     }
+
+    /// Seconds after start before the first digest (then every `memoryDigestIntervalMinutes`).
+    static let firstDigestDelay: Double = 90
 
     @MainActor func stop() {
         stack?.scheduler.stop()
