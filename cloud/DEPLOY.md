@@ -116,6 +116,12 @@ Subject: `Your Navi sign-in code: {{ .Token }}`
 </div>
 ```
 
+**Before custom SMTP** the dashboard locks the templates, so Supabase's default ones are used:
+a `{{ .ConfirmationURL }}` link and no code. That still works in any browser: email sign-ins are
+requested without PKCE, so the link lands on `/auth/callback` (or `/admin/auth/callback`) with the
+session in the URL fragment, and a small page posts it back to the server, which verifies it
+with Supabase (`lib/fragment-signin.ts`). Only typing a 6-digit code needs the template below.
+
 `next={{ .RedirectTo }}` carries whether the sign-in was started by the app or by the account
 page; `/auth/callback` reads it. The button always opens the **Site URL**'s host, so when testing
 on a preview deployment, type the code instead of clicking the button. **Check:** after §7, ask for a code on the preview's

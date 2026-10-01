@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GET as callback } from "@/app/auth/callback/route";
+import { GET as callback, POST as callbackPost } from "@/app/auth/callback/route";
 import { POST as devLogin } from "@/app/auth/dev-login/route";
 import { POST as exchange } from "@/app/auth/exchange/route";
 import { POST as sendOtp } from "@/app/auth/otp/route";
@@ -182,8 +182,6 @@ describe("magic link → /auth/callback", () => {
     expect(expired.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=navi&error=expired");
     const cancelled = await callback(req("/auth/callback?redirect=account&error=access_denied&error_description=user+cancelled"));
     expect(cancelled.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=account&error=cancelled");
-    const nothing = await callback(req("/auth/callback?redirect=navi"));
-    expect(nothing.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=navi&error=expired");
   });
 
   it("PKCE ?code= path: finishes on success, explains 'other browser' when the verifier is missing, never keeps sb-* cookies", async () => {
@@ -194,6 +192,7 @@ describe("magic link → /auth/callback", () => {
       sendEmailOtp: async () => undefined,
       verifyEmailOtp: async () => tokens,
       verifyTokenHash: async () => tokens,
+      sessionFromFragment: async () => tokens,
       exchangeCode: async (code) => {
         if (code === "good") return tokens;
         throw new SignInError(classifyAuthError({ name: "AuthPKCECodeVerifierMissingError", message: "PKCE code verifier not found in storage." }));
@@ -212,6 +211,76 @@ describe("magic link → /auth/callback", () => {
 
     const other = await callback(req("/auth/callback?code=from-another-browser&redirect=account"));
     expect(other.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=account&error=other_browser");
+  });
+});
+
+describe("default-template link: session in the #fragment, any browser", () => {
+  const form = (path: string, fields: Record<string, string>, init: { origin?: string | null } = {}) =>
+    callbackPost(
+      req(path, {
+        method: "POST",
+        body: new URLSearchParams(fields).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        origin: init.origin,
+      }),
+    );
+
+  it("a bare callback GET answers with the finish page: strips the fragment first, POSTs back here, no tokens in any URL", async () => {
+    const res = await callback(req("/auth/callback?redirect=navi"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    const html = await res.text();
+    expect(html.indexOf("history.replaceState")).toBeGreaterThan(-1);
+    expect(html.indexOf("history.replaceState")).toBeLessThan(html.indexOf("f.submit()"));
+    expect(html).toContain('f.method="POST"');
+    expect(html).toContain('"/auth/callback?redirect=navi"');
+    expect(html).toContain('"/auth/start?redirect=navi&error=expired"');
+  });
+
+  it("app flow: verified tokens → single-use 5-minute code → navi://, never tokens in the URL; the code works once", async () => {
+    const email = freshEmail();
+    const tokens = await getSessionProvider().issue(memoryUserForEmail(email));
+    const res = await form("/auth/callback?redirect=navi", { access_token: tokens.accessToken, refresh_token: tokens.refreshToken });
+    expect(res.status).toBe(303);
+    const location = res.headers.get("location")!;
+    expect(location).not.toContain(tokens.accessToken);
+    expect(location).not.toContain(tokens.refreshToken);
+    const code = appCode(location);
+    const first = await exchangeCode(code);
+    expect(first.status).toBe(200);
+    const got = (await first.json()) as SessionTokens;
+    expect((await verifyAccessToken(got.accessToken)).email).toBe(email);
+    expect((await exchangeCode(code)).status).toBe(400);
+  });
+
+  it("web flow: verified tokens → httpOnly session cookie + /account", async () => {
+    const tokens = await getSessionProvider().issue(memoryUserForEmail(freshEmail()));
+    const res = await form("/auth/callback?redirect=account", { access_token: tokens.accessToken, refresh_token: tokens.refreshToken });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("http://localhost:3100/account");
+    expect(decodeSession(setCookies(res).get(SESSION_COOKIE))).not.toBeNull();
+  });
+
+  it("a forged or tampered access token is refused with the 'expired' page, and nothing is issued", async () => {
+    const tokens = await getSessionProvider().issue(memoryUserForEmail(freshEmail()));
+    const [h, p] = tokens.accessToken.split(".");
+    const tampered = `${h}.${p}.${"A".repeat(43)}`;
+    for (const access of [tampered, "not-a-jwt-but-long-enough-to-pass"]) {
+      const res = await form("/auth/callback?redirect=navi", { access_token: access, refresh_token: tokens.refreshToken });
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=navi&error=expired");
+    }
+  });
+
+  it("is same-origin only, and a body that isn't the finish page's form is 'expired'", async () => {
+    const tokens = await getSessionProvider().issue(memoryUserForEmail(freshEmail()));
+    const fields = { access_token: tokens.accessToken, refresh_token: tokens.refreshToken };
+    expect((await form("/auth/callback?redirect=account", fields, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await form("/auth/callback?redirect=account", fields, { origin: null })).status).toBe(403);
+    const missing = await form("/auth/callback?redirect=account", { access_token: tokens.accessToken });
+    expect(missing.headers.get("location")).toBe("http://localhost:3100/auth/start?redirect=account&error=expired");
   });
 });
 

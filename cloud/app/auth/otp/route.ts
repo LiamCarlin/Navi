@@ -8,9 +8,10 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /auth/otp { email, redirect: "navi"|"account" } → 200 { ok: true }
- * Sends one email with a magic link and a 6-digit code. The PKCE verifier for the link
- * rides back as a cookie, so the link works straight away in this browser; the code (or a
- * `token_hash` email template) works anywhere.
+ * Sends one email with a magic link and a 6-digit code (the code needs the DEPLOY.md §3
+ * template). Sent without PKCE, so the link works in any browser: with Supabase's default
+ * template the session comes back in the URL fragment (lib/fragment-signin.ts), with the
+ * §3 template as a `token_hash`.
  * Errors: 400 invalid_email · 429 rate_limited · 403 signups_closed · 503 unconfigured.
  */
 export async function POST(req: Request): Promise<Response> {
