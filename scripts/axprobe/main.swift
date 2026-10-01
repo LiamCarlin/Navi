@@ -32,6 +32,20 @@ Task {
         // AXPROBE_CONTEXT='[{"name":"Bella Chen","type":"person",…}]' → `state.user_context` (UserKnowledge A/B).
         if let raw = ProcessInfo.processInfo.environment["AXPROBE_CONTEXT"],
            let ctx = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] { input.userContext = ctx }
+        // AXPROBE_MOVES='{"clicks":{"Reply":5},"next":["Reply"],"state":{"did_before":[…]}}' → `UserMoves` marks (A/B).
+        if let raw = ProcessInfo.processInfo.environment["AXPROBE_MOVES"],
+           let m = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] {
+            var h = UserMoves.Hints(shortcuts: input.shortcuts)
+            let clicks = m["clicks"] as? [String: Int] ?? [:]
+            let next = Set((m["next"] as? [String] ?? []).map { $0.lowercased() })
+            for it in input.screen.items {
+                if let n = clicks.first(where: { $0.key.lowercased() == it.text.lowercased() })?.value { h.clicks[it.index] = n }
+                if next.contains(it.text.lowercased()) { h.next.insert(it.index) }
+            }
+            if var st = m["state"] as? [String: Any] { st["note"] = UserMoves.note; h.state = st }
+            input.userMoves = h
+            print("moves: marked \(h.clicks.count) items, next \(h.next.count)")
+        }
         do {
             let (v, req) = try await CUDecide.ask(jev, input)
             let d = CUDecide.decision(v, request: req)

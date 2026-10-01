@@ -8,6 +8,13 @@ struct DigestResult: Sendable, Equatable {
     var entities: [EntityRef]
     var keyFacts: [String]
     var links: [String]
+    /// The operational half: the task this stretch got done, as the user could ask Navi for
+    /// it ("reply to Prof. Lee's email about the extension"); nil when they only read or watched.
+    var goal: String? = nil
+    /// How they did it, in order, naming the app or site and the exact controls/shortcuts.
+    var steps: [String] = []
+    /// Reusable observations of how this user works (their tool, path, shortcut, order).
+    var habits: [String] = []
 
     static let empty = DigestResult(title: "", summary: "", topics: [], entities: [], keyFacts: [], links: [])
 }
@@ -39,7 +46,10 @@ final class Digester: @unchecked Sendable {
     static let openSessionGrace: TimeInterval = 5 * 60
     /// Frames older than this are digested locally if the LLM keeps failing.
     static let backlogFallbackAge: TimeInterval = 24 * 3600
-    static let maxPromptChars = 8000
+    static let maxPromptChars = 10_000
+    static let maxActionLines = 40
+    static let maxSteps = 10
+    static let maxHabits = 3
     static let maxFramesInPrompt = 4
     static let maxThumbnails = 2
 
@@ -110,15 +120,16 @@ final class Digester: @unchecked Sendable {
                 try store.markDigested(frameIDs: ids)
                 continue
             }
+            let actions = Self.actions(for: session, in: store)
             let (result, usedProvider): (DigestResult, Provider)
             do {
-                let d = try await summarize(session, provider: provider, policy: policy)
+                let d = try await summarize(session, actions: actions, provider: provider, policy: policy)
                 result = d; usedProvider = provider
             } catch {
                 let oldest = session.first?.timestamp ?? now
                 if provider != .local, now.timeIntervalSince(oldest) > Self.backlogFallbackAge {
                     Log.memory.warning("Digest LLM failed for old session; using local digest: \(error.localizedDescription)")
-                    result = Self.localDigest(session); usedProvider = .local
+                    result = Self.localDigest(session, actions: actions); usedProvider = .local
                 } else {
                     Log.memory.error("Digest failed: \(error.localizedDescription)")
                     updateStatus { $0.lastError = "Digest failed: \(error.localizedDescription)" }
@@ -141,6 +152,11 @@ final class Digester: @unchecked Sendable {
                 Log.memory.error("Vault write failed: \(error.localizedDescription)")
                 updateStatus { $0.lastError = "Vault write failed: \(error.localizedDescription)" }
             }
+            if let procedure = Self.procedure(for: record, digest: clean) {
+                do { try store.insertProcedure(procedure) } catch {
+                    Log.memory.error("Procedure not saved: \(error.localizedDescription)")
+                }
+            }
             try store.markDigested(frameIDs: ids)
             written += 1
             let n = session.count
@@ -154,6 +170,23 @@ final class Digester: @unchecked Sendable {
             if s.lastError?.hasPrefix("Digest failed") == true || s.lastError?.hasPrefix("Vault write") == true { s.lastError = nil }
         }
         return written
+    }
+
+    /// The user's clicks and shortcuts during a session (`ActionJournal`): from one capture
+    /// interval before its first frame (what led to it) to one after its last.
+    static func actions(for frames: [FrameRecord], in store: MemoryStore, slack: TimeInterval = 30) -> [ActionRecord] {
+        guard let first = frames.first, let last = frames.last else { return [] }
+        let span = DateInterval(start: first.timestamp.addingTimeInterval(-slack), end: last.timestamp.addingTimeInterval(slack))
+        return (try? store.actions(in: span, limit: 2000)) ?? []
+    }
+
+    /// The session as a procedure Navi can follow later; nil without a goal.
+    static func procedure(for session: SessionRecord, digest: DigestResult) -> ProcedureRecord? {
+        guard let goal = digest.goal?.trimmingCharacters(in: .whitespacesAndNewlines), !goal.isEmpty else { return nil }
+        return ProcedureRecord(sessionID: session.id, start: session.start, end: session.end, bundleID: session.bundleID,
+                               appName: session.appName, site: session.url.flatMap(UserHabits.siteKey(of:)),
+                               goal: String(goal.prefix(160)), steps: Array(digest.steps.prefix(maxSteps)),
+                               habits: Array(digest.habits.prefix(maxHabits)))
     }
 
     // MARK: Session grouping
@@ -201,17 +234,33 @@ final class Digester: @unchecked Sendable {
     }
 
     static let basePrompt = """
-    You are the memory digester for Navi, a macOS assistant. You receive on-screen text (OCR) and \
-    optionally screenshots from one stretch of the user's computer activity, and you write a concise \
-    memory note so the user can later ask "what was I doing?".
+    You are the memory digester for Navi, a macOS assistant that does tasks on this computer the way its \
+    user would do them. You receive one stretch of the user's activity: the apps and pages, on-screen text \
+    (OCR), optionally screenshots, and [ACTIONS] — the controls the user actually clicked, the menu items \
+    they chose and the keyboard shortcuts they pressed, in order (what they typed is never recorded). Write \
+    an operational note: what the user was getting done and exactly how they did it, so Navi can later do \
+    the same task the same way this user does it — and still answer "what was I doing?".
     Respond with ONLY a JSON object, no prose, no markdown fences:
     {"title": string (≤ 60 chars, specific), "summary": string (2–4 sentences, past tense, concrete: name \
-    files, people, sites, decisions), "topics": [2–6 short lowercase noun phrases], \
+    files, people, sites, decisions, and how the work was done), \
+    "goal": string or null (the task this stretch accomplished or worked on, phrased as an instruction the \
+    user could give Navi: "reply to Prof. Lee's email about the MTH3199 extension", "submit Assignment 2 on \
+    Canvas", "add the Baja meeting to my calendar"; null when the user only read, watched, browsed or idled), \
+    "steps": [≤ 10 short steps in the order the user took them, each naming the app or site and the exact \
+    control, menu item or shortcut from [ACTIONS]: "Outlook: click 'Reply' (cmd+r)", "canvas.olin.edu: \
+    Courses › MTH3199 › Assignments", "Notes: cmd+n, then type the title"; [] when there is no goal], \
+    "habits": [≤ 3 reusable observations of HOW this user works — the tool, navigation path, shortcut or \
+    order of operations they choose where another person might choose differently: "Opens Canvas \
+    assignments from the course's Assignments tab, not the dashboard", "Sends email with cmd+return"; \
+    [] when the actions show nothing particular], \
+    "topics": [2–6 short lowercase noun phrases], \
     "entities": [{"name": string, "type": "person|project|company|tool|site|file|concept"}], \
     "key_facts": [≤ 6 concrete facts worth remembering], "links": [URLs seen]}
-    Rules: never invent details not present in the input; never include passwords, codes or secrets; \
-    prefer proper nouns for entities; keep topic names reusable across days (e.g. "swift concurrency", \
-    not "the thing I read"). Entities are how Navi later finds things for the user, so name them the way \
+    Rules: never invent details not present in the input; steps and habits come only from [ACTIONS] and \
+    the screens — quote control names exactly as [ACTIONS] spells them, and never guess a click that is not \
+    there; never include passwords, codes, secrets or text the user typed into a field; prefer proper \
+    nouns for entities; keep topic names reusable across days (e.g. "swift concurrency", not "the thing I \
+    read"). Entities are how Navi later finds things for the user, so name them the way \
     they are named on screen, the same way every time: a person by their full name when shown (the \
     contact or sender name, not an email address), a document or file by its exact title, a project or \
     course by its code or name ("MTH3199", "Baja SAE"); never list the user themself (the owner of this \
@@ -220,7 +269,7 @@ final class Digester: @unchecked Sendable {
 
     /// Compact, structured prompt for one session. Returns the text plus the
     /// thumbnails worth attaching (highest-importance frames with a file on disk).
-    static func buildPrompt(for frames: [FrameRecord], maxChars: Int = maxPromptChars,
+    static func buildPrompt(for frames: [FrameRecord], actions: [ActionRecord] = [], maxChars: Int = maxPromptChars,
                             calendar: Calendar = .current, policy: PersonalData.Policy = .strict) -> (text: String, thumbnailPaths: [String]) {
         guard let first = frames.first, let last = frames.last else { return ("", []) }
         let time = DateFormatter()
@@ -239,6 +288,9 @@ final class Digester: @unchecked Sendable {
         if !titles.isEmpty { lines.append("[TITLES]\n" + titles.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
         let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty }.map { PersonalData.redact($0, policy: policy).text })
         if !urls.isEmpty { lines.append("[URLS]\n" + urls.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
+        // What the user did (labels and shortcuts only — never typed text), already redacted when recorded.
+        let acted = ActionJournal.lines(actions, max: maxActionLines, calendar: calendar).map { PersonalData.redact($0, policy: policy).text }
+        lines.append(acted.isEmpty ? "[ACTIONS] none recorded" : "[ACTIONS]\n" + acted.joined(separator: "\n"))
 
         var used = lines.joined(separator: "\n").count
         var seenKeys = Set<String>()
@@ -279,16 +331,18 @@ final class Digester: @unchecked Sendable {
 
     // MARK: LLM calls
 
-    func summarize(_ frames: [FrameRecord], provider: Provider, policy: PersonalData.Policy = .strict) async throws -> DigestResult {
-        guard provider != .local else { return Self.localDigest(frames) }
+    func summarize(_ frames: [FrameRecord], actions: [ActionRecord] = [], provider: Provider,
+                   policy: PersonalData.Policy = .strict) async throws -> DigestResult {
+        guard provider != .local else { return Self.localDigest(frames, actions: actions) }
         // One cloud run per digested session (`X-Navi-Run`), routed to `/v1/digest` under `recall_digest`.
         return try await CloudRun.$current.withValue(CloudRun(feature: .recallDigest)) {
-            try await summarizeWithModel(frames, provider: provider, policy: policy)
+            try await summarizeWithModel(frames, actions: actions, provider: provider, policy: policy)
         }
     }
 
-    private func summarizeWithModel(_ frames: [FrameRecord], provider: Provider, policy: PersonalData.Policy) async throws -> DigestResult {
-        let (prompt, thumbs) = Self.buildPrompt(for: frames, policy: policy)
+    private func summarizeWithModel(_ frames: [FrameRecord], actions: [ActionRecord], provider: Provider,
+                                    policy: PersonalData.Policy) async throws -> DigestResult {
+        let (prompt, thumbs) = Self.buildPrompt(for: frames, actions: actions, policy: policy)
         let system = Self.systemPrompt(policy: policy)
         let images: [Data] = thumbs.compactMap { FileManager.default.contents(atPath: $0) }
         var text = try await complete(prompt: prompt, system: system, images: images, provider: provider)
@@ -306,7 +360,7 @@ final class Digester: @unchecked Sendable {
         case .gemini(let model):
             let reply = try await gemini.generate(model: model, system: system, prompt: prompt,
                                                   images: images.map { GeminiClient.ImagePart(data: $0) },
-                                                  jsonMode: true, maxOutputTokens: 1024)
+                                                  jsonMode: true, maxOutputTokens: 1500)
             Log.memory.debug("Gemini digest: \(reply.usage.promptTokens) in / \(reply.usage.outputTokens) out")
             return reply.text
         case .claude(let model):
@@ -316,7 +370,7 @@ final class Digester: @unchecked Sendable {
             content.append(["type": "text", "text": prompt])
             let m = try await claude.create(model: model, system: system,
                                             messages: [["role": "user", "content": content]],
-                                            maxTokens: 1024, effort: "low", thinking: nil)
+                                            maxTokens: 1500, effort: "low", thinking: nil)
             return m.text
         case .local:
             return ""
@@ -354,12 +408,17 @@ final class Digester: @unchecked Sendable {
                 }
             }
         }
+        let goal = (obj["goal"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasGoal = goal.map { !$0.isEmpty && $0.lowercased() != "null" } ?? false
         return DigestResult(title: title.isEmpty ? String(summary.prefix(60)) : title,
                             summary: summary,
                             topics: uniqueOrdered(topics),
                             entities: uniqueEntities(entities),
                             keyFacts: stringList(obj["key_facts"]),
-                            links: uniqueOrdered(stringList(obj["links"])))
+                            links: uniqueOrdered(stringList(obj["links"])),
+                            goal: hasGoal ? goal : nil,
+                            steps: hasGoal ? Array(uniqueOrdered(stringList(obj["steps"])).prefix(maxSteps)) : [],
+                            habits: Array(uniqueOrdered(stringList(obj["habits"])).prefix(maxHabits)))
     }
 
     static let validEntityTypes: Set<String> = ["person", "project", "company", "tool", "site", "file", "concept"]
@@ -383,7 +442,7 @@ final class Digester: @unchecked Sendable {
 
     // MARK: Local (no-LLM) digest
 
-    static func localDigest(_ frames: [FrameRecord]) -> DigestResult {
+    static func localDigest(_ frames: [FrameRecord], actions: [ActionRecord] = []) -> DigestResult {
         let best = frames.filter { !$0.ocrText.isEmpty }
             .sorted { $0.importance == $1.importance ? $0.timestamp < $1.timestamp : $0.importance > $1.importance }
         let app = frames.first?.appName ?? "Unknown"
@@ -396,9 +455,12 @@ final class Digester: @unchecked Sendable {
         for host in uniqueOrdered(urls.compactMap { URL(string: $0)?.host }) {
             entities.append(EntityRef(name: host.replacingOccurrences(of: "www.", with: ""), type: "site"))
         }
+        // No model to name the task: the steps are the recorded actions themselves, kept on the
+        // note for the user; without a goal they never become a procedure.
+        let steps = Array(uniqueOrdered(actions.map(ActionJournal.describe)).prefix(maxSteps))
         return DigestResult(title: noteTitle, summary: summary,
                             topics: keywords(best.map(\.ocrText), max: 5),
-                            entities: entities, keyFacts: [], links: urls)
+                            entities: entities, keyFacts: [], links: urls, steps: steps)
     }
 
     /// Top salient terms across the session's OCR: term frequency with a

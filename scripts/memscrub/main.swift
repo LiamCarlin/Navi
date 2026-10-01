@@ -41,6 +41,7 @@ do {
     print("allowed:  \(policy.allowed.isEmpty ? "nothing (strict)" : PersonalData.Category.allCases.filter(policy.allowed.contains).map(\.title).joined(separator: "; "))")
     print("frames:   \(plan.frameIDs.count) of \(plan.framesScanned) with text would be reduced to app + time stubs")
     print("sessions: \(plan.sessions.count) of \(plan.sessionsScanned) hold identifiers")
+    print("clicks, shortcuts and routines: \(plan.actionRows) hold identifiers")
     for fix in plan.sessions {
         let dropped = (fix.before.entities.count - fix.after.entities.count) + (fix.before.topics.count - fix.after.topics.count)
         let facts = fix.keptKeyFacts.map { " · key facts kept \($0.count)" } ?? ""

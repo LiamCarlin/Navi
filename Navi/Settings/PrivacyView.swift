@@ -152,7 +152,7 @@ struct PrivacyView: View {
         } header: {
             Text("How long Navi keeps things")
         } footer: {
-            Text("Older moments, their screenshots and summaries are removed once a day.")
+            Text("Older moments, their screenshots and summaries are removed once a day. The clicks and shortcuts Navi learns from are kept at least \(MemoryStore.actionRetentionDays) days and the routines it learned at least a year; “Delete everything” removes them too.")
         }
     }
 

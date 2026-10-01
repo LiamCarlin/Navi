@@ -119,6 +119,7 @@ final class VaultWriter: @unchecked Sendable {
         fm.append("end: \(iso.string(from: session.end))")
         fm.append("app: \(yaml(session.appName))")
         if let u = session.url, !u.isEmpty { fm.append("url: \(yaml(u))") }
+        if let g = digest.goal, !g.isEmpty { fm.append("goal: \(yaml(g))") }
         fm.append("topics: [\(topics.map(yaml).joined(separator: ", "))]")
         fm.append("entities: [\(entities.map { yaml($0.name) }.joined(separator: ", "))]")
         fm.append("importance: \(Int(session.importance.rounded()))")
@@ -132,6 +133,16 @@ final class VaultWriter: @unchecked Sendable {
         body.append("")
         body.append(digest.summary.isEmpty ? "_No summary._" : digest.summary)
         body.append("")
+        if digest.goal != nil || !digest.steps.isEmpty || !digest.habits.isEmpty {
+            body.append("## How")
+            if let g = digest.goal, !g.isEmpty { body.append("**Goal:** \(g)"); body.append("") }
+            body += digest.steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
+            if !digest.habits.isEmpty {
+                if !digest.steps.isEmpty { body.append("") }
+                body += digest.habits.map { "- *How you work:* \($0)" }
+            }
+            body.append("")
+        }
         if !digest.keyFacts.isEmpty {
             body.append("## Key facts")
             body += digest.keyFacts.map { "- \($0)" }

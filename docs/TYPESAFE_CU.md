@@ -73,6 +73,12 @@ below into the Swift file beside it, and its test case into `NaviTests/TypesafeC
   sites on `use_browser`'s `site` question instead of upstream's personal catalog.
 - **App knowledge in the state**: `playbook` (`AppSkills`), `experience` (`AgentExperience`),
   `conversation` (what was said before).
+- **The user's own way in the state** (`UserMoves`, from screen memory): items this user clicks
+  in this app/site carry `user_clicks` (and "this user clicks this here (N×)" in their criteria),
+  the item they usually click after the last one clicked carries `user_next`, their shortcuts join
+  the shortcut question ("this user presses it here"), and `how_this_user_works` holds similar
+  tasks they did before with their steps, their habits and most-clicked controls. Upstream has
+  no notion of a particular user; these are facts code computed, Jev still picks.
 - **Approval gate**: `is_irreversible` / `is_prohibited` ride along in the same call and feed
   `JevGate` — upstream has no approvals.
 - **Background mode**, **RecipientPicker** (contacts in To:/Cc:), typing sounds: unchanged.

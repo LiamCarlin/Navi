@@ -185,8 +185,10 @@ final class CaptureScheduler: @unchecked Sendable {
                 record.windowTitle = nil
                 record.url = nil
                 record.importance = 0
+                ActionJournal.noteSensitive(bundleID: bundleID, now: now)
                 Log.memory.info("Sensitive frame in \(record.appName, privacy: .private); stored stub only")
             } else {
+                ActionJournal.noteNormal(bundleID: bundleID)
                 record.ocrText = ocr
                 if cfg.keepScreenshots, let jpeg = FrameCapture.thumbnailJPEG(frame.image) {
                     let dest = FrameCapture.thumbnailURL(in: store.framesDirectory, at: now)

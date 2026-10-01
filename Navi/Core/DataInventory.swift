@@ -42,7 +42,7 @@ struct DataInventory: Sendable, Equatable {
 
         var explanation: String {
             switch self {
-            case .screenMemory: return "The text read from your screen, the app, window title and page address of each moment, and the summaries made from them."
+            case .screenMemory: return "The text read from your screen, the app, window title and page address of each moment, the summaries made from them, the buttons and menu items you click and shortcuts you press (never what you type), and the routines Navi learned from them."
             case .screenshots: return "Small screenshots of remembered moments, if “Keep screenshots” is on."
             case .journal: return "Daily, session, people, topic and app notes in your journal folder. Your own notes there are never touched."
             case .taskLogs: return "Step-by-step records of tasks Navi ran, kept only if you turned on troubleshooting logs."

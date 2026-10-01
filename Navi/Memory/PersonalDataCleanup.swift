@@ -36,6 +36,8 @@ struct PersonalDataCleanup {
         var sessions: [SessionFix] = []
         var framesScanned = 0
         var sessionsScanned = 0
+        /// Recorded clicks/shortcuts and procedures holding an identifier (`ActionJournal`, `Digester`).
+        var actionRows = 0
     }
 
     struct Report: Sendable, Equatable, CustomStringConvertible {
@@ -47,6 +49,7 @@ struct PersonalDataCleanup {
         var hubNotesRewritten = 0
         var hubNotesDeleted = 0
         var attachmentsDeleted = 0
+        var actionRowsRedacted = 0
 
         var description: String {
             """
@@ -56,6 +59,7 @@ struct PersonalDataCleanup {
             daily notes rewritten: \(dailyNotesRewritten)
             hub notes rewritten: \(hubNotesRewritten), deleted: \(hubNotesDeleted)
             screenshots deleted: \(attachmentsDeleted)
+            clicks, shortcuts and routines redacted: \(actionRowsRedacted)
             """
         }
     }
@@ -105,6 +109,7 @@ struct PersonalDataCleanup {
             }
         }
         plan.frameIDs = flagged.sorted()
+        plan.actionRows = try store.redactActionsAndProcedures(dryRun: true, redactor)
         return plan
     }
 
@@ -150,8 +155,14 @@ struct PersonalDataCleanup {
             try store.updateSessionText(after)
             report.sessionsRedacted += 1
         }
-        if report.framesRedacted + report.sessionsRedacted > 0 { try store.compactAfterRedaction() }
+        if plan.actionRows > 0 { report.actionRowsRedacted = try store.redactActionsAndProcedures(dryRun: false, redactor) }
+        if report.framesRedacted + report.sessionsRedacted + report.actionRowsRedacted > 0 { try store.compactAfterRedaction() }
         return report
+    }
+
+    /// Redacted text, or nil when there is nothing to redact.
+    private var redactor: (String) -> String? {
+        { [policy] s in let r = PersonalData.redact(s, policy: policy); return r.changed ? r.text : nil }
     }
 
     // MARK: Vault helpers

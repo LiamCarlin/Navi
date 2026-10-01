@@ -11,6 +11,9 @@ struct DigestResult: Sendable, Equatable {
     var entities: [EntityRef]
     var keyFacts: [String]
     var links: [String]
+    var goal: String? = nil
+    var steps: [String] = []
+    var habits: [String] = []
 }
 
 enum FrameCapture { static let browserBundleIDs: Set<String> = [] }

@@ -46,10 +46,10 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserMoves` (what they click, their shortcuts and procedures, per app/site), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
-| `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `MemoryStore` (SQLite FTS5), `Digester`, `VaultWriter` (Obsidian markdown), `Recall` |
+| `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks + shortcuts), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits → procedures), `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
@@ -142,6 +142,23 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     send/pay/delete). The writer stays Sonnet: Haiku was 0.7 s faster but wrong on `achieved`
     8/33 in an offline A/B on saved stops. Screen-memory capture pauses while a run drives the
     screen (`AgentActivity`).
+  - **Operational memory** (`Memory/ActionJournal`, `Agent/UserMoves`): screen memory records
+    how the user *acts*, not only what they saw. `ActionJournal` (global NSEvent monitor, toggle
+    `memoryRecordActions`, needs Accessibility) stores each click as the AX control under the
+    pointer (role, label — a field's label, never its value —, menu path + the item's shortcut,
+    window, page URL) and each ⌘/⌃ shortcut (named by the menu item it triggers); plain typing,
+    secure fields, excluded apps, paused capture, Navi itself and apps whose current frame was
+    triaged sensitive are skipped; Navi's own events carry `eventSourceUserData` =
+    `ActionJournal.syntheticMarker` (set in `InputController.post`) and are ignored. Table
+    `actions` (90 days). The digester gets them as `[ACTIONS]` and writes an operational note:
+    `goal` (the task as the user would ask Navi), `steps` (their exact controls/shortcuts),
+    `habits` → table `procedures` (1 year) + a "How" section on the session note. `UserMoves`
+    (cached 5 min) marks the items this user clicks here / clicks next, adds their shortcuts,
+    and puts `how_this_user_works` (matching procedures, habits, most-clicked controls) in every
+    native Jev step; the planner (`how_they_did_it_before`) and the browser runner
+    (`NAVI_USER_CONTEXT_JSON.how_this_user_works`) get the procedures. "How you work.md" adds
+    routines, what you click, and "Faster ways" (menu items clicked ≥ 3× that have a shortcut).
+    The personal-data cleanup also redacts actions and procedures.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's

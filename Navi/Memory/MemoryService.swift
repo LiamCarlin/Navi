@@ -20,6 +20,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         let recall: Recall
         let digester: Digester
         let scheduler: CaptureScheduler
+        let journal: ActionJournal
     }
 
     // Only touched on the main actor.
@@ -52,12 +53,17 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         guard let stack = ensureStack() else { return }
         guard !status.isRunning else { return }
         stack.scheduler.start()
+        stack.journal.start()
 
         digestTask?.cancel()
         digestTask = Task.detached(priority: .utility) { [weak self] in
+            // The first pass comes soon after launch: waiting a whole interval from every launch
+            // left frames undigested for hours on a day of relaunches (installs, updates).
+            var wait = Self.firstDigestDelay
             while !Task.isCancelled {
                 let minutes = await MainActor.run { max(1, NaviSettings.shared.memoryDigestIntervalMinutes) }
-                try? await Task.sleep(for: .seconds(minutes * 60))
+                try? await Task.sleep(for: .seconds(min(wait, Double(minutes * 60))))
+                wait = .infinity
                 guard !Task.isCancelled, let self else { return }
                 await self.runDigest(includeOpen: false)
             }
@@ -78,8 +84,12 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         Log.memory.info("Memory service started (vault: \(stack.vault.root.path, privacy: .public))")
     }
 
+    /// Seconds after start before the first digest (then every `memoryDigestIntervalMinutes`).
+    static let firstDigestDelay: Double = 90
+
     @MainActor func stop() {
         stack?.scheduler.stop()
+        stack?.journal.stop()
         digestTask?.cancel(); digestTask = nil
         pruneTask?.cancel(); pruneTask = nil
         if status.isRunning { Log.memory.info("Memory service stopped") }
@@ -140,7 +150,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             // Vault path changed in settings: swap the writer, keep the store.
             let vault = VaultWriter(root: vaultURL)
             let digester = Digester(store: existing.store, vault: vault, claude: claude, gemini: gemini, updateStatus: statusUpdater)
-            stack = Stack(store: existing.store, vault: vault, recall: existing.recall, digester: digester, scheduler: existing.scheduler)
+            stack = Stack(store: existing.store, vault: vault, recall: existing.recall, digester: digester, scheduler: existing.scheduler,
+                          journal: existing.journal)
             return stack
         }
         do {
@@ -149,12 +160,15 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             let recall = Recall(store: store)
             let digester = Digester(store: store, vault: vault, claude: claude, gemini: gemini, updateStatus: statusUpdater)
             let scheduler = CaptureScheduler(store: store, jev: jev, updateStatus: statusUpdater)
-            let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler)
+            let s = Stack(store: store, vault: vault, recall: recall, digester: digester, scheduler: scheduler,
+                          journal: ActionJournal(store: store))
             stack = s
             // Integration hook (Agent): the planner learns how this user does things from the same store,
-            // and the agent learns their people, projects and documents (`UserKnowledge`).
+            // the agent learns their people, projects and documents (`UserKnowledge`), and how they
+            // act — what they click, their shortcuts, the procedures they follow (`UserMoves`).
             UserHabits.install(store: store)
             UserKnowledge.install(store: store)
+            UserMoves.install(store: store)
             return s
         } catch {
             Log.memory.error("Memory store unavailable: \(error.localizedDescription)")
@@ -185,13 +199,17 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         }
     }
 
-    /// Integration hook (Agent): new sessions → fresh `UserKnowledge`, and the
-    /// vault's `Navi/How you work.md` shows the user what the agent now knows.
+    /// Integration hook (Agent): new sessions → fresh `UserKnowledge` and `UserMoves`, and
+    /// the vault's `Navi/How you work.md` shows the user what the agent now knows.
     private func refreshKnowledge(vault: VaultWriter) {
         guard let k = UserKnowledge.current else { return }
         k.invalidate()
         let now = Date()
-        let md = UserKnowledge.markdown(k.things(now: now), now: now)
+        var md = UserKnowledge.markdown(k.things(now: now), now: now)
+        if let m = UserMoves.current {
+            m.invalidate()
+            md += UserMoves.markdown(m.profile(now: now))
+        }
         do { try vault.writeGenerated("Navi/How you work.md", md) } catch {
             Log.memory.error("Could not write How you work: \(error.localizedDescription)")
         }
@@ -215,9 +233,11 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         }
         guard days > 0 else { return .init() }
         guard let stack = await MainActor.run(body: { existingStack() }) else { return .init() }
-        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        let cutoffs = MemoryStore.retentionCutoffs(days: days, now: now)
+        let cutoff = cutoffs.frames
         do {
-            let result = try stack.store.prune(before: cutoff)
+            // Clicks, shortcuts and learned routines are kept longer (`MemoryStore.actionRetentionDays`).
+            let result = try stack.store.prune(before: cutoff, actionsBefore: cutoffs.actions, proceduresBefore: cutoffs.procedures)
             var notes = 0
             if includeVault {
                 notes = VaultCleanup(root: stack.vault.root).prune(sessionNotePaths: result.sessionNotePaths, before: cutoff).notesDeleted
@@ -262,6 +282,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         }
         report.vault = VaultCleanup(root: stack?.vault.root ?? vaultRoot).deleteAllNaviNotes()
         UserKnowledge.current?.invalidate()
+        UserMoves.current?.invalidate()
         await MainActor.run {
             if wasRunning { stack?.scheduler.start() }
             status.framesToday = 0

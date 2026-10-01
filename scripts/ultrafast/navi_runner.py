@@ -791,7 +791,7 @@ class Playbook:
             ctx = json.loads(raw)
         except ValueError:
             return None
-        return ctx if isinstance(ctx, dict) and ctx.get("things") else None
+        return ctx if isinstance(ctx, dict) and (ctx.get("things") or ctx.get("how_this_user_works")) else None
 
     def install(self):
         """Adds the page's playbook (and the user's context) to every Jev request."""
