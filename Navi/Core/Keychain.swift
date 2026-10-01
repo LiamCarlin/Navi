@@ -15,6 +15,9 @@ import Security
 /// immediately and writes through in the background.
 ///
 /// Environment variables (`TYPESAFE_API_KEY`, …) override the store for dev.
+///
+/// Under the test host (`TestHost`) the store is in-memory only: it starts empty
+/// and never reads or writes the real item.
 enum Keychain {
     static let service = "com.liamcarlin.navi"
     static let account = "keys"
@@ -49,6 +52,9 @@ enum Keychain {
 
     static func has(_ key: Key) -> Bool { !(get(key) ?? "").isEmpty }
 
+    /// True under the test host: no SecItem calls at all.
+    static var isInMemory: Bool { TestHost.isActive }
+
     static var loadState: LoadState { lock.lock(); defer { lock.unlock() }; return state }
 
     /// Kick off the one-time background read. Call early at launch.
@@ -58,6 +64,7 @@ enum Keychain {
     }
 
     private static func startLoadLocked() {
+        if isInMemory { state = .loaded; return }
         state = .loading
         queue.async { load() }
     }
@@ -103,7 +110,7 @@ enum Keychain {
         let snapshot = cache
         lock.unlock()
         queue.async {
-            if !writeItem(snapshot) { Log.settings.error("Keychain write failed for \(key.rawValue)") }
+            if !isInMemory, !writeItem(snapshot) { Log.settings.error("Keychain write failed for \(key.rawValue)") }
             NotificationCenter.default.post(name: .naviKeysChanged, object: key.rawValue)
         }
         return true

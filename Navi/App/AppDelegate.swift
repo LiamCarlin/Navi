@@ -16,6 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         NSApp.setActivationPolicy(.accessory)
+        if TestHost.isActive {
+            // Hosting the unit tests: start nothing. Tests build the pieces they need;
+            // the user's memory, vault, settings, Keychain and the network stay untouched.
+            TestHost.installNetworkGuard()
+            Log.app.info("Navi launched as the test host: no services started")
+            return
+        }
         Keychain.preload()   // background; UI never blocks on the Keychain ACL prompt
 
         NaviAccount.shared.start()   // /v1/me on launch, wake and every 10 min; sign-in/out observers
@@ -61,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func application(_ application: NSApplication, open urls: [URL]) {
         // navi://query?q=... lets other tools (Shortcuts, Raycast, CLI) drive Navi.
+        guard !TestHost.isActive else { return }
         for url in urls {
             guard url.scheme == "navi" else { continue }
             #if DEBUG
@@ -89,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         voice?.stop()
-        services.stopBackgroundServices()
+        services?.stopBackgroundServices()   // nil under the test host
     }
 
     // MARK: - Actions

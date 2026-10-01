@@ -39,7 +39,7 @@ final class NaviAccount: ObservableObject {
     init(cloud: CloudTransport = .shared) {
         self.cloud = cloud
         isSignedIn = cloud.isSignedIn
-        if let data = UserDefaults.standard.data(forKey: Self.snapshotKey), let cached = try? AccountInfo.decode(data) {
+        if let data = UserDefaults.navi.data(forKey: Self.snapshotKey), let cached = try? AccountInfo.decode(data) {
             info = cached
         }
     }
@@ -218,7 +218,7 @@ final class NaviAccount: ObservableObject {
             info = me
             lastRefreshAt = Date()
             lastError = nil
-            if let data = try? JSONEncoder().encode(me) { UserDefaults.standard.set(data, forKey: Self.snapshotKey) }
+            if let data = try? JSONEncoder().encode(me) { UserDefaults.navi.set(data, forKey: Self.snapshotKey) }
             Log.app.info("account: /v1/me ok (\(reason, privacy: .public)) tier=\(me.tier.rawValue, privacy: .public) recall=\(me.entitlements.recall) answers=\(me.usage.answersToday)/\(me.quotas.answersPerDay.map(String.init) ?? "∞", privacy: .public)")
             if changed { NotificationCenter.default.post(name: .naviAccountChanged, object: nil) }
         } catch NaviError.signedOut {
@@ -242,7 +242,7 @@ final class NaviAccount: ObservableObject {
         isSigningIn = false
         info = nil
         lastRefreshAt = nil
-        UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
+        UserDefaults.navi.removeObject(forKey: Self.snapshotKey)
         Log.app.info("account: cleared (\(reason, privacy: .public))")
         NotificationCenter.default.post(name: .naviAccountChanged, object: nil)
     }

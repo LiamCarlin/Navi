@@ -23,6 +23,7 @@ struct NaviApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultSize(width: 960, height: 640)
+        .defaultLaunchBehavior(TestHost.isActive ? .suppressed : .automatic)   // no window over the test host
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { openWindow(id: WindowID.main) }
@@ -30,7 +31,7 @@ struct NaviApp: App {
             }
         }
 
-        MenuBarExtra {
+        MenuBarExtra(isInserted: .constant(!TestHost.isActive)) {
             MenuBarMenu()
                 .environmentObject(NaviSettings.shared)
         } label: {
@@ -101,7 +102,7 @@ struct MenuBarMenu: View {
         Button("Open Navi  \(HotKeyManager.describe(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers))") { AppDelegate.shared?.togglePanel() }
         Button(voiceActive ? "Stop Listening" : "Start Listening") { AppDelegate.shared?.toggleVoice() }
             .onReceive(NotificationCenter.default.publisher(for: .naviVoiceStateChanged)) { _ in voiceTick &+= 1 }
-        if let vm = AppDelegate.shared?.panelController.viewModel, vm.hasAgentToShow {
+        if let vm = AppDelegate.shared?.panelController?.viewModel, vm.hasAgentToShow {
             Button(vm.agentRun != nil ? "Show Running Task" : "Show Last Task") { AppDelegate.shared?.showCurrentTask() }
         }
         Divider()

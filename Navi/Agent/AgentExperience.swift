@@ -44,8 +44,7 @@ final class AgentExperience: @unchecked Sendable {
     }
 
     static var defaultFileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Navi/agent-experience.json")
+        NaviSettings.dataDirectory.appendingPathComponent("agent-experience.json")
     }
 
     // MARK: Record / recall

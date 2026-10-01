@@ -36,6 +36,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     // MARK: MemoryServicing
 
     @MainActor func start() {
+        // Never capture from the unit-test host (TestHost): it would write the real vault.
+        guard !TestHost.isActive else { return }
         // Recall gate (account workstream): capture needs the `recall` entitlement.
         // Developer mode (vendor keys, no cloud) is entitled locally.
         guard NaviAccount.shared.entitlements.recall else {
@@ -130,7 +132,7 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
     @MainActor private func ensureStack() -> Stack? {
         let settings = NaviSettings.shared
         let vaultPath = settings.memoryVaultPath.isEmpty
-            ? NSString(string: "~/Navi Vault").expandingTildeInPath : settings.memoryVaultPath
+            ? NaviSettings.defaultVaultPath : settings.memoryVaultPath
         let vaultURL = URL(fileURLWithPath: vaultPath, isDirectory: true)
 
         if let existing = stack {

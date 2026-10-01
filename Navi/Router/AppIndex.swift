@@ -313,13 +313,13 @@ final class AppIndex: @unchecked Sendable {
     // MARK: Launch counts
 
     static func launchCounts() -> [String: Int] {
-        UserDefaults.standard.dictionary(forKey: launchCountsKey) as? [String: Int] ?? [:]
+        UserDefaults.navi.dictionary(forKey: launchCountsKey) as? [String: Int] ?? [:]
     }
 
     static func recordLaunch(_ key: String) {
         var counts = launchCounts()
         counts[key, default: 0] += 1
-        UserDefaults.standard.set(counts, forKey: launchCountsKey)
+        UserDefaults.navi.set(counts, forKey: launchCountsKey)
     }
 
     /// Ranked matches. `running` is the set of running bundle ids (for a small boost).
