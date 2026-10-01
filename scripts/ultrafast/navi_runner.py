@@ -1722,7 +1722,11 @@ def main():
         return 130
     except Exception as exc:  # noqa: BLE001
         final_steps = len(agent.state.get("history", []))
-        emit("error", message=str(exc), **getattr(exc, "fields", {}))
+        message = str(exc)
+        if "demo budget" in message:
+            # Upstream's step limit ("Stopped at the 40-action demo budget") reaches the user's panel.
+            message = f"Stopped after {final_steps} step{'s' if final_steps != 1 else ''} without finishing — the step limit was reached."
+        emit("error", message=message, **getattr(exc, "fields", {}))
         return 1
     finally:
         # The tab is what the user asked for ("make a Google Doc"): it stays open
