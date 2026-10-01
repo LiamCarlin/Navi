@@ -156,6 +156,7 @@ struct DeleteAllTests {
             try store.updateSessionNotePath(sessionID: s.id, notePath: note)
         }
         try write("[]", paths.experienceFile)
+        try write("{}", paths.voicePrintFile)
         try write("{}", paths.dataDirectory.appendingPathComponent("history.json"))
         try write("x", paths.framesDirectory.appendingPathComponent("2026/09/30/1.jpg"))
         try write("step", paths.logsDirectory.appendingPathComponent("runs/20260930T101010.000/goal.txt"))
@@ -179,6 +180,7 @@ struct DeleteAllTests {
         #expect(!fm.fileExists(atPath: paths.memoryDatabase.path))
         #expect(!fm.fileExists(atPath: paths.framesDirectory.path))
         #expect(!fm.fileExists(atPath: paths.experienceFile.path))
+        #expect(!fm.fileExists(atPath: paths.voicePrintFile.path))                     // the voiceprint goes too
         #expect(!fm.fileExists(atPath: paths.dataDirectory.appendingPathComponent("history.json").path))
         #expect(!fm.fileExists(atPath: paths.logsDirectory.appendingPathComponent("runs").path))
         #expect(!fm.fileExists(atPath: paths.logsDirectory.appendingPathComponent("agent-runs.log").path))

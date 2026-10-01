@@ -86,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 openMainWindow(section: .account)
                 continue
             }
+            if url.host == "voice-enroll" {
+                // navi://voice-enroll — "Teach Navi your voice" (support links, testing).
+                VoiceEnrollmentWindow.show()
+                continue
+            }
             if url.host == "voice" {
                 // navi://voice toggles voice control; navi://voice?file=/path.aiff feeds a recording (debug).
                 if let f = comps?.queryItems?.first(where: { $0.name == "file" })?.value, !f.isEmpty {
@@ -122,6 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and Navi acts on each instruction as it is spoken.
     func toggleVoice() {
         if panelController.isVisible { panelController.hide() }
+        // The first time voice control starts without a voiceprint, offer (once) to learn the
+        // user's voice so other people talking nearby are ignored (`VoiceEnrollment`).
+        let settings = NaviSettings.shared
+        if !voiceController.isListening, !settings.voiceEnrollmentOffered, !VoicePrintStore.exists {
+            settings.voiceEnrollmentOffered = true
+            VoiceEnrollmentWindow.show()
+            return
+        }
         voiceController.toggle()
     }
 

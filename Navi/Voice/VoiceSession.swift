@@ -62,6 +62,8 @@ final class VoiceSession: ObservableObject {
     /// The second echo layer: transcribes what the Mac plays (see `EchoFilter`).
     private let echoListener = SpeechListener()
     private var echoFilter = EchoFilter()
+    /// Only the user's voice is acted on, once they taught Navi their voice (`VoicePrint`).
+    private let speakerGate = SpeakerGate()
     /// When the clause starting at this word was first held for the Mac's transcript.
     private var echoHold: (start: Int, since: Date)?
     /// When the Mac last made a sound, and when the current stretch of sound
@@ -156,6 +158,8 @@ final class VoiceSession: ObservableObject {
         UltrafastBridge.prewarm()
         listener.contextualStrings = ["Navi", "Jev"] + AppIndex.shared.entries.prefix(300).map(\.name)
         listener.echoCancellation = settings.voiceEchoCancellation
+        speakerGate.reload(enabled: settings.voiceOnlyMyVoice)
+        listener.recordsVoice = speakerGate.isActive
         listener.onEvent = { [weak self] ev in self?.handle(ev) }
         startTask?.cancel()
         startTask = Task { [weak self] in
@@ -466,6 +470,19 @@ final class VoiceSession: ObservableObject {
             Log.voice.info("echo: dropped “\(clause.head, privacy: .private)” (\(trailing ? "tail of what the Mac said" : "the Mac said it", privacy: .public))")
             #if DEBUG
             DebugTrace.log("voice echo | dropped “\(clause.head)” | mac said “\(self.echoFilter.recentWords().suffix(20).joined(separator: " "))”")
+            #endif
+        }
+        // Someone else talking near the Mac: their words are not instructions. Checked on the
+        // clause's own audio against the user's voiceprint, before Jev is asked; dropped silently.
+        if echoDecision == nil, speakerGate.isActive, !SpeakerGate.alwaysHeard(clause.head) {
+            let verdict = await speakerGate.check(head: clause.head, audio: listener.voiceAudio(for: clause.head))
+            guard !Task.isCancelled, phase == .listening else { return }
+            if case .other(let score) = verdict {
+                echoDecision = .drop(reason: "another person's voice")
+                Log.voice.info("voice: dropped “\(clause.head, privacy: .private)” — not the user's voice (\(score, format: .fixed(precision: 2)))")
+            }
+            #if DEBUG
+            DebugTrace.log("voice speaker | “\(clause.head)” ⇒ \(verdict)")
             #endif
         }
         let silence = silenceMs

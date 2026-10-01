@@ -79,6 +79,10 @@ final class NaviSettings: ObservableObject {
     /// macOS voice processing on the microphone: what the Mac is playing (a video,
     /// music, Navi's own answers) is cancelled out of what Navi hears.
     @Published var voiceEchoCancellation: Bool { didSet { d.set(voiceEchoCancellation, forKey: "voiceEchoCancellation") } }
+    /// With a voiceprint (`VoiceEnrollment`), act only on what the user says — other voices are ignored.
+    @Published var voiceOnlyMyVoice: Bool { didSet { d.set(voiceOnlyMyVoice, forKey: "voiceOnlyMyVoice") } }
+    /// The one-time offer to teach Navi the user's voice (first voice start without a voiceprint).
+    @Published var voiceEnrollmentOffered: Bool { didSet { d.set(voiceEnrollmentOffered, forKey: "voiceEnrollmentOffered") } }
     /// Debounce after the last recognized word before Jev is asked whether the
     /// clause is complete. Lower = snappier, more false starts.
     @Published var voiceReactionMs: Int { didSet { d.set(voiceReactionMs, forKey: "voiceReactionMs") } }
@@ -153,6 +157,8 @@ final class NaviSettings: ObservableObject {
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
             "voiceEchoCancellation": true,
+            "voiceOnlyMyVoice": true,
+            "voiceEnrollmentOffered": false,
             "voiceReactionMs": 150,
             "voiceHotKeyEnabled": true,
             "voiceHotKeyCode": 49,       // Space
@@ -201,6 +207,8 @@ final class NaviSettings: ObservableObject {
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")
         voiceEchoCancellation = d.bool(forKey: "voiceEchoCancellation")
+        voiceOnlyMyVoice = d.bool(forKey: "voiceOnlyMyVoice")
+        voiceEnrollmentOffered = d.bool(forKey: "voiceEnrollmentOffered")
         voiceReactionMs = d.integer(forKey: "voiceReactionMs")
         voiceHotKeyEnabled = d.bool(forKey: "voiceHotKeyEnabled")
         voiceHotKeyCode = UInt32(d.integer(forKey: "voiceHotKeyCode"))

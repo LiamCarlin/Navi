@@ -25,7 +25,8 @@ All paths are inside the user's home folder (`~/Library` is `0700`); the memory 
 | Legacy | `…/Navi/history.json` | written by builds before 2026-09-21 | — | yes |
 | UserDefaults | `~/Library/Preferences/com.liamcarlin.navi.plist` | preferences; plus content: `navi.recentQueries` (last 50 queries), `navi.launchCounts` (per-app launch counts), `naviAccountInfo` (email, plan), `schedulerVideoLink`, vault path, exclusions | — | `navi.recentQueries`, `navi.launchCounts` cleared; settings + account kept |
 | Keychain | Navi's items | Navi session (`naviAccess`, `naviRefresh`); developer-mode vendor keys | until sign-out | **no** (sign-out / account deletion handle it) |
-| Voice | — | audio is never written; transcripts live in memory only (`VoiceCommandExecutor.recent`, last 5) | — | n/a |
+| Voice | — | audio is never written; transcripts live in memory only (`VoiceCommandExecutor.recent`, last 5). While "Only my voice" is on, the last 30 s of microphone audio and word times are held in memory to check each clause's speaker. | — | n/a |
+| Voiceprint | `…/Navi/voiceprint.json` (0600) | "Only my voice": 256 numbers summarizing how the user's voice sounds (from ~1 min of enrollment; adapted slowly on confident clauses), the acceptance bar, dates. No audio, no words. Computed and checked on the Mac by a bundled model. | until "Forget my voice" or retrain | yes |
 | In-memory caches | — | `UserHabits` / `UserKnowledge` (from screen memory, 10-min cache), `UserMoves` (actions + procedures, 5-min cache) | — | invalidated |
 | Browser runner (dev only) | `~/.config/browser-harness/tmp/*.log` | browser-harness daemon logs (shared with dev tools) | not managed by Navi | no |
 

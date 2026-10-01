@@ -8,6 +8,7 @@ struct VoiceSettingsView: View {
     @State private var modelStatus: String = "Checking…"
     @State private var locales: [Locale] = []
     @State private var resolvedLocale: String = ""
+    @State private var voicePrint: VoicePrint? = VoicePrintStore.load()
 
     var body: some View {
         FormPage(title: "Voice", subtitle: "Talk to Navi. It acts on each instruction the moment it is complete — while you keep talking.") {
@@ -47,6 +48,33 @@ struct VoiceSettingsView: View {
             } footer: {
                 Text("The first use of a language downloads its model once (a few hundred MB).")
             }
+
+            Section {
+                if let p = voicePrint {
+                    Toggle("Only act on my voice", isOn: $settings.voiceOnlyMyVoice)
+                    Text(settings.voiceOnlyMyVoice
+                         ? "Navi ignores other people talking near your Mac. “Stop” always works, whoever says it."
+                         : "Navi acts on any voice it hears.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    LabeledContent("Your voiceprint") {
+                        Text("Learned \(p.created.formatted(date: .abbreviated, time: .omitted)) · updated \(p.updated.formatted(.relative(presentation: .named)))")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Button("Retrain") { VoiceEnrollmentWindow.show() }
+                        Button("Forget my voice", role: .destructive) { VoicePrintStore.delete() }
+                    }
+                } else {
+                    Text("Navi acts on any voice it hears. Read six short lines (about a minute) and it will act only on yours, ignoring anyone else talking nearby.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button { VoiceEnrollmentWindow.show() } label: { Label("Teach Navi your voice", systemImage: "person.wave.2") }
+                }
+            } header: {
+                Text("Only my voice")
+            } footer: {
+                Text("The voiceprint is learned and checked on this Mac, and never leaves it. Takes effect the next time listening starts.")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .naviVoicePrintChanged)) { _ in voicePrint = VoicePrintStore.load() }
 
             Section {
                 Toggle("Global shortcut to start talking", isOn: $settings.voiceHotKeyEnabled)

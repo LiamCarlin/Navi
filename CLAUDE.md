@@ -50,7 +50,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks + shortcuts), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits → procedures), `VaultWriter` (Obsidian markdown), `Recall` |
-| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView` |
+| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice) |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
 `NaviServices.bootstrap()` wires concrete types. **Do not rename** `QueryRouter`,
@@ -345,6 +345,22 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     Goals are normalised first (`VoiceDecider.normalizedGoal`: "can you", "please",
     "navi", a leftover "you" stripped). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
+    **Only my voice** (`Voice/VoicePrint`, toggle `voiceOnlyMyVoice`): once the user taught Navi
+    their voice (`VoiceEnrollment`: six command-like lines, ~1 min, in setup, Settings → Voice,
+    `navi://voice-enroll`, and offered once on the first voice start without one — run through the
+    same `SpeechListener`/echo cancellation as live listening), each clause's own audio is checked
+    before Jev is asked and another person's is dropped silently, like echo. Bundled speaker model
+    `Resources/SpeakerEmbedding.mlpackage` (WeSpeaker ResNet34-LM, VoxCeleb, int8, 6.4 MB, CPU+GPU —
+    the ANE compiler rejects its flexible input; rebuilt by `scripts/voiceprint/build.sh`, credited in
+    Acknowledgements) on `VoiceFbank` (Kaldi fbank in vDSP, matches torchaudio) → 256-d embedding;
+    `VoicePrint.enroll` = centroid + bar (leave-one-line-out scores, μ − 3σ within 0.32…0.55);
+    clips < 1.2 s get −0.08; confident ≥ 1.5 s clips adapt the centroid slowly (w 0.97). With
+    `recordsVoice` the listener keeps a 30 s 16 kHz ring on the recognizer's clock and word times
+    (`.audioTimeRange` runs; ~0.3 s slack) so `voiceAudio(for: head)` returns the clause's audio.
+    "stop"/"cancel"/"pause"/"undo"/"never mind" are always heard; < 0.5 s or unfound audio passes
+    (`.unsure`) — never deaf to the user. Two `say` voices: same ≈ 0.8, different ≈ 0.2; the live
+    test (`VoicePrintTests.liveClausesAreJudgedByTheirOwnAudio`) runs the real recognizer on a
+    two-speaker file. `voiceprint.json` (0600) is deleted with "Forget my voice"/delete everything.
     **Auto mode** (`NaviSettings.autoMode`, on by default) is the preset users see:
     Jev-first driver + approvals only for irreversible actions; off ⇒ ask for every action.
     Debug: `navi://voice?file=/path.aiff` replays a recording
