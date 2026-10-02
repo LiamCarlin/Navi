@@ -122,7 +122,8 @@ final class VoiceEnrollmentModel: ObservableObject {
                 _ = capture(requireCoverage: true)
             }
         case .failed(let msg):
-            if phase == .reading || phase.isStarting { phase = .failed(msg) }
+            // Let go of the microphone so "Try again" starts from scratch.
+            if phase == .reading || phase.isStarting { phase = .failed(msg); Task { await listener.stop() } }
         }
     }
 

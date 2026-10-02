@@ -58,7 +58,15 @@ final class SpeechListener {
     /// …and the tail it is still revising.
     private var volatileWords: [TimedWord] = []
 
-    private let engine = AVAudioEngine()
+    /// A fresh engine for every (re)start: one that macOS stopped mid-stream, or that had voice
+    /// processing switched on and off, does not reliably start again (-10875).
+    private var engine = AVAudioEngine()
+    /// What the microphone feeds, kept so the engine can be rebuilt (`restartMicrophone`)
+    /// without touching the recognizer: same analyzer stream, same clock.
+    private var micIO: (format: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation, onLevel: @Sendable (Float) -> Void)?
+    private var micRestartTask: Task<Void, Never>?
+    private var micRestarts: [Date] = []
+    private var micWatchdog: Task<Void, Never>?
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var pipe: AudioPipe?
@@ -209,7 +217,14 @@ final class SpeechListener {
         } else if let audioFile {
             try startFilePlayback(audioFile, analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
         } else {
-            try startEngine(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+            do {
+                try await startEngine(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+            } catch {
+                await analyzer.cancelAndFinishNow()
+                resultsTask?.cancel(); resultsTask = nil
+                self.analyzer = nil; self.transcriber = nil
+                throw error
+            }
         }
         isRunning = true
         #if DEBUG
@@ -222,13 +237,14 @@ final class SpeechListener {
     func stop() async {
         guard isRunning || analyzer != nil else { return }
         isRunning = false
-        if let configObserver { NotificationCenter.default.removeObserver(configObserver); self.configObserver = nil }
+        micRestartTask?.cancel(); micRestartTask = nil
+        micWatchdog?.cancel(); micWatchdog = nil
+        micIO = nil
+        micRestarts = []
         fileTask?.cancel(); fileTask = nil
         if let systemAudio { await systemAudio.stop(); self.systemAudio = nil }
-        if engine.isRunning {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
+        // Whether or not macOS already stopped the engine: the tap must go, or the next start trips on it.
+        tearDownEngine()
         pipe?.finish()
         pipe = nil
         resultsTask?.cancel()
@@ -274,34 +290,107 @@ final class SpeechListener {
     // MARK: Audio engine (microphone)
 
     private func startEngine(analyzerFormat: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
-                             onLevel: @escaping @Sendable (Float) -> Void) throws {
-        let input = engine.inputNode
-        setVoiceProcessing(echoCancellation)
-        do {
-            try startTap(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
-        } catch where input.isVoiceProcessingEnabled {
-            // Some input devices refuse voice processing: listen without it rather than not at all.
-            Log.voice.error("microphone with echo cancellation failed (\(error.localizedDescription, privacy: .public)); retrying without")
-            setVoiceProcessing(false)
-            try startTap(analyzerFormat: analyzerFormat, continuation: continuation, onLevel: onLevel)
+                             onLevel: @escaping @Sendable (Float) -> Void) async throws {
+        micIO = (analyzerFormat, continuation, onLevel)
+        micRestarts = []
+        try await bringUpMicrophone()
+    }
+
+    /// A fresh engine on the default input. Echo cancellation when asked, tried twice — it fails
+    /// transiently (-10875) right after another engine let go of the device — then the plain
+    /// microphone, also twice: listening without echo cancellation beats not listening.
+    private func bringUpMicrophone() async throws {
+        guard let io = micIO else { return }
+        let plan: [Bool] = echoCancellation ? [true, true, false, false] : [false, false]
+        var lastError: Error?
+        for (attempt, voiceProcessing) in plan.enumerated() {
+            if attempt > 0 { try? await Task.sleep(for: .milliseconds(300)) }
+            guard micIO != nil else { throw CancellationError() }
+            tearDownEngine()
+            engine = AVAudioEngine()
+            setVoiceProcessing(voiceProcessing)
+            do {
+                try startTap(analyzerFormat: io.format, continuation: io.continuation, onLevel: io.onLevel)
+            } catch {
+                lastError = error
+                Log.voice.error("microphone start failed (attempt \(attempt + 1), echo cancellation \(voiceProcessing ? "on" : "off", privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+            engineStartedAt = Date()
+            let input = engine.inputNode
+            #if DEBUG
+            DebugTrace.log("voice microphone \(input.outputFormat(forBus: 0)) echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off")")
+            #endif
+            Log.voice.info("microphone started, echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off", privacy: .public) (attempt \(attempt + 1))")
+            configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
+                                                                    queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.microphoneConfigurationChanged() }
+            }
+            watchForAudio()
+            return
         }
-        engineStartedAt = Date()
-        #if DEBUG
-        DebugTrace.log("voice microphone \(input.outputFormat(forBus: 0)) echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off")")
-        #endif
-        Log.voice.info("microphone started, echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off", privacy: .public)")
-        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
-                                                                queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isRunning else { return }
-                // Voice processing builds its aggregate device just after start and
-                // may announce it; only a change that stopped the engine needs a restart.
-                if self.engine.isRunning, Date().timeIntervalSince(self.engineStartedAt) < Self.settleSeconds { return }
-                Log.voice.info("audio configuration changed — restarting the microphone")
+        throw lastError ?? NaviError.other("Couldn't start the microphone")
+    }
+
+    /// macOS changed the audio setup (voice processing building its device, a headset, the iPhone's
+    /// microphone appearing): the engine usually stops itself. Restart the microphone in place —
+    /// the recognizer keeps running and nothing said around it is lost — instead of failing the
+    /// session. A burst of changes is one restart; only a microphone that keeps changing fails.
+    private func microphoneConfigurationChanged() {
+        guard isRunning, micIO != nil else { return }
+        // Voice processing announces its own aggregate device just after start while still running.
+        if engine.isRunning, Date().timeIntervalSince(engineStartedAt) < Self.settleSeconds { return }
+        restartMicrophone(reason: "audio configuration changed")
+    }
+
+    private func restartMicrophone(reason: String) {
+        micRestartTask?.cancel()
+        micRestartTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, self.isRunning, self.micIO != nil, !Task.isCancelled else { return }
+            let now = Date()
+            self.micRestarts = self.micRestarts.filter { now.timeIntervalSince($0) < Self.restartWindow } + [now]
+            guard self.micRestarts.count <= Self.maxRestarts else {
+                Log.voice.error("microphone keeps changing (\(self.micRestarts.count) restarts in \(Int(Self.restartWindow)) s) — stopping")
+                self.onEvent?(.failed("The microphone keeps changing — check the input device in System Settings → Sound"))
+                return
+            }
+            Log.voice.info("\(reason, privacy: .public) — restarting the microphone in place")
+            do { try await self.bringUpMicrophone() } catch is CancellationError {
+            } catch {
+                Log.voice.error("microphone restart failed: \(error.localizedDescription, privacy: .public)")
                 self.onEvent?(.failed("The audio input device changed"))
             }
         }
     }
+
+    /// An engine can report started and deliver nothing: no audio within a couple of seconds is a restart.
+    private func watchForAudio() {
+        micWatchdog?.cancel()
+        let pipe = self.pipe
+        micWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.firstAudioSeconds))
+            guard let self, !Task.isCancelled, self.isRunning, let pipe, pipe === self.pipe else { return }
+            if pipe.hasAudio {
+                Log.voice.info("microphone audio flowing")
+            } else {
+                self.restartMicrophone(reason: "no audio from the microphone")
+            }
+        }
+    }
+
+    /// Stops the engine, removes the tap (macOS may already have stopped it) and lets go of voice processing.
+    private func tearDownEngine() {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver); self.configObserver = nil }
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        if engine.isRunning { engine.stop() }
+        if input.isVoiceProcessingEnabled { try? input.setVoiceProcessingEnabled(false) }
+    }
+
+    static let maxRestarts = 6
+    static let restartWindow: TimeInterval = 30
+    static let firstAudioSeconds: Double = 2
 
     static let settleSeconds: TimeInterval = 2
 
@@ -468,6 +557,10 @@ final class AudioPipe: @unchecked Sendable {
     private var sampler = LevelSampler()
     /// Keeps what the recognizer is fed, on its clock (`SpeechListener.recordsVoice`).
     private let ring: VoiceAudioRing?
+    private let flag = NSLock()
+    private var heard = false
+    /// At least one buffer arrived (`SpeechListener`'s first-audio watchdog).
+    var hasAudio: Bool { flag.lock(); defer { flag.unlock() }; return heard }
 
     init(input: AVAudioFormat, output: AVAudioFormat, firstChannelOnly: Bool = false,
          continuation: AsyncStream<AnalyzerInput>.Continuation, onLevel: @escaping @Sendable (Float) -> Void,
@@ -484,6 +577,7 @@ final class AudioPipe: @unchecked Sendable {
     }
 
     func ingest(_ buffer: AVAudioPCMBuffer) {
+        if !heard { flag.lock(); heard = true; flag.unlock() }
         guard let buffer = firstChannel(of: buffer) else { return }
         if let level = sampler.sample(buffer) { onLevel(level) }
         guard let converted = convert(buffer) else { return }
