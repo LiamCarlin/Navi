@@ -83,6 +83,7 @@ final class VoiceSession: ObservableObject {
     private var waitedForText: String?
     private var watchdog: Task<Void, Never>?
     private var restarts = 0
+    private var restartingListener = false
     private var outcomeTimer: Task<Void, Never>?
     private var browserURL: (bundle: String, title: String, url: String?)?
     private var browserURLTask: Task<Void, Never>?
@@ -248,10 +249,14 @@ final class VoiceSession: ObservableObject {
             level = l
             heard(level: l)
         case .failed(let msg):
-            guard phase.isActive else { return }
-            // One automatic restart (device change, model hiccup); then give up visibly.
+            // The listener already restarts the microphone in place when the audio setup changes;
+            // what reaches here is a recognizer that stopped, or a microphone that will not stay up.
+            // One restart at a time (two failures in a row used to start two), then give up visibly.
+            guard phase.isActive, !restartingListener else { return }
+            restartingListener = true
             let l = listener
             Task { [weak self] in
+                defer { self?.restartingListener = false }
                 await l.stop()
                 guard let self, self.phase.isActive else { return }
                 if self.restarts < 2 {
