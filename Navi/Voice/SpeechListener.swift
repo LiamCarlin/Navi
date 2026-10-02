@@ -296,24 +296,33 @@ final class SpeechListener {
         try await bringUpMicrophone()
     }
 
-    /// A fresh engine on the default input. Echo cancellation when asked, tried twice — it fails
-    /// transiently (-10875) right after another engine let go of the device — then the plain
-    /// microphone, also twice: listening without echo cancellation beats not listening.
+    /// How the microphone is brought up, in order of preference.
+    enum MicSetup: String, CaseIterable {
+        /// Echo cancellation with the output in the graph (a running far end for the canceller).
+        case echoCancelled = "echo cancellation"
+        /// Echo cancellation alone: it still references the speakers' tap stream (−37 dB measured),
+        /// though its downlink logs errors without a running output.
+        case echoCancelledNoOutput = "echo cancellation without output"
+        case plain = "plain microphone"
+    }
+
+    /// A fresh engine on the default input, trying `MicSetup`s in order — listening without echo
+    /// cancellation beats not listening — with a short pause between tries (-10875 is often transient).
     private func bringUpMicrophone() async throws {
         guard let io = micIO else { return }
-        let plan: [Bool] = echoCancellation ? [true, true, false, false] : [false, false]
+        let plan: [MicSetup] = echoCancellation ? [.echoCancelled, .echoCancelledNoOutput, .plain, .plain] : [.plain, .plain]
         var lastError: Error?
-        for (attempt, voiceProcessing) in plan.enumerated() {
+        for (attempt, setup) in plan.enumerated() {
             if attempt > 0 { try? await Task.sleep(for: .milliseconds(300)) }
             guard micIO != nil else { throw CancellationError() }
             tearDownEngine()
             engine = AVAudioEngine()
-            setVoiceProcessing(voiceProcessing)
+            setVoiceProcessing(setup != .plain, connectOutput: setup == .echoCancelled)
             do {
                 try startTap(analyzerFormat: io.format, continuation: io.continuation, onLevel: io.onLevel)
             } catch {
                 lastError = error
-                Log.voice.error("microphone start failed (attempt \(attempt + 1), echo cancellation \(voiceProcessing ? "on" : "off", privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                Log.voice.error("microphone start failed (attempt \(attempt + 1), \(setup.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
                 continue
             }
             engineStartedAt = Date()
@@ -321,7 +330,7 @@ final class SpeechListener {
             #if DEBUG
             DebugTrace.log("voice microphone \(input.outputFormat(forBus: 0)) echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off")")
             #endif
-            Log.voice.info("microphone started, echo cancellation \(input.isVoiceProcessingEnabled ? "on" : "off", privacy: .public) (attempt \(attempt + 1))")
+            Log.voice.info("microphone started: \(setup.rawValue, privacy: .public), \(input.outputFormat(forBus: 0).channelCount) ch (attempt \(attempt + 1))")
             configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
                                                                     queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.microphoneConfigurationChanged() }
@@ -394,11 +403,13 @@ final class SpeechListener {
 
     static let settleSeconds: TimeInterval = 2
 
-    /// Turns voice processing on or off (engine stopped). On, it gets both
-    /// halves: the output node joins the graph (the echo reference is what the
-    /// output device plays, every app's audio), and other audio is not ducked —
-    /// a video keeps its volume while the user talks over it.
-    private func setVoiceProcessing(_ on: Bool) {
+    /// Turns voice processing on or off (engine stopped). On, other audio is not ducked — a video
+    /// keeps its volume while the user talks over it — and with `connectOutput` the output node joins
+    /// the graph so the canceller's far end runs (the echo reference is what the output device plays,
+    /// every app's audio). The mixer is connected *explicitly*, in stereo at the output's rate:
+    /// letting `mainMixerNode` connect itself after voice processing is on picks the processor's own
+    /// format and fails engine start with -10875 (measured 2026-10-02, MacBook Pro speakers).
+    private func setVoiceProcessing(_ on: Bool, connectOutput: Bool = true) {
         let input = engine.inputNode
         if input.isVoiceProcessingEnabled != on {
             do { try input.setVoiceProcessingEnabled(on) } catch {
@@ -407,7 +418,11 @@ final class SpeechListener {
         }
         guard input.isVoiceProcessingEnabled else { return }
         input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
-        _ = engine.mainMixerNode   // connects the mixer to the output node
+        guard connectOutput else { return }
+        let rate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        if let stereo = AVAudioFormat(standardFormatWithSampleRate: rate > 0 ? rate : 48_000, channels: 2) {
+            engine.connect(engine.mainMixerNode, to: engine.outputNode, format: stereo)
+        }
     }
 
     private func startTap(analyzerFormat: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
@@ -417,7 +432,7 @@ final class SpeechListener {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NaviError.other("No microphone input device is available")
         }
-        // With voice processing the input has extra channels (3 on this hardware);
+        // With voice processing the input has extra channels (3 or 9, by hardware and macOS);
         // only the first is the cleaned-up voice — the rest would mix the echo back in.
         let pipe = AudioPipe(input: format, output: analyzerFormat, firstChannelOnly: input.isVoiceProcessingEnabled,
                              continuation: continuation, onLevel: onLevel, ring: voiceRing)
