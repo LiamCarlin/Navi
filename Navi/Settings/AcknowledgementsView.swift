@@ -18,6 +18,8 @@ struct Acknowledgement: Identifiable {
         case mpl2 = "Mozilla Public License 2.0"
         case psf = "Python Software Foundation License 2.0"
         case cc0 = "CC0 1.0 Universal"
+        case apache2 = "Apache License 2.0"
+        case ccBy4 = "Creative Commons Attribution 4.0"
     }
 
     static let all: [Acknowledgement] = [
@@ -69,6 +71,12 @@ struct Acknowledgement: Identifiable {
               url: "https://github.com/python/typing_extensions"),
         .init(name: "Screendrop keystroke sound", use: "Typing sounds", copyright: "Screendrop contributors — dedicated to the public domain", license: .cc0,
               url: "https://github.com/fayazara/Screendrop"),
+        .init(name: "WeSpeaker", use: "The speaker model behind “Only my voice” (ResNet34 architecture, converted to Core ML)",
+              copyright: "Copyright (c) 2021 Shuai Wang, 2022 Zhengyang Chen, 2023 Bing Han", license: .apache2,
+              url: "https://github.com/wenet-e2e/wespeaker"),
+        .init(name: "wespeaker-voxceleb-resnet34-LM", use: "The trained voiceprint weights (VoxCeleb), packaged by pyannote.audio; converted to Core ML and quantized to 8 bits",
+              copyright: "WeSpeaker contributors; packaging by Hervé Bredin (pyannote)", license: .ccBy4,
+              url: "https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM"),
     ]
 }
 
@@ -108,6 +116,10 @@ extension Acknowledgement.License {
             return "Licensed under the Python Software Foundation License Version 2. The full license is at https://docs.python.org/3/license.html."
         case .cc0:
             return "Dedicated to the public domain under CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/). No attribution is required; we give it anyway."
+        case .apache2:
+            return "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied."
+        case .ccBy4:
+            return "Licensed under Creative Commons Attribution 4.0 International (https://creativecommons.org/licenses/by/4.0/). Changes made: converted from PyTorch to Core ML and its weights quantized to 8 bits."
         }
     }
 }

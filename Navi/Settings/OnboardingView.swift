@@ -19,6 +19,7 @@ struct OnboardingView: View {
     @ObservedObject private var account = NaviAccount.shared
     @StateObject private var voicePerms = PermissionsModel()
     @State private var step = 0
+    @State private var hasVoicePrint = VoicePrintStore.exists
 
     private let steps = ["Sign in", "Permissions", "Shortcut", "Voice", "Done"]
 
@@ -208,6 +209,20 @@ struct OnboardingView: View {
             } footer: {
                 Text("Applies to typed and spoken tasks. You can change it later under Tasks.")
             }
+            Section {
+                if hasVoicePrint {
+                    Label("Navi knows your voice — it ignores other people talking nearby.", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Button { VoiceEnrollmentWindow.show() } label: { Label("Teach Navi your voice", systemImage: "person.wave.2") }
+                        .disabled(voicePerms.microphone == .denied)
+                    Text("Read six short lines (about a minute) so voice control acts only on you, not anyone else in the room.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Only my voice")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .naviVoicePrintChanged)) { _ in hasVoicePrint = VoicePrintStore.exists }
             Section {
                 Button {
                     finishSoftly()

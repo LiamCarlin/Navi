@@ -79,6 +79,7 @@ enum PrivacyData {
             report.screenshots = vault.attachmentsDeleted
         }
         try? fm.removeItem(at: paths.experienceFile)
+        try? fm.removeItem(at: paths.voicePrintFile)
         for legacy in paths.legacyFiles { try? fm.removeItem(at: legacy) }
         let logs = TaskLogs.deleteAll(directory: paths.logsDirectory)
         report.logItems = logs.itemsRemoved

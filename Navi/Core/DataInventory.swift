@@ -13,6 +13,8 @@ struct NaviDataPaths: Sendable, Equatable {
     var memoryDatabase: URL { dataDirectory.appendingPathComponent("memory.sqlite") }
     var framesDirectory: URL { dataDirectory.appendingPathComponent("frames", isDirectory: true) }
     var experienceFile: URL { dataDirectory.appendingPathComponent("agent-experience.json") }
+    /// The user's voiceprint (`VoicePrintStore`).
+    var voicePrintFile: URL { dataDirectory.appendingPathComponent("voiceprint.json") }
     /// Files older builds left in the data directory.
     var legacyFiles: [URL] { [dataDirectory.appendingPathComponent("history.json")] }
 
