@@ -172,6 +172,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
             UserHabits.install(store: store)
             UserKnowledge.install(store: store)
             UserMoves.install(store: store)
+            // …and their routines, as steps the agent can carry out (`RoutineMiner` → `UserRoutines`).
+            UserRoutines.install(store: store)
             return s
         } catch {
             Log.memory.error("Memory store unavailable: \(error.localizedDescription)")
@@ -233,9 +235,15 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         TaskGrounding.invalidate()   // "the last thing I did" may be a new session now
         let now = Date()
         var md = UserKnowledge.markdown(k.things(now: now), now: now)
+        // New procedures → routines mined again (local, no model).
+        var routines: [Routine] = []
+        if let r = UserRoutines.current {
+            r.rebuild(now: now)
+            routines = r.routines(now: now)
+        }
         if let m = UserMoves.current {
             m.invalidate()
-            md += UserMoves.markdown(m.profile(now: now))
+            md += UserMoves.markdown(m.profile(now: now), routines: routines)
         }
         do { try vault.writeGenerated("Navi/How you work.md", md) } catch {
             Log.memory.error("Could not write How you work: \(error.localizedDescription)")
@@ -310,6 +318,8 @@ final class MemoryService: ObservableObject, MemoryServicing, @unchecked Sendabl
         report.vault = VaultCleanup(root: stack?.vault.root ?? vaultRoot).deleteAllNaviNotes()
         UserKnowledge.current?.invalidate()
         UserMoves.current?.invalidate()
+        UserRoutines.current?.invalidate()
+        UserRoutines.clearMatches()
         TaskGrounding.invalidate()
         await MainActor.run {
             if wasRunning { stack?.scheduler.start() }

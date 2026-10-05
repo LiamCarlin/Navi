@@ -65,6 +65,9 @@ final class UserMoves: @unchecked Sendable {
 
     struct Profile: Sendable, Equatable {
         var places: [String: Place] = [:]
+        /// Web places per page (`RoutineMiner.pagePattern`): what the user clicks on *this*
+        /// page of a site ("canvas.olin.edu/courses/#/assignments"), not on the site at large.
+        var pages: [String: Place] = [:]
         var procedures: [Procedure] = []
         static let empty = Profile()
     }
@@ -74,6 +77,8 @@ final class UserMoves: @unchecked Sendable {
     static let ttl: TimeInterval = 300
     /// Clicks below this are chance, not a habit.
     static let minCount = 2
+    /// A page with fewer recorded actions marks from its whole site instead.
+    static let minPageActions = 6
     /// At most this many on-screen items are marked: a mark on everything means nothing.
     static let maxMarked = 8
     /// Two clicks this close in one place are one move after another.
@@ -142,9 +147,23 @@ final class UserMoves: @unchecked Sendable {
         var p = Profile()
         var previous: [String: (label: String, at: Date)] = [:]
         for a in actions.sorted(by: { $0.timestamp < $1.timestamp }) where !a.bundleID.isEmpty {
+            // Typing says where the user writes, not what they click.
+            guard a.kind != .type else { continue }
             let key = placeKey(bundleID: a.bundleID, url: a.url)
             var place = p.places[key] ?? Place(key: key, name: key == a.bundleID ? a.appName : key, isWeb: key != a.bundleID)
             place.actions += 1
+            if key != a.bundleID, a.kind != .key, let page = a.url.flatMap(RoutineMiner.pagePattern) {
+                var pg = p.pages[page] ?? Place(key: page, name: page, isWeb: true)
+                pg.actions += 1
+                let n = norm(a.label)
+                if !n.isEmpty {
+                    var c = pg.controls[n] ?? Control(label: a.label, role: a.role, kind: a.kind, count: 0, shortcut: a.shortcut, path: a.path, lastSeen: a.timestamp)
+                    c.count += 1
+                    c.lastSeen = a.timestamp
+                    pg.controls[n] = c
+                }
+                p.pages[page] = pg
+            }
             if a.kind == .key, let combo = a.shortcut {
                 var s = place.shortcuts[combo] ?? Shortcut(combo: combo, count: 0)
                 s.count += 1
@@ -225,8 +244,12 @@ final class UserMoves: @unchecked Sendable {
         /// The shortcut list with this user's own added or marked.
         var shortcuts: [(String, String)] = []
         var state: [String: Any]?
+        /// Items that are the next step of the user's routine for this task (`UserRoute.marks`).
+        var routeNext: Set<Int> = []
+        /// `this_users_way` (`UserRoute.state`).
+        var route: [String: Any]?
 
-        var isEmpty: Bool { clicks.isEmpty && next.isEmpty && state == nil }
+        var isEmpty: Bool { clicks.isEmpty && next.isEmpty && state == nil && routeNext.isEmpty && route == nil }
     }
 
     /// Everything one Jev step gets from this user's moves. `lastClicked`: the label of the
@@ -238,12 +261,15 @@ final class UserMoves: @unchecked Sendable {
         let place = key.flatMap { profile.places[$0] }
 
         if let place {
-            // Marks: on-screen items that are controls this user clicks here, most clicked first.
+            // Marks: on-screen items that are controls this user clicks here, most clicked first —
+            // on this page of a site when they have used it enough, else anywhere on the site.
+            let page = place.isWeb ? url.flatMap(RoutineMiner.pagePattern).flatMap { profile.pages[$0] } : nil
+            let marking = page.map { $0.actions >= minPageActions } == true ? page! : place
             var counted: [(Int, Int)] = []
             for it in items {
                 let n = norm(it.text)
                 guard !n.isEmpty else { continue }
-                let c = place.controls[n] ?? place.controls.values.first { matches($0, n) }
+                let c = marking.controls[n] ?? marking.controls.values.first { matches($0, n) }
                 if let c, c.count >= minCount { counted.append((it.index, c.count)) }
             }
             for (i, n) in counted.sorted(by: { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }).prefix(maxMarked) { h.clicks[i] = n }
@@ -411,8 +437,19 @@ final class UserMoves: @unchecked Sendable {
     /// "⌘⇧T" for a combo.
     static func display(_ combo: String) -> String { (try? KeyCombo.parse(combo))?.displayLabel ?? combo }
 
-    static func markdown(_ profile: Profile) -> String {
+    static func markdown(_ profile: Profile, routines: [Routine] = []) -> String {
         var out = ""
+        if !routines.isEmpty {
+            // The routines the agent follows, as their steps: the ones done most first.
+            out += "\n## Your routines\n\nThings you do and the steps you take — when you ask for one of these, Navi takes the same steps itself"
+                + " (… is the part that changes: the person, the file).\n\n"
+            for r in routines.prefix(30) {
+                let times = r.count > 1 ? ", \(r.count)×" : ""
+                let record = r.worked + r.failed > 0 ? " · Navi followed it \(r.worked + r.failed)× (\(r.worked) worked)" : ""
+                out += "- **\(r.template)** (\(r.site ?? r.appName)\(times)\(record)): " + r.steps.map(\.human).joined(separator: " → ") + "\n"
+            }
+            return out + markdownHabits(profile)
+        }
         // Routines: goals that came back, then the latest others.
         var groups: [String: [Procedure]] = [:]
         var order: [String] = []
@@ -429,6 +466,12 @@ final class UserMoves: @unchecked Sendable {
                 out += "- **\(p.goal)** (\(p.app)\(r.count > 1 ? ", \(r.count)×" : "")): " + (p.steps.isEmpty ? "—" : p.steps.joined(separator: " → ")) + "\n"
             }
         }
+        return out + markdownHabits(profile)
+    }
+
+    /// "How you do things", "What you click" and "Faster ways".
+    static func markdownHabits(_ profile: Profile) -> String {
+        var out = ""
         var habits: [String] = []
         for p in profile.procedures { for h in p.habits where !habits.contains(where: { norm($0) == norm(h) }) { habits.append(h) } }
         if !habits.isEmpty {

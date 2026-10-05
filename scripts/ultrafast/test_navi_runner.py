@@ -409,6 +409,52 @@ jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", body)
 assert seen["body"]["state"]["elements"][0]["this_user"].startswith("this user")
 print("user moves OK")
 
+# --- the user's own way of doing this task (adaptation 22) ---
+route = {"template": "View the \u2026 assignment for \u2026", "times": 1, "fills": ["phase", "2", "mechanical"],
+         "steps": [{"kind": "click", "role": "link", "label": "Mechanical Design ENGR3330 Fall 2026", "fixed": "fall 2026",
+                    "slot": "mechanical design engr3330", "site": "canvas.olin.edu", "human": "click link \u2018\u2026 Fall 2026\u2019"},
+                   {"kind": "click", "role": "link", "label": "Assignments", "fixed": "assignments", "site": "canvas.olin.edu",
+                    "human": "click link \u2018Assignments\u2019"},
+                   {"kind": "click", "role": "link", "label": "Phase 1 Strategy Review", "fixed": "", "slot": "phase 1 strategy review",
+                    "site": "canvas.olin.edu", "human": "click link \u2018\u2026\u2019"}]}
+os.environ["NAVI_USER_ROUTE_JSON"] = json.dumps(route)
+ur = nr.UserRoute()
+assert ur.route["template"].startswith("View")
+dash = [{"index": "1", "label": "Mechanical Design ENGR3330 Fall 2026", "operations": ["CLICK"]},
+        {"index": "2", "label": "Applied Mathematics MTH3180 Fall 2026", "operations": ["CLICK"]},
+        {"index": "3", "label": "Inbox", "operations": ["CLICK"]}]
+body = {"model": "jev-latest", "state": {"page": {"url": "https://canvas.olin.edu/"}, "elements": dash},
+        "questions": {"operation": {"type": "choice", "criteria": {}, "instructions": {}},
+                      "click_target": {"type": "choice", "criteria": {e["index"]: {"element": e["label"]} for e in dash},
+                                       "instructions": {"goal": "g", "rules": "r"}}}}
+marked = ur.annotate(body)
+els = {e["index"]: e for e in marked["state"]["elements"]}
+assert els["1"]["this_user"] == nr.UserRoute.MARK and "this_user" not in els["2"]     # the course the task names
+assert marked["state"]["this_users_way"]["steps"][0].startswith("\u2192 ")
+assert marked["questions"]["click_target"]["criteria"]["1"]["this_user"] == nr.UserRoute.MARK
+assert marked["questions"]["click_target"]["instructions"]["rules"][-1] == nr.USER_ROUTE_RULE
+assert "this_user" not in body["state"]["elements"][0]                                # the original request is untouched
+ur.observe(marked, {"answers": {"operation": {"choice": "CLICK"}, "click_target": {"choice": "1"}}})
+assert ur.done == {0}
+course = [{"index": "1", "label": "Assignments", "operations": ["CLICK"]}, {"index": "2", "label": "Modules", "operations": ["CLICK"]}]
+body["state"] = {"page": {"url": "https://canvas.olin.edu/courses/1083"}, "elements": course}
+again = ur.annotate(body)
+assert {e["index"]: e for e in again["state"]["elements"]}["1"]["this_user"] == nr.UserRoute.MARK
+assert again["state"]["this_users_way"]["steps"][0].startswith("\u2713 ")
+listing = [{"index": "1", "label": "Phase 1 Strategy Review", "operations": ["CLICK"]},
+           {"index": "2", "label": "Phase 2 Detailed Design Review", "operations": ["CLICK"]}]
+ur.done = {0, 1}
+body["state"] = {"page": {"url": "https://canvas.olin.edu/courses/1083/assignments"}, "elements": listing}
+third = {e["index"]: e for e in ur.annotate(body)["state"]["elements"]}
+assert "this_user" in third["2"] and "this_user" not in third["1"]                    # the task's phase 2, not last time's
+# Another site, no route, or junk: untouched.
+other = json.loads(json.dumps(body)); other["state"]["page"]["url"] = "https://example.com/"
+assert "this_user" not in json.dumps(ur.annotate(other)["state"]["elements"])
+os.environ["NAVI_USER_ROUTE_JSON"] = "not json"; assert nr.UserRoute.from_env() is None
+os.environ.pop("NAVI_USER_ROUTE_JSON")
+assert nr.UserRoute().annotate(body) is body
+print("user route OK")
+
 # --- the tab is the deliverable (adaptation 13) ---
 for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
     os.environ.pop(var, None)

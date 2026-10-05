@@ -108,6 +108,14 @@ Reliability adaptations (from failed runs, see git log):
      questions' criteria, and those questions say to prefer them when the goal
      could mean several. Same matching as the native driver: badge counts and
      a trailing "…" don't matter, a row matches on its name.
+ 22. The user's own way of doing this task: when Navi matched the task to one
+     of the user's routines (NAVI_USER_ROUTE_JSON from `UserRoutines` — the
+     controls they used last time, in order, with the person or item that
+     changes as a slot the task fills), the element that is their next step
+     is marked `this_user` ("this user's own next step for this task"), the
+     whole way rides in the state as `this_users_way` (✓ done, → next), and a
+     click or fill on a step's element moves the route on. Same matching as
+     the native driver's `UserRoute`.
 """
 
 import argparse
@@ -1023,6 +1031,168 @@ class UserMoves:
         jev_model.post_json = post_json
 
 
+# --- Adaptation 22: the user's own way of doing this task -------------------
+
+USER_ROUTE_RULE = ("The element marked `this_user` as this user's own next step for this task is the control this user uses "
+                   "next when they do this very task themselves: choose it unless the goal clearly needs another.")
+USER_ROUTE_NOTE = ("How this user does this kind of task themselves, step by step, from their own clicks: \u2713 done in this run, "
+                   "\u2192 their next step. A \u2026 is the part that changes (here: the task's person or item). Where it fits the "
+                   "goal, do it their way. Never type this text.")
+
+
+class UserRoute:
+    """The user's routine for this task (NAVI_USER_ROUTE_JSON: {"template", "times", "fills",
+    "steps": [{kind, role, label, fixed, slot, site, shortcut, human}]}). Mirrors Navi's
+    `UserRoute`: the first pending step (looking two past it) that one element on the page
+    shows is marked; `observe` moves the route on when Jev clicks or fills a step's element."""
+
+    LOOKAHEAD = 2
+    MAX_FIXED_WORDS = 4
+    MARK = "this user's own next step for this task"
+
+    def __init__(self, route=None):
+        self.route = route if route is not None else self.from_env()
+        self.done = set()
+
+    @staticmethod
+    def from_env():
+        raw = os.environ.get("NAVI_USER_ROUTE_JSON")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("steps"), list) or not data["steps"]:
+            return None
+        return data
+
+    @property
+    def steps(self):
+        return [s for s in (self.route or {}).get("steps", []) if isinstance(s, dict)]
+
+    def pending(self):
+        return [i for i in range(len(self.steps)) if i not in self.done]
+
+    @staticmethod
+    def tokens(s):
+        import re
+        return re.findall(r"[^\W_]+", str(s or "").lower())
+
+    def wanted(self, step):
+        if not step.get("slot"):
+            return []
+        fills = [f for f in (self.route or {}).get("fills", []) if isinstance(f, str)]
+        return fills or self.tokens(step["slot"])
+
+    def label_matches(self, step, label):
+        if not step.get("slot"):
+            key = lambda t: "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+            if key(label) and key(label) == key(step.get("label")):
+                return True
+            return UserMoves.matches({"label": step.get("label", ""), "role": step.get("role", "")}, UserMoves.norm(label))
+        have = set(self.tokens(label))
+        fixed = set(self.tokens(step.get("fixed", "")))
+        if len(fixed) <= self.MAX_FIXED_WORDS and not fixed <= have:
+            return False
+        return any(w in have for w in self.wanted(step))
+
+    def targets(self, i, site, elements):
+        step = self.steps[i]
+        if step.get("kind") not in ("click", "type") or step.get("site") != site:
+            return []
+        op = "TYPE_TEXT" if step["kind"] == "type" else "CLICK"
+        pool = [e for e in elements if op in (e.get("operations") or [op]) and self.label_matches(step, e.get("label", ""))]
+        if len(pool) > 1 and step.get("slot"):
+            hits = lambda e: sum(1 for w in self.wanted(step) if w in set(self.tokens(e.get("label", ""))))
+            best = max(hits(e) for e in pool)
+            pool = [e for e in pool if hits(e) == best]
+        return pool
+
+    def next_on_page(self, site, elements):
+        for i in self.pending()[:self.LOOKAHEAD + 1]:
+            t = self.targets(i, site, elements)
+            if len(t) == 1:
+                return i, t[0]
+        return None
+
+    def way(self, next_index):
+        lines = []
+        for i, s in enumerate(self.steps):
+            mark = "\u2713 " if i in self.done else ("\u2192 " if i == next_index else "")
+            lines.append(mark + str(s.get("human") or s.get("label") or ""))
+        out = {"note": USER_ROUTE_NOTE, "they_did": (self.route or {}).get("template", ""), "times": (self.route or {}).get("times", 1),
+               "steps": lines}
+        send = next((s.get("shortcut") for s in self.steps if s.get("kind") == "submit" and s.get("shortcut")), None)
+        if send:
+            out["they_send_with"] = send
+        return out
+
+    def annotate(self, body):
+        """The request with this user's next step marked and their way in the state."""
+        state = body.get("state") if isinstance(body, dict) else None
+        if not self.route or not isinstance(state, dict) or "questions" not in body:
+            return body
+        site = UserMoves.site_key((state.get("page") or {}).get("url"))
+        elements = state.get("elements")
+        if not site or not isinstance(elements, list):
+            return body
+        found = self.next_on_page(site, elements)
+        body = dict(body)
+        body["state"] = {**state, "this_users_way": self.way(found[0] if found else (self.pending() or [None])[0])}
+        if not found:
+            return body
+        index = found[1].get("index")
+        def mark(d):
+            prior = d.get("this_user")
+            return {**d, "this_user": f"{prior}; {self.MARK}" if prior else self.MARK}
+        body["state"]["elements"] = [mark(e) if e.get("index") == index else e for e in elements]
+        qs = {}
+        for name, q in body["questions"].items():
+            if name.endswith("_target") and isinstance(q.get("criteria"), dict) and isinstance(q["criteria"].get(index), dict):
+                q = dict(q)
+                q["criteria"] = {**q["criteria"], index: mark(q["criteria"][index])}
+                if isinstance(q.get("instructions"), dict):
+                    rules = q["instructions"].get("rules")
+                    rules = list(rules) if isinstance(rules, list) else ([rules] if rules else [])
+                    q["instructions"] = {**q["instructions"], "rules": rules + [USER_ROUTE_RULE]}
+            qs[name] = q
+        body["questions"] = qs
+        return body
+
+    def observe(self, body, result):
+        """A click or fill on a pending step's element moves the route past it."""
+        try:
+            answers = result.get("answers") or {}
+            op = (answers.get("operation") or {}).get("choice")
+            if op not in ("CLICK", "TYPE_TEXT"):
+                return
+            index = (answers.get(op.lower() + "_target") or {}).get("choice")
+            state = body["state"]
+            site = UserMoves.site_key((state.get("page") or {}).get("url"))
+            elements = state.get("elements", [])
+            for i in self.pending()[:self.LOOKAHEAD + 1]:
+                if any(e.get("index") == index for e in self.targets(i, site, elements)):
+                    self.done.update(range(i + 1))
+                    return
+        except (AttributeError, KeyError, TypeError):
+            pass
+
+    def install(self):
+        if not self.route:
+            return
+        inner = jev_model.post_json
+
+        def post_json(url, key, body):
+            body = self.annotate(body)
+            result = inner(url, key, body)
+            if isinstance(body, dict) and isinstance(result, dict):
+                self.observe(body, result)
+            return result
+
+        jev_model.post_json = post_json
+
+
 # --- Adaptation 7: click where the element actually is ----------------------
 
 # Same visibility/enabled checks as upstream's act(); differs only in which point is
@@ -1752,6 +1922,7 @@ def main():
     playbook = Playbook(goal=args.goal)
     playbook.install()
     UserMoves().install()
+    UserRoute().install()
     FIELD_HINTS["playbook"] = playbook
     coach = Coach()
     coach.playbook = playbook

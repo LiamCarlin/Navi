@@ -46,10 +46,10 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
-| `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks + shortcuts), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits → procedures), `VaultWriter` (Obsidian markdown), `Recall` |
+| `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
 | `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice) |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
@@ -195,6 +195,37 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     The personal-data cleanup also redacts actions and procedures. `ProcedureBackfill` (once, after
     the first digest of a launch; resumable cursor `memoryProcedureBackfillCursor`, then
     `…Done`) re-digests older sessions text-only for goal/steps/habits → procedures + How sections.
+  - **Routines — the user's own way, carried out** (`Memory/Routines`, `Agent/UserRoutines`): screen
+    memory is kept for *how*, not only *what*. `ActionJournal` also records where the user types
+    (`type`: the field's label once per stretch — never keys or text) and the Return that sends it;
+    the digester numbers `[ACTIONS]` (`#n`) and names the lines that did the goal (`did_it` →
+    `procedures.action_ids`); `RoutineMiner` (local, no model; at launch and after each digest) turns
+    each procedure into a routine — steps as role/label/container/shortcut/page pattern, text edits,
+    tab juggling and clicks undone by Back dropped, a field click folded into typing, ⌘↩/Return after
+    typing = how they send, leading clicks elsewhere trimmed, a two-place compound goal split — with
+    **slots**: a label's words the goal names as a name or code (capitalised past the first word, or
+    with a digit: "Haakon Olsen", "Assignment 03" → "03"), so "message … on Slack" is one routine done
+    for many people. Stored in table `routines` (with `count`, `worked`/`failed`; ≥ 2 failures and more
+    failures than successes = no longer offered; older procedures are aligned to the journal by the
+    control names their steps quote). `UserRoutines.match` (prepared while typing, in parallel with
+    grounding at run start, cached 3 min): lexical candidates (verb synonyms folded; the task's own
+    names fill slots; the app it implies or the person is reached in first) → one Jev `same_task`
+    choice ≥ 0.5 (no Jev: only a routine done ≥ 2× that covers the task). The native loop then
+    **follows** it (`UserRoute.direct`): before each Jev call, the next pending step (looking two
+    ahead; an app to open that is already in front is done) whose control is on screen exactly once
+    is pressed by code when it only navigates — link/tab/row/sidebar/menu item, a "Show more"-like
+    button, a harmless shortcut, opening an app — and is the same every time (≤ 3 words, no digits,
+    in ≥ 2 of the user's routines or done ≥ 2×) or named by the task; never typing, sending, toggles or
+    anything that adds/shares/consents/deletes (those stay Jev's and the gate's). A step that changes
+    nothing stops following. Otherwise Jev gets `this_users_way` (✓/→ steps, `they_send_with`), the
+    item of their next step marked `user_way_next`, and their send key marked in the shortcut question.
+    Voice runs start where the routine starts (its app, or its page — never a page naming the last
+    run's slot). The planner gets `their_routines_for_tasks_like_this`; the browser runner
+    `NAVI_USER_ROUTE_JSON` (adaptation 22: same marks on page elements). The vault's "How you work"
+    lists the routines. Live (2026-10-05, Liam's memory: 461 procedures → ~200 routines): Jev picked
+    a sensible routine in ~150 ms for 12 of 13 tasks that were instances (missed "open my canvas
+    assignments for generative ai", 0.47) and said none for weather / a web search; `UserMoves` marks are now per page pattern ("canvas.olin.edu/courses/#")
+    once the user has ≥ 6 actions there, else per site.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
