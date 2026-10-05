@@ -192,6 +192,7 @@ enum CUDecide {
                 if fresh.contains(it.index) { d["new"] = true }
                 if let n = input.userMoves?.clicks[it.index] { d["user_clicks"] = n }
                 if input.userMoves?.next.contains(it.index) == true { d["user_next"] = true }
+                if input.userMoves?.routeNext.contains(it.index) == true { d["user_way_next"] = true }
                 return d.merging(itemExtras(it, screen: screen)) { a, _ in a }
             },
         ]
@@ -203,6 +204,7 @@ enum CUDecide {
         if !input.userContext.isEmpty { state["user_context"] = ["note": userContextNote, "things": input.userContext] }
         if !input.experience.isEmpty { state["experience"] = input.experience }
         if let moves = input.userMoves?.state { state["how_this_user_works"] = moves }
+        if let way = input.userMoves?.route { state["this_users_way"] = way }
         if !input.conversation.isEmpty {
             state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that').",
                                      "earlier": input.conversation]
@@ -232,6 +234,7 @@ enum CUDecide {
             if let h = extras["holds"] as? String { parts.append("holds \(CUFacts.quoted(h))") }
             if let n = input.userMoves?.clicks[it.index] { parts.append("this user clicks this here (\(n)×)") }
             if input.userMoves?.next.contains(it.index) == true { parts.append("what this user usually clicks next") }
+            if input.userMoves?.routeNext.contains(it.index) == true { parts.append("this user's own next step for this task") }
             out["\(it.index)"] = (it.fromAX && !it.role.isEmpty ? it.role + " " : "") + CUFacts.quoted(it.text) + " (" + parts.joined(separator: "; ") + ")"
         }
         return out
@@ -273,7 +276,8 @@ enum CUDecide {
         }
 
         add("item", "If clicking an on-screen item is the right move, which item? Items marked with a role come from the app's accessibility tree and are real controls; plain items are text read from the screen. Never pick an item that an action listed as already tried on this screen clicked or pressed: each of those led straight back here."
-            + (input.userMoves.map { !$0.clicks.isEmpty || !$0.next.isEmpty } == true ? UserMoves.itemRule : ""),
+            + (input.userMoves.map { !$0.clicks.isEmpty || !$0.next.isEmpty } == true ? UserMoves.itemRule : "")
+            + (input.userMoves.map { !$0.routeNext.isEmpty } == true ? UserRoute.itemRule : ""),
             itemCriteria(input))
         add("offscreen", "If activating a control that is not on screen is the right move, which control? These are real controls of the app, reachable without the mouse, but nothing on the screen points at them.",
             Dictionary(uniqueKeysWithValues: screen.offscreen.enumerated().map { ("\($0.offset)", "\(CURoles.word($0.element.role)) \(CUFacts.quoted($0.element.label)) (not visible)") }))
@@ -313,7 +317,8 @@ enum CUDecide {
                                               apps: offered["app"] != nil, shortcuts: offered["shortcut"] != nil))
         add("kind", "You are driving this computer one action at a time. Which kind of action makes the most progress toward the goal right now? Do not repeat an action that was just taken unless the screen changed, and never one listed as already tried on this screen: each of those led straight back here."
             + untrustedRule + (input.guidance.focus != nil ? focusRule : "") + (input.playbook != nil ? playbookRule : "")
-            + (input.userMoves.map { !$0.isEmpty } == true ? UserMoves.kindRule : ""),
+            + (input.userMoves.map { !$0.isEmpty } == true ? UserMoves.kindRule : "")
+            + (input.userMoves?.route != nil ? UserRoute.kindRule : ""),
             kinds)
 
         // Navi's approval gate reads these (same wording as JevGate).

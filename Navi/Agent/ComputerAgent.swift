@@ -47,6 +47,7 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     init(jev: JevClient, claude: ClaudeClient) {
         self.jev = jev; self.claude = claude
         TaskGrounding.install(jev: jev)   // what "the doc I was working on" means is settled with this Jev
+        UserRoutines.install(jev: jev)    // which of the user's routines a task is another instance of
     }
 
     /// Called by the router the moment a query routes to `.computerTask` —
@@ -57,6 +58,8 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
         // What the task refers to in the user's own work ("the last assignment I did"), settled
         // while they type; the planner prefetch below waits for it.
         TaskGrounding.prepare(task: task)
+        // Which of the user's own routines this is (their way of doing it), settled while they type.
+        UserRoutines.prepare(task: task)
         if claude.isConfigured {
             TaskPlanner.prefetch(task: task, claude: claude)
         } else if ComputerAgent.browserRunner != nil, jev.isConfigured {
@@ -201,6 +204,8 @@ final class AgentRun: @unchecked Sendable {
     private var target: AgentTarget?
     /// What the task refers to in the user's own work (`TaskGrounding`), when it points at something.
     private var grounded: TaskGrounding.Grounded?
+    /// The user's own routine this task is another instance of (`UserRoutines`): followed in the native loop.
+    private var routeMatch: UserRoutines.Match?
     /// Background mode: the window the last screenshot came from (event routing for Claude's clicks).
     private var screenshotWindow: CGWindowID?
     @MainActor private var overlay: AgentOverlay?
@@ -312,9 +317,15 @@ final class AgentRun: @unchecked Sendable {
         do {
             // What the task refers to in the user's own work ("the doc I was working on" → that
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
+            // …and whether it is something they have done before, their way (in parallel).
+            async let routine = UserRoutines.match(task: originalTask)
             if let g = await TaskGrounding.ground(task: originalTask) {
                 grounded = g
                 handle.emit(.status("From your screen memory: \(g.thing.name) · \(g.thing.place) · \(TaskGrounding.shortWhen(g.thing.lastSeen, now: Date()))"))
+            }
+            if let m = await routine {
+                routeMatch = m
+                handle.emit(.status("You've done this before (\(m.routine.count)×): \(m.routine.template) — following your steps"))
             }
             try checkCancelled()
             // Step 0 — the plan. Usually already answered by `prepare` while the user was typing.
@@ -384,6 +395,21 @@ final class AgentRun: @unchecked Sendable {
                 return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: b))
             }
         }
+        // Something this user has done before their own way (`UserRoutines`): it starts where they
+        // start it — their app, or their page on the site — unless the task names another app.
+        if let m = routeMatch, m.confidence >= 0.6, !config.useCurrentTab, let start = Self.routineStart(m, task: originalTask) {
+            switch start {
+            case .page(let url) where surface != .nativeApp && ComputerAgent.browserRunner != nil:
+                Log.agent.info("UserRoutines: starting on the user's page for this routine")
+                var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+                plan.steps[0].url = url
+                return (front, plan)
+            case .app(let bundle) where surface != .browser:
+                Log.agent.info("UserRoutines: \(bundle, privacy: .public) is where the user does this")
+                return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: front.bundleID == bundle ? nil : bundle))
+            default: break
+            }
+        }
         if surface == .unsure {
             guard ComputerAgent.browserRunner != nil, jev.isConfigured else {
                 return (front, TaskPlanner.fallback(task: originalTask, surface: .app))
@@ -424,6 +450,26 @@ final class AgentRun: @unchecked Sendable {
         var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
         plan.steps[0].url = TaskSurface.startURL(task: originalTask, frontmost: front, start: config.useCurrentTab ? .currentTab : nil)
         return (front, plan)
+    }
+
+    enum RoutineStart: Equatable { case app(String), page(String) }
+
+    /// Where a matched routine starts: its first page (a clean URL that names none of the
+    /// last run's slot words, else the site), or its app when it is installed. nil when the
+    /// task names an app the routine is not in.
+    static func routineStart(_ m: UserRoutines.Match, task: String) -> RoutineStart? {
+        let r = m.routine
+        if let named = AppSkills.mentioned(in: task) {
+            let inNamed = named.bundleIDs.contains(r.bundleID) || (r.site.map { s in named.hosts.contains { s.hasSuffix($0) || $0.hasSuffix(s) } } ?? false)
+            guard inNamed else { return nil }
+        }
+        if let site = r.site {
+            let slots = r.slotWords
+            if let u = r.startURL, !RoutineMiner.tokens(u).contains(where: slots.contains) { return .page(u) }
+            return .page("https://" + site)
+        }
+        guard !r.bundleID.isEmpty, NSWorkspace.shared.urlForApplication(withBundleIdentifier: r.bundleID) != nil else { return nil }
+        return .app(r.bundleID)
     }
 
     /// `AppSkills.inferApp` against the installed and running apps: the bundle id
@@ -833,8 +879,21 @@ final class AgentRun: @unchecked Sendable {
         var replaySteps: [CUReplayStep] = []
         var replayOpen = true
         var replayUsed = false
+        // The user's own way of doing this task (`UserRoutines`): its steps are pressed directly
+        // while each one is on screen once and safe; otherwise Jev decides with their way in view.
+        var route = routeMatch.map(\.route)
+        // "Ask before every action" means every action: then Jev proposes each step and the user approves it.
+        var followRoute = route != nil && config.approvalMode != .alwaysAsk
+        /// How the run went for the routine, once — only when it actually steered the run.
+        func noteRoute(worked: Bool) {
+            guard let r = route, r.followed > 0 || r.done.count >= 2 else { return }
+            UserRoutines.noteOutcome(key: r.routine.key, worked: worked)
+            route = nil
+            followRoute = false
+        }
 
         func remember() {
+            noteRoute(worked: true)
             if !replaySteps.isEmpty {
                 CUReplay.shared.record(bundleID: startBundle, goal: task, steps: replaySteps, complete: replayOpen, replayed: replayUsed)
             }
@@ -866,6 +925,7 @@ final class AgentRun: @unchecked Sendable {
             writerAnswer = a.text.isEmpty ? nil : a.text
             writeRun(outcome.rawValue)
             if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
+            if !a.achieved { noteRoute(worked: false) }
             if a.achieved {
                 remember()
                 handle.emit(.completed(summary: a.text.isEmpty ? Self.summary(humanLog) : a.text))
@@ -1027,6 +1087,52 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.status("The last \(CURunState.maxIdle) actions changed nothing on screen"))
                 if try await handOff(.stalled) { continue } else { return }
             }
+            // The user's own next step for this task, on screen once and safe to take: pressed
+            // directly, their way — no Jev call (`UserRoute.direct`).
+            if followRoute, var r = route, let (i, a) = r.direct(on: screen, task: task) {
+                let st = r.steps[i]
+                let human = a.human(in: screen.snapshot, text: nil)
+                if r.followed == 0 { handle.emit(.status("Doing it your way: \(r.routine.template)")) }
+                actionIndex += 1
+                handle.emit(.step(index: actionIndex, description: human))
+                let fp = await AXSnapshotter.fingerprint(target: target)
+                var ok = true
+                do {
+                    try await executor.perform(a, text: nil, snapshot: screen.snapshot)
+                    if case .openApp(let name) = a, target != nil {
+                        await pinTarget(opened: name)
+                        target = self.target
+                        executor.target = target
+                    }
+                    await AXSnapshotter.settle(after: fp, maxMs: a.settleMs, target: target)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    ok = false
+                    handle.emit(.status("Your step ‘\(st.human)’ failed: \((error as? NaviError)?.errorDescription ?? error.localizedDescription) — Jev takes over"))
+                }
+                let acted = screen
+                previousLabels = (Set(screen.items.map { CUFacts.plainLabel($0.text) }), screen.usedOCR)
+                screen = await observe()
+                let moved = ok ? await awaitAnswer(before: acted, label: st.kind == .click ? st.label : nil) : false
+                r.followed += 1
+                if moved {
+                    r.complete(through: i)
+                    humanLog.append(human)
+                    redactedLog.append(human)
+                    recordReplay(a, on: acted, itemText: st.label, moved: true)
+                    if let f = a.elementID.flatMap({ acted.snapshot.element($0)?.frame }) { lastActedFrame = f }
+                    if case .click(let id) = a { lastClickedLabel = acted.snapshot.element(id)?.label }
+                } else {
+                    followRoute = false   // the screen did not answer: Jev decides from here, the way still in view
+                }
+                route = r
+                if run.recordAction(human + (moved ? " (your usual step)" : " (your usual step — nothing changed)"), waiting: false) {
+                    if try await handOff(.stalled) { continue } else { return }
+                }
+                continue
+            }
+
             let tried = run.triedHere()
             let skill = AppSkills.skill(bundleID: screen.snapshot.bundleID, url: screen.url)
             if let skill, announcedSkill != skill.name {
@@ -1034,9 +1140,17 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.status("Using the \(skill.name) playbook"))
             }
             // How this user acts here (their clicks, shortcuts, procedures), from screen memory.
-            let moves = UserMoves.liveHints(goal: task, bundleID: screen.snapshot.bundleID, url: screen.url,
+            var moves = UserMoves.liveHints(goal: task, bundleID: screen.snapshot.bundleID, url: screen.url,
                                             items: screen.items.map { ($0.index, $0.text) }, lastClicked: lastClickedLabel,
                                             shortcuts: AppSkills.keyCombos(for: skill))
+            // Their routine for this task: the next step marked, the whole way in Jev's state.
+            if var r = route {
+                r.settle(on: screen)
+                route = r
+                moves.routeNext = r.marks(on: screen)
+                moves.route = r.state(on: screen)
+                moves.shortcuts = r.shortcuts(moves.shortcuts)
+            }
             let input = CUDecide.Input(goal: task, screen: screen, history: run.history, tried: tried, guidance: run.guidance,
                                        shortcuts: moves.shortcuts, apps: appCandidates, sites: urlCandidates,
                                        writerAvailable: writerAvailable,
@@ -1377,6 +1491,13 @@ final class AgentRun: @unchecked Sendable {
             if let action, actionRan {
                 let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
                 recordReplay(action, on: acted, itemText: itemText, moved: answered)
+                // Jev took one of the user's steps: the route moves on (and may follow from here).
+                if var r = route {
+                    let before = r.done.count
+                    r.observe(action, on: acted)
+                    if r.done.count > before, answered, config.approvalMode != .alwaysAsk { followRoute = true }
+                    route = r
+                }
             }
             // "Click on interviewing": the item it names was clicked and the screen answered. That is
             // the goal, whole — no second click on a toggle, and no writer read to say so.

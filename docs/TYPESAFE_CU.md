@@ -79,6 +79,16 @@ below into the Swift file beside it, and its test case into `NaviTests/TypesafeC
   the shortcut question ("this user presses it here"), and `how_this_user_works` holds similar
   tasks they did before with their steps, their habits and most-clicked controls. Upstream has
   no notion of a particular user; these are facts code computed, Jev still picks.
+- **The user's routine for this very task** (`UserRoutines` / `UserRoute`): when the task is
+  another instance of something the user did (one Jev `same_task` pick over ≤ 5 routines mined
+  from screen memory, prepared while typing), their steps are found again on each screen. A step
+  that only navigates (a link, tab, row, sidebar item, menu item, "Show more"-like button, a
+  harmless shortcut, opening an app), whose control is there exactly once and is either the same
+  every time or named by the task (a slot: "Pia Swarup" for "message pia"), is pressed by code —
+  no Jev call — while each one moves the screen. Typing, sending, toggles, and anything that
+  adds, shares, consents or deletes stay Jev's (and the gate's): the item that is the user's next
+  step carries `user_way_next`, the whole way rides as `this_users_way`, and their send key is
+  marked in the shortcut question. The browser runner gets the same marks (adaptation 22).
 - **Approval gate**: `is_irreversible` / `is_prohibited` ride along in the same call and feed
   `JevGate` — upstream has no approvals.
 - **Background mode**, **RecipientPicker** (contacts in To:/Cc:), typing sounds: unchanged.

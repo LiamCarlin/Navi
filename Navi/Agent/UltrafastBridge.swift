@@ -465,6 +465,9 @@ enum UltrafastBridge {
         }
         // What the user clicks on each site, so the runner marks the page's elements (adaptation 21).
         if let marks = UserMoves.liveRunnerJSON(startURL: url) { env["NAVI_USER_MOVES_JSON"] = marks }
+        // The user's own routine for this task, when it is one (`UserRoutines`): the runner marks
+        // their next step on the page and shows Jev their way (adaptation 22).
+        if let route = UserRoutines.runnerJSON(for: task, original: handle.task) { env["NAVI_USER_ROUTE_JSON"] = route }
         let reveal = UserDefaults.navi.object(forKey: "agentRevealWhenDone") as? Bool ?? true
         let policy = tabPolicy(task: task, background: background, revealWhenDone: reveal)
         env["NAVI_TAB_POLICY"] = policy
