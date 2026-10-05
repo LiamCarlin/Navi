@@ -93,7 +93,7 @@ final class ProcedureBackfill: @unchecked Sendable {
         do {
             let raw = try await digester.summarize(frames, actions: actions, provider: provider, policy: policy, images: false)
             let (digest, _) = PersonalData.scrub(raw, policy: policy)
-            guard let procedure = Digester.procedure(for: session, digest: digest) else { return (true, false) }
+            guard let procedure = Digester.procedure(for: session, digest: digest, actions: actions) else { return (true, false) }
             try store.insertProcedure(procedure)
             if let note = session.notePath { try? vault.appendHow(notePath: note, digest: digest) }
             return (true, true)

@@ -38,10 +38,12 @@ struct SessionRecord: Sendable, Equatable {
 }
 
 /// One thing the user did with the mouse or keyboard (`ActionJournal`): the control
-/// they clicked, the menu item they chose, or the shortcut they pressed. Never what
-/// they typed: labels are the control's own name (a text field's label, not its value).
+/// they clicked, the menu item they chose, the shortcut they pressed, or the field they
+/// typed in. Never what they typed: labels are the control's own name (a text field's
+/// label, not its value).
 struct ActionRecord: Sendable, Equatable {
-    enum Kind: String, Sendable { case click, menu, key }
+    /// `type`: the user typed in the field `label` (once per stretch of typing; never the text).
+    enum Kind: String, Sendable { case click, menu, key, type }
 
     var id: Int64 = 0
     var timestamp: Date
@@ -74,6 +76,9 @@ struct ProcedureRecord: Sendable, Equatable {
     var goal: String
     var steps: [String]
     var habits: [String]
+    /// The journal rows (`actions.id`) that did the goal, in order, as the digester picked them
+    /// from [ACTIONS]; empty for procedures digested before it named them (`RoutineMiner.align`).
+    var actionIDs: [Int64] = []
 }
 
 struct EntityRef: Sendable, Equatable, Hashable, Codable {
@@ -95,7 +100,9 @@ struct EntityRef: Sendable, Equatable, Hashable, Codable {
 ///   frames_fts(ocr_text, window_title, url)  — external-content FTS5 over frames
 ///   sessions_fts(summary, topics, entities, title) — standalone FTS5, rowid = session id
 ///   actions(id, ts, bundle_id, app_name, window_title, url, kind, role, label, shortcut, path)
-///   procedures(id, session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps JSON, habits JSON)
+///   procedures(id, session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps JSON, habits JSON, action_ids JSON)
+///   routines(key, template, goals JSON, bundle_id, app_name, site, start_url, steps JSON, count,
+///            first_ts, last_ts, worked, failed) — derived from procedures + actions (`RoutineMiner`)
 final class MemoryStore: @unchecked Sendable {
     let databaseURL: URL
     /// Where JPEG thumbnails live (`frames/YYYY/MM/DD/<ts>.jpg`).
@@ -230,7 +237,27 @@ final class MemoryStore: @unchecked Sendable {
             habits TEXT NOT NULL DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS procedures_start ON procedures(start_ts);
+        CREATE TABLE IF NOT EXISTS routines(
+            key TEXT PRIMARY KEY,
+            template TEXT NOT NULL,
+            goals TEXT NOT NULL DEFAULT '[]',
+            bundle_id TEXT NOT NULL DEFAULT '',
+            app_name TEXT NOT NULL DEFAULT '',
+            site TEXT,
+            start_url TEXT,
+            steps TEXT NOT NULL DEFAULT '[]',
+            count INTEGER NOT NULL DEFAULT 1,
+            first_ts REAL NOT NULL,
+            last_ts REAL NOT NULL,
+            worked INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0
+        );
         """)
+        // Databases from before procedures named their actions.
+        let columns = try query("PRAGMA table_info(procedures)", []).compactMap { $0["name"] as? String }
+        if !columns.contains("action_ids") {
+            try exec("ALTER TABLE procedures ADD COLUMN action_ids TEXT NOT NULL DEFAULT '[]';")
+        }
     }
 
     // MARK: Frames
@@ -462,6 +489,16 @@ final class MemoryStore: @unchecked Sendable {
         }
     }
 
+    /// The actions with these ids, in the order given (ids no longer stored are skipped).
+    func actions(ids: [Int64]) throws -> [ActionRecord] {
+        guard !ids.isEmpty else { return [] }
+        let rows = try queue.sync {
+            try query("SELECT * FROM actions WHERE id IN (\(ids.map { _ in "?" }.joined(separator: ",")))", ids.map { $0 as Any? })
+        }.map(Self.action(from:))
+        let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return ids.compactMap { byID[$0] }
+    }
+
     /// Actions in a time range, oldest first.
     func actions(in interval: DateInterval, limit: Int = 50_000) throws -> [ActionRecord] {
         try queue.sync {
@@ -530,10 +567,10 @@ final class MemoryStore: @unchecked Sendable {
     func insertProcedure(_ p: ProcedureRecord) throws -> Int64 {
         try queue.sync {
             try run("""
-            INSERT INTO procedures(session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps, habits)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            INSERT INTO procedures(session_id, start_ts, end_ts, bundle_id, app_name, site, goal, steps, habits, action_ids)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             """, [p.sessionID, p.start.timeIntervalSince1970, p.end.timeIntervalSince1970, p.bundleID, p.appName,
-                  p.site, p.goal, Self.json(p.steps), Self.json(p.habits)])
+                  p.site, p.goal, Self.json(p.steps), Self.json(p.habits), Self.json(p.actionIDs)])
             return sqlite3_last_insert_rowid(db)
         }
     }
@@ -557,6 +594,52 @@ final class MemoryStore: @unchecked Sendable {
         try queue.sync {
             try query("SELECT * FROM procedures WHERE start_ts >= ? ORDER BY start_ts DESC LIMIT ?",
                       [since.timeIntervalSince1970, limit]).map(Self.procedure(from:))
+        }
+    }
+
+    // MARK: Routines (`RoutineMiner` writes, `UserRoutines` reads)
+
+    /// Replaces the mined routines with `list`, keeping how the agent fared with each one
+    /// that is still there (`worked`/`failed`, by key).
+    func saveRoutines(_ list: [Routine]) throws {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.sortedKeys]
+        try queue.sync {
+            let kept = Dictionary(try query("SELECT key, worked, failed FROM routines", []).compactMap { r -> (String, (Int64, Int64))? in
+                guard let k = r["key"] as? String else { return nil }
+                return (k, (r["worked"] as? Int64 ?? 0, r["failed"] as? Int64 ?? 0))
+            }, uniquingKeysWith: { a, _ in a })
+            try exec("BEGIN;")
+            do {
+                try exec("DELETE FROM routines;")
+                for r in list {
+                    let steps = (try? enc.encode(r.steps)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+                    let stats = kept[r.key] ?? (Int64(r.worked), Int64(r.failed))
+                    try run("""
+                    INSERT OR REPLACE INTO routines(key, template, goals, bundle_id, app_name, site, start_url, steps, count, first_ts, last_ts, worked, failed)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, [r.key, r.template, Self.json(r.goals), r.bundleID, r.appName, r.site, r.startURL, steps, r.count,
+                          r.first.timeIntervalSince1970, r.last.timeIntervalSince1970, stats.0, stats.1])
+                }
+                try exec("COMMIT;")
+            } catch {
+                try? exec("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
+    /// Every mined routine, most done first.
+    func routines(limit: Int = 2000) throws -> [Routine] {
+        try queue.sync {
+            try query("SELECT * FROM routines ORDER BY count DESC, last_ts DESC LIMIT ?", [limit]).compactMap(Self.routine(from:))
+        }
+    }
+
+    /// The agent followed the routine `key`: it worked, or the run failed.
+    func noteRoutineOutcome(key: String, worked: Bool) throws {
+        try queue.sync {
+            try run(worked ? "UPDATE routines SET worked = worked + 1 WHERE key = ?" : "UPDATE routines SET failed = failed + 1 WHERE key = ?", [key])
         }
     }
 
@@ -589,6 +672,8 @@ final class MemoryStore: @unchecked Sendable {
                             [newGoal ?? goal, Self.json(zip(steps, newSteps).map { $1 ?? $0 }),
                              Self.json(zip(habits, newHabits).map { $1 ?? $0 }), r["id"]])
                 }
+                // Routines are derived from both: mined again from the redacted rows.
+                if !dryRun, changed > 0 { try exec("DELETE FROM routines;") }
                 if !dryRun { try exec("COMMIT;") }
             } catch {
                 if !dryRun { try? exec("ROLLBACK;") }
@@ -804,6 +889,7 @@ final class MemoryStore: @unchecked Sendable {
                 try run("DELETE FROM sessions WHERE end_ts < ?", [cut])
                 try run("DELETE FROM actions WHERE ts < ?", [actionCut])
                 try run("DELETE FROM procedures WHERE end_ts < ?", [procedureCut])
+                try run("DELETE FROM routines WHERE last_ts < ?", [procedureCut])
                 try exec("COMMIT;")
             } catch {
                 try? exec("ROLLBACK;")
@@ -834,6 +920,7 @@ final class MemoryStore: @unchecked Sendable {
                 try exec("DELETE FROM sessions;")
                 try exec("DELETE FROM actions;")
                 try exec("DELETE FROM procedures;")
+                try exec("DELETE FROM routines;")
                 try exec("COMMIT;")
             } catch {
                 try? exec("ROLLBACK;")
@@ -992,7 +1079,23 @@ final class MemoryStore: @unchecked Sendable {
                                appName: r["app_name"] as? String ?? "",
                                site: r["site"] as? String,
                                goal: r["goal"] as? String ?? "",
-                               steps: list("steps"), habits: list("habits"))
+                               steps: list("steps"), habits: list("habits"),
+                               actionIDs: ((try? JSONSerialization.jsonObject(with: Data((r["action_ids"] as? String ?? "[]").utf8))) as? [NSNumber] ?? [])
+                                   .map(\.int64Value))
+    }
+
+    private static func routine(from r: [String: Any]) -> Routine? {
+        guard let key = r["key"] as? String,
+              let steps = try? JSONDecoder().decode([RoutineStep].self, from: Data((r["steps"] as? String ?? "[]").utf8)), !steps.isEmpty
+        else { return nil }
+        let goals = (try? JSONSerialization.jsonObject(with: Data((r["goals"] as? String ?? "[]").utf8))) as? [String] ?? []
+        return Routine(key: key, goals: goals, template: r["template"] as? String ?? goals.first ?? "",
+                       bundleID: r["bundle_id"] as? String ?? "", appName: r["app_name"] as? String ?? "",
+                       site: r["site"] as? String, startURL: r["start_url"] as? String, steps: steps,
+                       count: Int(r["count"] as? Int64 ?? 1),
+                       first: Date(timeIntervalSince1970: r["first_ts"] as? Double ?? 0),
+                       last: Date(timeIntervalSince1970: r["last_ts"] as? Double ?? 0),
+                       worked: Int(r["worked"] as? Int64 ?? 0), failed: Int(r["failed"] as? Int64 ?? 0))
     }
 
     private static func json(_ obj: Any) -> String {

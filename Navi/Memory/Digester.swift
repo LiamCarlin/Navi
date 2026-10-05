@@ -15,6 +15,9 @@ struct DigestResult: Sendable, Equatable {
     var steps: [String] = []
     /// Reusable observations of how this user works (their tool, path, shortcut, order).
     var habits: [String] = []
+    /// The [ACTIONS] lines (1-based `#n`) that did the goal, in order: the procedure's
+    /// `actionIDs`, which `RoutineMiner` turns into a routine the agent can follow.
+    var didIt: [Int] = []
 
     static let empty = DigestResult(title: "", summary: "", topics: [], entities: [], keyFacts: [], links: [])
 }
@@ -152,7 +155,7 @@ final class Digester: @unchecked Sendable {
                 Log.memory.error("Vault write failed: \(error.localizedDescription)")
                 updateStatus { $0.lastError = "Vault write failed: \(error.localizedDescription)" }
             }
-            if let procedure = Self.procedure(for: record, digest: clean) {
+            if let procedure = Self.procedure(for: record, digest: clean, actions: actions) {
                 do { try store.insertProcedure(procedure) } catch {
                     Log.memory.error("Procedure not saved: \(error.localizedDescription)")
                 }
@@ -180,13 +183,19 @@ final class Digester: @unchecked Sendable {
         return (try? store.actions(in: span, limit: 2000)) ?? []
     }
 
-    /// The session as a procedure Navi can follow later; nil without a goal.
-    static func procedure(for session: SessionRecord, digest: DigestResult) -> ProcedureRecord? {
+    /// The session as a procedure Navi can follow later; nil without a goal. `actions` are the
+    /// ones the prompt listed: the lines the digest named (`didIt`) become `actionIDs`.
+    static func procedure(for session: SessionRecord, digest: DigestResult, actions: [ActionRecord] = []) -> ProcedureRecord? {
         guard let goal = digest.goal?.trimmingCharacters(in: .whitespacesAndNewlines), !goal.isEmpty else { return nil }
+        let lines = ActionJournal.numbered(actions, max: maxActionLines).ids
+        var ids: [Int64] = []
+        for n in digest.didIt where n >= 1 && n <= lines.count {
+            if let id = lines[n - 1].first, id > 0, !ids.contains(id) { ids.append(id) }
+        }
         return ProcedureRecord(sessionID: session.id, start: session.start, end: session.end, bundleID: session.bundleID,
                                appName: session.appName, site: session.url.flatMap(UserHabits.siteKey(of:)),
                                goal: String(goal.prefix(160)), steps: Array(digest.steps.prefix(maxSteps)),
-                               habits: Array(digest.habits.prefix(maxHabits)))
+                               habits: Array(digest.habits.prefix(maxHabits)), actionIDs: ids)
     }
 
     // MARK: Session grouping
@@ -239,7 +248,8 @@ final class Digester: @unchecked Sendable {
     (OCR), optionally screenshots, and [ACTIONS] — the controls the user actually clicked, the menu items \
     they chose and the keyboard shortcuts they pressed, in order (what they typed is never recorded). Write \
     an operational note: what the user was getting done and exactly how they did it, so Navi can later do \
-    the same task the same way this user does it — and still answer "what was I doing?".
+    the same task the same way this user does it — and still answer "what was I doing?". Each [ACTIONS] line \
+    starts with its number (#n); "type in ‘X’" means they typed in field X (what they typed is not recorded).
     Respond with ONLY a JSON object, no prose, no markdown fences:
     {"title": string (≤ 60 chars, specific), "summary": string (2–4 sentences, past tense, concrete: name \
     files, people, sites, decisions, and how the work was done), \
@@ -253,6 +263,9 @@ final class Digester: @unchecked Sendable {
     order of operations they choose where another person might choose differently: "Opens Canvas \
     assignments from the course's Assignments tab, not the dashboard", "Sends email with cmd+return"; \
     [] when the actions show nothing particular], \
+    "did_it": [the numbers of the [ACTIONS] lines that accomplished the goal, in the order taken — the \
+    path the user would take again; leave out detours, corrections, idle browsing, closing tabs and actions \
+    for other tasks; [] when there is no goal or no recorded action did it], \
     "topics": [2–6 short lowercase noun phrases], \
     "entities": [{"name": string, "type": "person|project|company|tool|site|file|concept"}], \
     "key_facts": [≤ 6 concrete facts worth remembering], "links": [URLs seen]}
@@ -289,7 +302,7 @@ final class Digester: @unchecked Sendable {
         let urls = uniqueOrdered(frames.compactMap { $0.url }.filter { !$0.isEmpty }.map { PersonalData.redact($0, policy: policy).text })
         if !urls.isEmpty { lines.append("[URLS]\n" + urls.prefix(6).map { "- \($0)" }.joined(separator: "\n")) }
         // What the user did (labels and shortcuts only — never typed text), already redacted when recorded.
-        let acted = ActionJournal.lines(actions, max: maxActionLines, calendar: calendar).map { PersonalData.redact($0, policy: policy).text }
+        let acted = ActionJournal.numbered(actions, max: maxActionLines, calendar: calendar).lines.map { PersonalData.redact($0, policy: policy).text }
         lines.append(acted.isEmpty ? "[ACTIONS] none recorded" : "[ACTIONS]\n" + acted.joined(separator: "\n"))
 
         var used = lines.joined(separator: "\n").count
@@ -419,7 +432,19 @@ final class Digester: @unchecked Sendable {
                             links: uniqueOrdered(stringList(obj["links"])),
                             goal: hasGoal ? goal : nil,
                             steps: hasGoal ? Array(uniqueOrdered(stringList(obj["steps"])).prefix(maxSteps)) : [],
-                            habits: Array(uniqueOrdered(stringList(obj["habits"])).prefix(maxHabits)))
+                            habits: Array(uniqueOrdered(stringList(obj["habits"])).prefix(maxHabits)),
+                            didIt: hasGoal ? lineNumbers(obj["did_it"]) : [])
+    }
+
+    /// `[3, 5]`, `["#3", "5"]` → [3, 5]: the line numbers a digest names, first mention kept.
+    static func lineNumbers(_ v: Any?) -> [Int] {
+        guard let arr = v as? [Any] else { return [] }
+        var out: [Int] = []
+        for x in arr {
+            let n = (x as? NSNumber)?.intValue ?? (x as? String).flatMap { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "# "))) }
+            if let n, n > 0, !out.contains(n) { out.append(n) }
+        }
+        return out
     }
 
     static let validEntityTypes: Set<String> = ["person", "project", "company", "tool", "site", "file", "concept"]

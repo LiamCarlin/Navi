@@ -15,7 +15,9 @@ import Foundation
 ///     user clicks here, what they click next, and the shortcuts they use.
 ///
 /// Privacy: never what is typed — a key press is recorded only with ⌘ or ⌃ held (a
-/// shortcut), and a text field is recorded by its label, never its value. Secure
+/// shortcut); plain typing is recorded once per stretch as *where* it happened (`type`:
+/// the field's label, read from the accessibility tree — never a keystroke, never the
+/// value), and Return only when it sends what was just typed. Secure
 /// fields, excluded apps, paused/off capture, Navi itself and apps whose current
 /// screen triage marked sensitive are skipped; labels and titles go through
 /// `PersonalData.redact`. Navi's own synthetic input carries `syntheticMarker`
@@ -51,6 +53,8 @@ final class ActionJournal: @unchecked Sendable {
     private var urlByPID: [pid_t: (url: String, at: Date)] = [:]
     private var menuCache: [pid_t: (items: [MenuShortcut], at: Date)] = [:]
     private var accessibilityAsked: Set<pid_t> = []
+    /// The field the user is typing in (recorded once), and whether Return already sent it.
+    private var typing: (pid: pid_t, returned: Bool)?
     // Any thread.
     private let lock = NSLock()
     private var inFlight = 0
@@ -132,11 +136,16 @@ final class ActionJournal: @unchecked Sendable {
                 enqueue { $0.recordClick(at: p, menuOnly: true, cfg: cfg, now: now) }
             }
         case .keyDown:
-            guard !event.isARepeat, let combo = Self.combo(keyCode: event.keyCode, flags: event.modifierFlags),
-                  let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid(),
+            guard !event.isARepeat, let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid(),
                   let bundle = app.bundleIdentifier, !cfg.excluded.contains(bundle) else { return }
             let pid = app.processIdentifier, name = app.localizedName ?? bundle
-            enqueue { $0.recordKey(combo, pid: pid, bundleID: bundle, appName: name, cfg: cfg, now: now) }
+            if let combo = Self.combo(keyCode: event.keyCode, flags: event.modifierFlags) {
+                enqueue { $0.recordKey(combo, pid: pid, bundleID: bundle, appName: name, cfg: cfg, now: now) }
+            } else if Self.isSubmitKey(keyCode: event.keyCode, flags: event.modifierFlags) {
+                enqueue { $0.recordSubmit(pid: pid, bundleID: bundle, appName: name, cfg: cfg, now: now) }
+            } else if Self.isTypingKey(keyCode: event.keyCode, flags: event.modifierFlags) {
+                enqueue { $0.recordTyping(pid: pid, bundleID: bundle, appName: name, cfg: cfg, now: now) }
+            }
         default: break
         }
     }
@@ -186,7 +195,31 @@ final class ActionJournal: @unchecked Sendable {
         append(rec, now: now)
     }
 
+    /// The first key of a stretch of typing: the field it goes into, by its label (never its
+    /// value, never the keys). Nothing for a secure field or when no text field has the focus.
+    private func recordTyping(pid: pid_t, bundleID: String, appName: String, cfg: Config, now: Date) {
+        guard typing?.pid != pid, !Self.isHeldSensitive(bundleID, now: now),
+              let field = Self.focusedTextField(pid: pid), let label = Self.clean(field.label, policy: cfg.policy) else { return }
+        if let u = field.url { urlByPID[pid] = (u, now) }
+        let rec = ActionRecord(timestamp: now, bundleID: bundleID, appName: appName,
+                               windowTitle: field.windowTitle.flatMap { Self.clean($0, policy: cfg.policy, max: 120) },
+                               url: (field.url ?? recentURL(pid: pid, now: now)).flatMap(UserHabits.cleanURL),
+                               kind: .type, role: "field", label: label, path: field.path.flatMap { Self.clean($0, policy: cfg.policy, max: 60) })
+        append(rec, now: now)
+        typing = (pid, false)
+    }
+
+    /// Return right after typing sends what was typed (a search, a message): recorded once.
+    private func recordSubmit(pid: pid_t, bundleID: String, appName: String, cfg: Config, now: Date) {
+        guard let t = typing, t.pid == pid, !t.returned, !Self.isHeldSensitive(bundleID, now: now) else { return }
+        append(ActionRecord(timestamp: now, bundleID: bundleID, appName: appName, windowTitle: nil,
+                            url: recentURL(pid: pid, now: now).flatMap(UserHabits.cleanURL), kind: .key, shortcut: "return"), now: now)
+        typing = (pid, true)
+    }
+
     private func append(_ rec: ActionRecord, now: Date) {
+        // Anything but typing and its Return ends the stretch of typing.
+        if rec.kind != .type, !(rec.kind == .key && rec.shortcut == "return") { typing = nil }
         let key = "\(rec.bundleID)|\(rec.kind.rawValue)|\(rec.role)|\(rec.label)|\(rec.shortcut ?? "")"
         if let last = lastAction, last.key == key, now.timeIntervalSince(last.at) < Self.repeatWindow, rec.kind != .key { return }
         lastAction = (key, now)
@@ -358,6 +391,20 @@ final class ActionJournal: @unchecked Sendable {
         return nil
     }
 
+    /// The app's focused element when it is a text field the user may type in (not a secure
+    /// one), named the way a click on it would be.
+    static func focusedTextField(pid: pid_t) -> Control? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let f = AXSnapshotter.attr(app, kAXFocusedUIElementAttribute), CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
+        let el = f as! AXUIElement
+        let role = AXSnapshotter.attr(el, kAXRoleAttribute) as? String ?? ""
+        let subrole = AXSnapshotter.attr(el, kAXSubroleAttribute) as? String
+        guard textRoles.contains(role), role != "AXSecureTextField", subrole != "AXSecureTextField",
+              let c = control(from: el), textRoles.contains(c.axRole) else { return nil }
+        return c
+    }
+
     static func focusedWindowTitle(pid: pid_t) -> String? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
@@ -427,6 +474,21 @@ final class ActionJournal: @unchecked Sendable {
         return out
     }()
 
+    /// Return / Enter with no modifier: it may send what was just typed.
+    static func isSubmitKey(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+        let f = flags.intersection([.command, .control, .option, .shift])
+        return f.isEmpty && (keyNames[keyCode] == "return" || keyNames[keyCode] == "kp_enter")
+    }
+
+    /// A key that types text (no ⌘/⌃, not a navigation, function or editing key). Which key is
+    /// never recorded — only that typing started.
+    static func isTypingKey(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+        let f = flags.intersection(.deviceIndependentFlagsMask)
+        guard !f.contains(.command), !f.contains(.control) else { return false }
+        if let name = keyNames[keyCode] { return name.count == 1 || name == "space" }
+        return true   // keys outside the table (other layouts' letters) type too
+    }
+
     /// "cmd+shift+t" for a key press with ⌘ or ⌃ held; nil for plain typing (never recorded).
     static func combo(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> String? {
         let f = flags.intersection(.deviceIndependentFlagsMask)
@@ -481,23 +543,33 @@ final class ActionJournal: @unchecked Sendable {
             return "menu " + ([a.path, a.label].compactMap { $0 }.joined(separator: " › ")) + (a.shortcut.map { " (\($0))" } ?? "")
         case .click:
             return "click \(a.role) \(label ?? "")" + (a.path.map { " in \($0)" } ?? "")
+        case .type:
+            return "type in \(label ?? "a field")" + (a.path.map { " in \($0)" } ?? "")
         }
     }
 
     /// Prompt lines for a stretch of actions: "10:02 Outlook · click button ‘Reply’", repeats
     /// folded ("×3"), at most `max` lines (the most recent kept when there are more).
     static func lines(_ actions: [ActionRecord], max: Int = 40, calendar: Calendar = .current) -> [String] {
+        numbered(actions, max: max, calendar: calendar).lines.map { String($0.drop(while: { $0 != " " }).dropFirst()) }
+    }
+
+    /// `lines` numbered for the digester ("#3 10:02 Outlook · click button ‘Reply’"), with the
+    /// action ids each line stands for (several when repeats were folded): the digester names
+    /// the lines that did the goal, and they become the procedure's `actionIDs`.
+    static func numbered(_ actions: [ActionRecord], max: Int = 40, calendar: Calendar = .current) -> (lines: [String], ids: [[Int64]]) {
         let time = DateFormatter()
         time.calendar = calendar; time.timeZone = calendar.timeZone; time.dateFormat = "HH:mm"
-        var out: [(at: String, head: String, body: String, n: Int)] = []
+        var out: [(at: String, head: String, body: String, n: Int, ids: [Int64])] = []
         var lastPlace = ""
         for a in actions {
             let place = UserHabits.siteKey(of: a.url ?? "") ?? a.appName
             let body = describe(a)
-            if let last = out.last, last.body == body, place == lastPlace { out[out.count - 1].n += 1; continue }
-            out.append((time.string(from: a.timestamp), place == lastPlace ? "" : "\(place) · ", body, 1))
+            if let last = out.last, last.body == body, place == lastPlace { out[out.count - 1].n += 1; out[out.count - 1].ids.append(a.id); continue }
+            out.append((time.string(from: a.timestamp), place == lastPlace ? "" : "\(place) · ", body, 1, [a.id]))
             lastPlace = place
         }
-        return out.suffix(max).map { "\($0.at) \($0.head)\($0.body)" + ($0.n > 1 ? " ×\($0.n)" : "") }
+        let kept = out.suffix(max)
+        return (kept.enumerated().map { i, l in "#\(i + 1) \(l.at) \(l.head)\(l.body)" + (l.n > 1 ? " ×\(l.n)" : "") }, kept.map(\.ids))
     }
 }
