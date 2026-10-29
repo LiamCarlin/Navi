@@ -194,6 +194,23 @@ struct AgentSupportTests {
         #expect(r.first?.label == "in0")
     }
 
+    @Test func appFocusReplacesListWideFocusFlags() {
+        // Notes after ⌘N: every sidebar cell claims AXFocused, and the walk ran out of time
+        // before the note body that really has the cursor.
+        let cells = (0..<3).map { Self.el("", "AXCell", "Folder \($0)", y: CGFloat($0) * 30, focused: true) }
+        let body = Self.el("", "AXTextArea", "", x: 600, y: 200, w: 500, h: 400, value: "")
+        let ranked = AXSnapshot.rank(AXSnapshot.withAppFocus(cells, focusedIndex: nil, extra: body), windowFrame: nil, near: nil)
+        let snap = AXSnapshot(elements: ranked, focused: ranked.first(where: \.isFocused)?.id)
+        #expect(ranked.filter(\.isFocused).map(\.role) == ["AXTextArea"])
+        #expect(CUPerception.focusedField(snap)?.role == "AXTextArea")
+
+        // The walk reached the focused element: only it keeps the flag.
+        let marked = AXSnapshot.withAppFocus(cells, focusedIndex: 2, extra: nil)
+        #expect(marked.map(\.isFocused) == [false, false, true])
+        // The app named no focus the walk could use: the flags stand.
+        #expect(AXSnapshot.withAppFocus(cells, focusedIndex: nil, extra: nil).map(\.isFocused) == [true, true, true])
+    }
+
     @Test func snapshotDiffDescribesChanges() {
         let a = Self.snapshot
         #expect(a.diff(previous: a) == "no visible change")

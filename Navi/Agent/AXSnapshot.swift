@@ -279,6 +279,17 @@ struct AXSnapshot: @unchecked Sendable {
         return out
     }
 
+    /// Keyboard focus as the app itself reports it (`AXFocusedUIElement`) replaces the
+    /// per-element `AXFocused` flags, which some apps set on whole lists (Notes flags every
+    /// folder and note-list cell). `focusedIndex`: the walked element that holds focus;
+    /// `extra`: the focused text field when the walk never reached it. Neither: the flags stand.
+    static func withAppFocus(_ raw: [AXElement], focusedIndex: Int?, extra: AXElement?) -> [AXElement] {
+        guard focusedIndex != nil || extra != nil else { return raw }
+        var out = raw.enumerated().map { i, e in var e = e; e.isFocused = i == focusedIndex; return e }
+        if var extra { extra.isFocused = true; out.append(extra) }
+        return out
+    }
+
     // MARK: Ranking (pure, testable)
 
     /// Dedupe → cap → order: focused first, then reading order (rows of ~12 pt, then x).
@@ -638,6 +649,15 @@ final class AXSnapshotter: @unchecked Sendable {
             if !named.isEmpty { raw[u.index].label = named }
         }
 
+        // The app's own keyboard focus. The depth-first walk runs out of its time box before the
+        // editor of a window whose sidebar holds hundreds of rows (Notes with 600 notes), and
+        // Notes marks its cells focused: the note body ⌘N had just focused was never an item.
+        if let f = attr(app, kAXFocusedUIElementAttribute) as! AXUIElement? {
+            let i = raw.firstIndex { $0.ref.map { CFEqual($0, f) } ?? false }
+            raw = AXSnapshot.withAppFocus(raw, focusedIndex: i,
+                                          extra: i == nil ? focusedTextInput(f, pid: pid, windowFrame: windowFrame) : nil)
+        }
+
         if isBrowser { raw = AXSnapshot.tidyBrowserChrome(raw) }
         let ranked = AXSnapshot.rank(raw, windowFrame: windowFrame, near: near)
         snap.elements = ranked
@@ -653,6 +673,22 @@ final class AXSnapshotter: @unchecked Sendable {
     }
 
     /// Roles worth offering off screen: things a press does something to.
+    /// The focused element as an item, when it is a visible, enabled text input (never a secure one).
+    static func focusedTextInput(_ el: AXUIElement, pid: pid_t, windowFrame: CGRect?) -> AXElement? {
+        let vals = multiple(el, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                                 kAXPlaceholderValueAttribute, kAXValueAttribute, "AXFrame", kAXEnabledAttribute])
+        let role = vals[0] as? String ?? ""
+        guard ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"].contains(role),
+              (vals[1] as? String) != "AXSecureTextField", (vals[7] as? Bool) ?? true,
+              let f = rect(vals[6]) ?? frame(of: el), f.width >= 1, f.height >= 1,
+              windowFrame.map({ $0.intersects(f) }) ?? true else { return nil }
+        let value = stringValue(vals[5])
+        let label = firstNonEmpty([vals[2] as? String ?? "", vals[3] as? String ?? "", vals[4] as? String ?? "",
+                                   String((value ?? "").prefix(60))])
+        return AXElement(role: role, subrole: vals[1] as? String, label: label, value: value.map { String($0.prefix(60)) },
+                         frame: f, isFocused: true, actions: actionNames(el), pid: pid, ref: el)
+    }
+
     static let offscreenRoles: Set<String> = ["AXButton", "AXLink", "AXRow", "AXCell", "AXMenuButton", "AXPopUpButton",
                                               "AXCheckBox", "AXRadioButton", "AXTab", "AXDisclosureTriangle", "AXMenuBarItem"]
 
