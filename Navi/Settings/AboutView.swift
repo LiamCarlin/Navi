@@ -32,8 +32,8 @@ struct AboutView: View {
 
             Section {
                 LabeledContent("Version") {
+                    // Not `.textSelection`: selectable text takes the click, so the ⌥-click never fired.
                     Text(version)
-                        .textSelection(.enabled)
                         .contentShape(Rectangle())
                         .onTapGesture { versionTapped() }
                         .help("Option-click to toggle developer mode")
