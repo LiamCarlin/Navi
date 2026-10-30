@@ -612,3 +612,16 @@ print("user details ok")
 assert not nr.acted_on_page([{"kind": "coach"}, {"kind": "wait"}])
 assert nr.acted_on_page([{"kind": "coach"}, {"kind": "click"}])
 print("early block ok")
+
+# Adaptation 26/27 and circling.
+assert "e.tagName!=='SELECT'" in nr.SELECT_JS and "elementFromPoint" not in nr.SELECT_JS
+amz = {"actions": [{"id": "e1", "kind": "click", "label": "Add to Cart"}, {"id": "e2", "kind": "click", "label": "Buy Now"},
+                   {"id": "e3", "kind": "click", "label": "Place your order"}, {"id": "e4", "kind": "click", "label": "Proceed to checkout"},
+                   {"id": "e5", "kind": "select", "label": "Sort by: → Price: Low to High"}]}
+assert [a["id"] for a in nr.drop_payments(amz)["actions"]] == ["e1", "e4", "e5"]
+assert nr.purchase_note("buy a roll of toilet paper from amazon", "done").startswith("Ready for you to place the order")
+assert nr.purchase_note("open my amazon orders", "done") == ""
+loop = [{"kind": "click", "action": a, "page_changed": True} for a in ["Order Now", "Order Delivery", "Yes, Continue"] * 2]
+assert "going in circles" in nr.Coach.flailing(loop), nr.Coach.flailing(loop)
+assert nr.Coach.flailing([{"kind": "click", "action": a, "page_changed": True} for a in ["Search", "Item A", "Add", "Back", "Item B", "Add"]]) is None
+print("payments, selects and circles ok")

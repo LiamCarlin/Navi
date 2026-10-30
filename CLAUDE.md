@@ -258,6 +258,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     same-document click that changed the page gets a 150 ms second look before Jev decides.
     Live replay 2026-10-30: "go to mcdonalds and order me a burger" → mcdonalds.order.online →
     address → Big Mac in the cart, 1 coach call (was: App Store / Canvas tab, failed).
+    26 — a `<select>` under the site's own widget (Amazon "Sort by") is set directly; a dropdown
+    that is gone is a StalePage, never a run-ending error; 27 — Navi never pays: Buy Now / Place
+    (your) order / Pay… are never offered, a purchase ends in the cart ("Ready for you to place
+    the order"). A run going in circles (A → B → C twice, each changing the page) counts as
+    stuck. A planner step that only Googles a site the task names starts on that site's own
+    page (`TaskPlanner.isWebSearch`); "the cheapest" opens a site's price-sorted search
+    (`deepLinks["search cheapest"]`).
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,

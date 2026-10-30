@@ -663,6 +663,16 @@ class Coach:
             return "the last %d actions changed nothing" % FAILURES_BEFORE_COACHING
         if len({h.get("action") for h in last}) == 1 and last[-1].get("kind") != "wait":
             return "‘%s’ was chosen %d times in a row" % (last[-1].get("action", "?")[:60], FAILURES_BEFORE_COACHING)
+        return Coach.circling(history)
+
+    @staticmethod
+    def circling(history):
+        """The same few actions over and over (Order Now → Order Delivery → Yes, Continue, 30×):
+        every step changed the page, so the no-change rule never fired."""
+        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll"}]
+        for period in (2, 3, 4):
+            if len(acts) >= 2 * period and acts[-period:] == acts[-2 * period:-period] and len(set(acts[-period:])) == period:
+                return "going in circles (%s)" % " → ".join(a[1].split("\n")[0][:30] for a in acts[-period:])
         return None
 
     playbook = None   # set by main(): the Playbook, so the coach reads the same site knowledge
@@ -1254,8 +1264,34 @@ CLICK_POINT_JS = """(action => {
 _upstream_browser_operation = browser_module.browser_operation
 
 
+# Adaptation 26 — a dropdown is set where it is, even under the site's own widget. Amazon's
+# "Sort by" is a real <select> covered by a styled button, so upstream's hit test failed and
+# raised "Dropdown execution was not confirmed", which ended the run ("buy … the cheapest one").
+SELECT_JS = """(action => {
+  const e=window.__jevFast?.nodes.get(action.node);
+  if (!e?.isConnected || e.tagName!=='SELECT' || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return null;
+  if (![...e.options].some(o=>o.value===action.value && !o.disabled && !o.closest('optgroup[disabled]'))) return null;
+  e.focus();
+  e.value=action.value;
+  e.dispatchEvent(new Event('input',{bubbles:true}));
+  e.dispatchEvent(new Event('change',{bubbles:true}));
+  return e.value===action.value;
+})"""
+
+
 def browser_operation_navi(request):
-    """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS."""
+    """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS and
+    dropdowns set by SELECT_JS. A target that is gone is a StalePage (observe again), never
+    an error that ends the run."""
+    if request["operation"] == "act" and request["action"]["kind"] == "select":
+        action = request["action"]
+        if type(action["node"]) is not int:
+            raise ValueError("Invalid observed node")
+        result = cdp("Runtime.evaluate", session_id=request["session"],
+                     expression=SELECT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+        if result.get("exceptionDetails") or not result.get("result", {}).get("value"):
+            raise StalePage("Dropdown changed or is gone. Observe again.")
+        return {"executed": action["id"]}
     if request["operation"] != "act" or request["action"]["kind"] not in {"click", "fill"}:
         return _upstream_browser_operation(request)
     action, session = request["action"], request["session"]
@@ -1863,6 +1899,23 @@ def drop_app_detours(page, goal):
     return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
 
 
+# --- Adaptation 27: Navi never pays; the user does ---------------------------
+#
+# "buy a roll of toilet paper from amazon" may reach Amazon's 'Buy Now' — one click charges the
+# saved card — and the runner had nothing but playbook text against it. The buttons that
+# spend money are never offered to Jev: a purchase ends with the item in the cart (or the
+# checkout page) and the user places the order.
+
+PAYS = re.compile(r"\b(buy now|buy it now|place (your |my )?order|pay now|pay \$|complete (your |my )?(purchase|order)|"
+                  r"confirm (and pay|purchase|order|payment)|submit (order|payment)|place bid|purchase now|book now and pay)\b", re.I)
+PURCHASE_GOAL = re.compile(r"\b(buy|purchase|order|get me|checkout|check out)\b", re.I)
+
+
+def drop_payments(page):
+    actions = [a for a in page["actions"] if a.get("kind") not in {"click", "fill"} or not PAYS.search(a.get("label") or "")]
+    return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+
 # --- Adaptation 24: the user's own details for their own errands -------------
 #
 # "Order me a burger" needs a delivery address; the text helper is told never to invent
@@ -1925,7 +1978,7 @@ def install_adaptations():
     original_choose = agent_module.choose
 
     def choose(page, goal, history):
-        page = drop_app_detours(rejected.filter(page), goal)
+        page = drop_payments(drop_app_detours(rejected.filter(page), goal))
         speculative.speculate(goal, page, history)
         return original_choose(page, goal, history)
 
@@ -2023,6 +2076,11 @@ def selftest():
     info["ok"] = ok
     print(json.dumps(info))
     return 0 if ok else 1
+
+
+def purchase_note(goal, status):
+    """A finished purchase task: say the order is the user's to place (adaptation 27)."""
+    return "Ready for you to place the order — Navi never pays. " if status == "done" and PURCHASE_GOAL.search(goal or "") else ""
 
 
 def acted_on_page(history):
@@ -2212,7 +2270,7 @@ def main():
                     status=status,
                     elapsed_ms=state["elapsed_ms"],
                     steps=len(state["history"]),
-                    summary=stop[1] if stop else summarize(state["history"], state["status"]),
+                    summary=stop[1] if stop else purchase_note(args.goal, status) + summarize(state["history"], state["status"]),
                     url=state["page"]["url"],
                     title=state["page"].get("title", ""),
                     page_text=(state["page"].get("text") or "")[:6000],

@@ -182,6 +182,9 @@ enum TaskPlanner {
     /// the open tab never does.
     static func startURL(for step: Step, frontmost: FrontmostProbe.Info) -> String {
         if let u = step.url {
+            // The planner Googled a site the task names ("McDonald's burgers near me order online" → the
+            // app-only page): that site's own start page is where the task happens.
+            if isWebSearch(u), let deep = AppSkills.startURL(for: step.goal), !isWebSearch(deep) { return UserHabits.personalized(deep) }
             let typed = UserHabits.host(of: u).map { step.goal.lowercased().contains($0) } ?? false   // a URL the user spelled out stays
             return u == frontmost.url || typed ? u : UserHabits.personalized(u)
         }
@@ -191,6 +194,13 @@ enum TaskPlanner {
         if let site = UltrafastBridge.knownSiteURL(in: step.goal) { return UserHabits.personalized(site) }  // "google flights", "youtube", …
         if let q = step.query { return UltrafastBridge.searchURL(for: q) }
         return TaskSurface.startURL(task: step.goal, frontmost: frontmost) ?? UltrafastBridge.searchURL(for: step.goal)
+    }
+
+    /// A search engine's results page (Google, Bing, DuckDuckGo).
+    static func isWebSearch(_ url: String) -> Bool {
+        guard let c = URLComponents(string: url), let host = c.host?.lowercased() else { return false }
+        let engine = host.hasSuffix("google.com") || host.hasSuffix("bing.com") || host.hasSuffix("duckduckgo.com")
+        return engine && (c.path.hasPrefix("/search") || c.path == "/" || c.path.isEmpty) && c.queryItems?.contains { $0.name == "q" } == true
     }
 
     // MARK: Call

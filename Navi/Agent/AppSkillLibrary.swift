@@ -1363,10 +1363,16 @@ extension AppSkills {
                 .init(goal: "find / price a product", keywords: ["find", "price", "how much", "buy", "search", "look", "product", "cheapest", "best", "order"],
                       steps: ["Open https://www.amazon.com/s?k=<words>", "Read the result cards", "CLICK the product to open it if details are needed", "DONE when the price is visible"]),
                 .init(goal: "add to cart", keywords: ["add", "cart", "basket"], steps: ["Open the product page", "CLICK 'Add to Cart'", "DONE when 'Added to Cart' shows"]),
+                // 2026-10-30: "buy a roll of toilet paper from amazon - cheapest one possible" died on the sort dropdown.
+                .init(goal: "buy something / the cheapest one", keywords: ["buy", "purchase", "order", "get me", "cheapest", "cheap", "lowest price", "least expensive"],
+                      steps: ["Search for the product", "for the cheapest: SELECT 'Sort by' → 'Price: Low to High'",
+                              "CLICK the first real match (skip 'Sponsored' cards and items that are not the product asked for)",
+                              "CLICK 'Add to Cart' (choose a size/quantity first if the page asks)",
+                              "DONE when 'Added to Cart' shows — the user places the order; Navi never clicks 'Buy Now' or 'Place your order'"]),
                 .init(goal: "check an order", keywords: ["order", "orders", "package", "delivery", "tracking", "where is my"], steps: ["Open https://www.amazon.com/gp/css/order-history", "CLICK the order / 'Track package'", "DONE when the status is visible"]),
             ],
             avoid: [neverPurchase],
-            deepLinks: ["search": "https://www.amazon.com/s?k=", "cart": "https://www.amazon.com/gp/cart/view.html", "orders": "https://www.amazon.com/gp/css/order-history", "home": "https://www.amazon.com"],
+            deepLinks: ["search": "https://www.amazon.com/s?k=", "search cheapest": "https://www.amazon.com/s?s=price-asc-rank&k=", "cart": "https://www.amazon.com/gp/cart/view.html", "orders": "https://www.amazon.com/gp/css/order-history", "home": "https://www.amazon.com"],
             aliases: ["amazon", "amazon prime"]
         ),
         AppSkill(
