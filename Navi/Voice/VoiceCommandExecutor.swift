@@ -299,8 +299,9 @@ final class VoiceCommandExecutor {
         return instructions >= 2
     }
 
-    /// Where a spoken task the decider sent to the browser really runs. One that names a page
-    /// or asks for something to be found stays a web task; anything else ("change it to
+    /// Where a spoken task the decider sent to the browser really runs. One that names a page,
+    /// asks for something to be found, or is an errand somewhere else ("go to McDonald's",
+    /// "order me a burger", "book a table") stays a web task; anything else ("change it to
     /// cloud", "select local") is about what is on screen: the open tab when a browser is in
     /// front, otherwise the app in front — never a Google search for the sentence.
     nonisolated static func voiceSurface(goal: String, surface: TaskSurface.Surface, frontmostBundle: String?,
@@ -309,6 +310,7 @@ final class VoiceCommandExecutor {
         let lower = goal.lowercased()
         let wantsWeb = AgentRun.isLookup(goal)
             || lower.range(of: #"\b(search|google|look up|lookup|find|browse|website|web|online|internet|site|page|tab|link|url)\b"#, options: .regularExpression) != nil
+            || lower.range(of: #"\b(go to|navigate to|take me to|head to|visit|order|buy|purchase|shop|book|reserve|get me|deliver|delivery|tickets?)\b"#, options: .regularExpression) != nil
         if wantsWeb { return (surface, false) }
         if let b = frontmostBundle, AXSnapshotter.isBrowser(b) { return (.browser, true) }
         return (.nativeApp, false)

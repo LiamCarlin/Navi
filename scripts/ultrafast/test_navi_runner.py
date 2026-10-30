@@ -580,3 +580,35 @@ note = nr.pick_recipient(fc, 7, "Zxqvwt")
 assert "NOT set" in note and not fc.clicks, note
 nr.RECIPIENT_FIRST_LOOK_S, nr.RECIPIENT_POLL_S = saved
 print("recipient picking ok")
+
+# Adaptation 23: a modal in front is all Jev can click; app-install detours are dropped.
+js = nr.patched_snapshot_js()
+assert "const modals=" in js and "modals.some(m=>m.contains(e))" in js
+mcd = {"actions": [{"id": "e1", "kind": "click", "label": "Close"},
+                   {"id": "e2", "kind": "click", "label": "Order Pickup Scan the code, download the McD’s app & start earning points.*"},
+                   {"id": "e3", "kind": "click", "label": "Order Delivery"},
+                   {"id": "e4", "kind": "click", "label": "Open in App Store"},
+                   {"id": "e5", "kind": "fill", "label": "Search the app store"}]}
+kept = [a["id"] for a in nr.drop_app_detours(mcd, "go to mcdonalds and order me a burger")["actions"]]
+assert kept == ["e1", "e3", "e5"], kept
+assert nr.drop_app_detours(mcd, "download the mcdonalds app") is mcd
+print("app detours ok")
+
+# Adaptation 24: the user's card reaches the text helper for a personal field only.
+os.environ["NAVI_USER_PROFILE_JSON"] = json.dumps({"address": "1000 Olin Way, Needham, MA 02492", "zip": "02492", "phone": " "})
+assert nr.user_profile() == {"address": "1000 Olin Way, Needham, MA 02492", "zip": "02492"}
+ctx = {"goal": "order me a burger", "field": {"label": "Zip or City & State", "role": "textbox"}}
+assert nr.with_user_details(ctx)["about_the_user"]["zip"] == "02492"
+assert "about_the_user" not in nr.with_user_details({"goal": "x", "field": {"label": "Search menu", "role": "searchbox"}})
+captured.clear()
+nr.field_text_claude({"goal": "order me a burger", "field": {"label": "Delivery address", "role": "textbox"}, "page": {"url": "https://mcdonalds.order.online"}})
+sent = json.loads(captured["json"]["messages"][0]["content"])
+assert sent["about_the_user"]["address"].startswith("1000 Olin Way") and "about_the_user" in captured["json"]["system"]
+del os.environ["NAVI_USER_PROFILE_JSON"]
+assert nr.with_user_details(ctx) is ctx
+print("user details ok")
+
+# Nothing done on the page yet: Claude's coaching notes and waits are not actions.
+assert not nr.acted_on_page([{"kind": "coach"}, {"kind": "wait"}])
+assert nr.acted_on_page([{"kind": "coach"}, {"kind": "click"}])
+print("early block ok")
