@@ -314,6 +314,42 @@ def claude_endpoint():
     return base + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
 
 
+# --- Adaptation 31: today's date and the goal's dates, worked out ------------
+#
+# "find flights from boston to new york next friday" picked today (a Friday): Jev had no date.
+# Every request carries `facts`: today, and each relative date the goal names resolved
+# ("next friday" → Friday, November 6, 2026), the way the native driver's CUFacts do.
+
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def date_facts(goal, today=None):
+    import datetime as _dt
+    today = today or _dt.date.today()
+    fmt = lambda d: f"{d:%A}, {d:%B} {d.day}, {d.year}"
+    out = {"today": fmt(today)}
+    g = (goal or "").lower()
+    found = {}
+    if re.search(r"\btoday\b|\btonight\b", g):
+        found["today"] = fmt(today)
+    if "tomorrow" in g:
+        found["tomorrow"] = fmt(today + _dt.timedelta(days=1))
+    for m in re.finditer(r"\b(next|this|on|coming)?\s*(" + "|".join(WEEKDAYS) + r")\b", g):
+        which, day = m.group(1), m.group(2)
+        ahead = (WEEKDAYS.index(day) - today.weekday()) % 7
+        if which == "next":
+            ahead = ahead + 7 if ahead == 0 else ahead
+            # "next friday" said on a weekday before it in the same week still means that coming one
+        elif ahead == 0 and which != "this":
+            ahead = 7
+        found[m.group(0).strip()] = fmt(today + _dt.timedelta(days=ahead))
+    if re.search(r"\bnext week\b", g):
+        found["next week"] = "the week of " + fmt(today + _dt.timedelta(days=7 - today.weekday()))
+    if found:
+        out["dates_in_goal"] = found
+    return out
+
+
 # --- Adaptation 2: text helper on Claude Haiku ------------------------------
 
 FIELD_HINTS = {"playbook": None}   # set by main(); the helper adds the page's field hints
@@ -669,7 +705,7 @@ class Coach:
     def circling(history):
         """The same few actions over and over (Order Now → Order Delivery → Yes, Continue, 30×):
         every step changed the page, so the no-change rule never fired."""
-        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll"}]
+        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll", "check"}]
         for period in (2, 3, 4):
             if len(acts) >= 2 * period and acts[-period:] == acts[-2 * period:-period] and len(set(acts[-period:])) == period:
                 return "going in circles (%s)" % " → ".join(a[1].split("\n")[0][:30] for a in acts[-period:])
@@ -855,7 +891,12 @@ class Playbook:
 
         user_context = self.user_context_from_env()
 
+        facts = date_facts(self.goal)
+
         def post_json(url, key, body):
+            if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict):
+                body = dict(body)
+                body["state"] = {**body["state"], "facts": facts}
             if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict) and user_context:
                 body = dict(body)
                 body["state"] = {**body["state"], "user_context": user_context}
@@ -1672,7 +1713,109 @@ SNAPSHOT_PATCHES = [
      "  const actions=[];\n"),
     ("if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;",
      "if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;\n"
-     "    if (modals.length && !modals.some(m=>m.contains(e))) continue;"),
+     "    if (modals.length && !modals.some(m=>m.contains(e))) continue;\n"
+     "    if (covered(e,r)) continue;"),
+    # Adaptation 28 — only what a click can reach is offered (any overlay, banner or loading
+    # screen, not only aria-modal dialogs); a control without a name is named from its title,
+    # icon, test id or the text around it; controls sharing a label say what they belong to.
+    ("  const modals=",
+     "  const reaches=(e,t)=>!!t && (e===t || e.contains(t) || t.contains(e) ||\n"
+     "    (!!t.closest && !!t.closest('label') && [...(e.labels||[])].includes(t.closest('label'))));\n"
+     "  const covered=(e,r)=>{\n"
+     "    if (e.tagName==='CANVAS' || e.classList?.contains('kix-appview-editor')) return false;\n"
+     "    for (const [fx,fy] of [[.5,.5],[.15,.5],[.85,.5],[.5,.2],[.5,.8]]) {\n"
+     "      const px=Math.min(innerWidth-1,Math.max(0,r.x+r.width*fx)), py=Math.min(innerHeight-1,Math.max(0,r.y+r.height*fy));\n"
+     "      if (reaches(e,document.elementFromPoint(px,py))) return false;\n"
+     "    }\n"
+     "    return true;\n"
+     "  };\n"
+     "  const human=t=>String(t||'').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[-_]+/g,' ').replace(/\\s+/g,' ').trim();\n"
+     "  const nearText=(e,skip,others)=>{\n"
+     "    let p=e.parentElement;\n"
+     "    for (let i=0;i<6 && p && p!==document.body;i++,p=p.parentElement) {\n"
+     "      const line=String(p.innerText||'').split('\\n').map(t=>t.replace(/\\s+/g,' ').trim())\n"
+     "        .find(t=>t.length>1 && t!==skip && !skip.startsWith(t) && !(others && others.has(t)));\n"
+     "      if (line) return line.slice(0,60);\n"
+     "    }\n"
+     "    return '';\n"
+     "  };\n"
+     "  const fallbackName=(e,rname)=>{\n"
+     "    const own=e.getAttribute('title')||e.querySelector('img[alt]')?.getAttribute('alt')||e.querySelector('svg title')?.textContent||\n"
+     "      e.getAttribute('data-testid')||e.getAttribute('data-test')||e.getAttribute('data-qa')||(e.id && !/\\d{3}/.test(e.id) ? e.id : '');\n"
+     "    if (own && human(own)) return human(own);\n"
+     "    const near=nearText(e,'');\n"
+     "    return near ? rname+' by “'+near+'”' : '';\n"
+     "  };\n"
+     "  const modals="),
+    (") : name(e)||rname,",
+     ") : name(e)||fallbackName(e,rname)||rname,"),
+    # Adaptation 29 — what a person sees as clickable is a target, whatever its markup: a card
+    # that is a <div> with a click handler and a pointer cursor (Chipotle's fillings, many
+    # menus and pickers) had no entry, so Jev clicked the "More Info" buttons on it instead.
+    # The viewport is sampled; each hit's outermost pointer-cursor box that is not already a
+    # control, not inside one, and not mostly one inner control, is offered as a button.
+    ("  const words=[], walker=",
+     "  {\n"
+     "    const seen=new Set(actions.map(a=>a.node)), pointer=new Map(), found=[], labels0=new Set(actions.map(a=>a.label));\n"
+     "    const isPointer=e=>{ if (!pointer.has(e)) pointer.set(e,getComputedStyle(e).cursor==='pointer'); return pointer.get(e); };\n"
+     "    const area=innerWidth*innerHeight;\n"
+     "    for (let y=16; y<innerHeight && found.length<80; y+=32) for (let x=20; x<innerWidth && found.length<80; x+=40) {\n"
+     "      let c=document.elementFromPoint(x,y);\n"
+     "      if (!c || c===document.body || c===document.documentElement || !isPointer(c)) continue;\n"
+     "      while (c.parentElement && c.parentElement!==document.body && isPointer(c.parentElement)) c=c.parentElement;\n"
+     "      if (found.includes(c) || c.matches(selector) || c.closest(selector) || c.closest('[aria-hidden=\"true\"],[inert]')) continue;\n"
+     "      if (modals.length && !modals.some(m=>m.contains(c))) continue;\n"
+     "      const b=c.getBoundingClientRect();\n"
+     "      if (b.width<12 || b.height<12 || b.width*b.height>area*0.4) continue;\n"
+     "      const inner=[...c.querySelectorAll(selector)].filter(visible);\n"
+     "      if (inner.some(i=>{const q=i.getBoundingClientRect(); return q.width*q.height>=b.width*b.height*0.6;})) continue;\n"
+     "      let own=String(c.innerText||'');\n"
+     "      for (const i of inner) own=own.split(String(i.innerText||'').trim()).join(' ');\n"
+     "      if (inner.length && !/[\\p{L}\\p{N}]/u.test(own)) continue;\n"
+     "      const text=(c.getAttribute('aria-label')||String(c.innerText||'').split('\\n').map(t=>t.trim()).filter(Boolean).slice(0,3).join(' · ')).replace(/\\s+/g,' ').slice(0,90);\n"
+     "      const label=text||nearText(c,'',labels0)||fallbackName(c,'button');\n"
+     "      if (!label) continue;\n"
+     "      found.push(c);\n"
+     "      const id=identity(c);\n"
+     "      if (seen.has(id)) continue;\n"
+     "      const item={node:id,role:'button',label,rect:{x:b.x,y:b.y,w:b.width,h:b.height},kind:'click',value:'',pointer:true};\n"
+     "      // Picked or not: a card that is already chosen must not be clicked again (that un-picks it).\n"
+     "      const marked=[c,...c.querySelectorAll('*')].slice(0,60).find(x=>x.getAttribute && (x.getAttribute('aria-pressed')||x.getAttribute('aria-selected')||x.getAttribute('aria-checked')));\n"
+     "      const flag=marked && (marked.getAttribute('aria-pressed')||marked.getAttribute('aria-selected')||marked.getAttribute('aria-checked'));\n"
+     "      const cls=[c,c.parentElement,...c.querySelectorAll('[class]')].slice(0,40).map(x=>x && typeof x.className==='string' ? x.className : '').join(' ');\n"
+     "      if (flag==='true' || /(^|[\\s_-])(is-?)?(selected|active|checked|chosen|picked)([\\s_-]|$)/i.test(cls)) item.selected='true';\n"
+     "      else if (flag==='false') item.selected='false';\n"
+     "      actions.push(item);\n"
+     "    }\n"
+     "  }\n"
+     "  const words=[], walker="),
+    ("  const text=words.join('\\n').slice(0,6000), height=document.documentElement.scrollHeight;",
+     "  const sameLabel={};\n"
+     "  for (const a of actions) sameLabel[a.label]=(sameLabel[a.label]||0)+1;\n"
+     "  const labels=new Set(Object.keys(sameLabel).filter(l=>sameLabel[l]>1)), twins={};\n"
+     "  for (const a of actions) if (sameLabel[a.label]>1) (twins[a.label]||=[]).push(cache.nodes.get(a.node));\n"
+     "  const apart=(a,b)=>{ const r=a.getBoundingClientRect(), q=b.getBoundingClientRect();\n"
+     "    return q.x+q.width/2<r.left || q.x+q.width/2>r.right || q.y+q.height/2<r.top || q.y+q.height/2>r.bottom; };\n"
+     "  const ownBox=(e,label)=>{\n"
+     "    // The largest box around e that holds none of its twins elsewhere on the page: its card.\n"
+     "    let box=null;\n"
+     "    for (let p=e.parentElement, i=0; p && p!==document.body && i<30; p=p.parentElement, i++) {\n"
+     "      if (twins[label].some(t=>t && t!==e && p.contains(t) && apart(e,t))) break;\n"
+     "      box=p;\n"
+     "    }\n"
+     "    return box;\n"
+     "  };\n"
+     "  for (const a of actions) if (sameLabel[a.label]>1 && a.kind!=='select') {\n"
+     "    const node=cache.nodes.get(a.node), box=node && ownBox(node,a.label);\n"
+     "    const ok=t=>t.length>2 && /[\\p{L}]{2}/u.test(t) && t!==a.label && !labels.has(t) &&\n"
+     "      !/^(sponsored|ad|new|sale|best ?seller|options?)$|^#\\d|most (liked|popular|ordered)|new on amazon|limited time|^[$€£¥]|^\\d+(\\.\\d+)? ?(out of|stars?|reviews?|ratings?)/i.test(t);\n"
+     "    const clean=t=>String(t||'').replace(/\\s+/g,' ').trim();\n"
+     "    // The card's title (a heading or its link) first; badges like '#1 Most liked' come before it.\n"
+     "    const titled=box ? [...box.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading]'),...box.querySelectorAll('a[href]')].map(h=>clean(h.innerText).split('\\n')[0]).find(ok) : '';\n"
+     "    const ctx=titled || (box ? String(box.innerText||'').split('\\n').map(clean).find(ok) : '');\n"
+     "    if (ctx) a.label=a.label+' — '+ctx.slice(0,70);\n"
+     "  }\n"
+     "  const text=words.join('\\n').slice(0,6000), height=document.documentElement.scrollHeight;"),
 ]
 
 
@@ -1828,6 +1971,57 @@ def blocked_is_tentative(decision):
 NO_TEXT_MESSAGE = "Text helper returned no valid field value"
 
 
+# --- Adaptation 30: "done" needs evidence ------------------------------------
+#
+# Chipotle "order me a random bowl" ended "done" twice with the bowl builder still on screen
+# (Jev's DONE at 27-41 %; upstream accepts any DONE). A DONE is checked before it ends the run:
+# for a purchase / cart goal the page must show the item went in (a cart or bag count above
+# where the run started, "added to cart/bag", or the cart / checkout page); any other DONE
+# below DONE_MIN_CONFIDENCE gets one fresh look. Each page is doubted once (`retried`), so a
+# run never loops on it.
+
+DONE_MIN_CONFIDENCE = 0.5
+CART_COUNT = [re.compile(r"(\d+)\s*items?\b[^\n.]{0,24}?\b(cart|bag|basket)", re.I),
+              re.compile(r"\b(?:cart|bag|basket)\b\s*[:(]?\s*(\d+)\s*\)?", re.I)]
+ADDED = re.compile(r"\b(added to (your |the )?(cart|bag|basket|order)|item added|in your (cart|bag|basket)|subtotal \(\d+ items?\))", re.I)
+CART_URL = re.compile(r"/(cart|bag|basket|checkout)\b", re.I)
+NOT_BUYING = re.compile(r"\b(track|status|where is|history|past orders?|cancel|return|refund)\b", re.I)
+
+
+def is_purchase_goal(goal):
+    return bool(PURCHASE_GOAL.search(goal or "")) and not NOT_BUYING.search(goal or "")
+
+
+def cart_count(page):
+    """The largest cart / bag count the page shows (text and control labels), else None."""
+    text = (page.get("text") or "") + "\n" + "\n".join(a.get("label") or "" for a in page.get("actions", []))
+    counts = []
+    for rx in CART_COUNT:
+        for m in rx.finditer(text):
+            digits = next((g for g in m.groups() if g and g.isdigit()), None)
+            if digits is not None and int(digits) < 100:
+                counts.append(int(digits))
+    return max(counts) if counts else None
+
+
+def done_doubt(state, decision):
+    """Why a DONE is not believed yet, or None."""
+    page = state.get("page") or {}
+    if "navi_cart_start" not in state:
+        state["navi_cart_start"] = cart_count(page)
+    if not decision or decision.get("operation") != "DONE":
+        return None
+    if is_purchase_goal(state.get("goal")):
+        start, now = state.get("navi_cart_start"), cart_count(page)
+        went_in = (now is not None and now > (start or 0)) or ADDED.search(page.get("text") or "") \
+            or CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
+        if not went_in:
+            return "nothing shows the item in the cart or bag yet"
+    if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE:
+        return "Jev was unsure (%d%%)" % round(100 * decision.get("confidence", 0))
+    return None
+
+
 def tick(agent, retried, rejected=None):
     """Upstream `Agent.command("tick")` (predict → act, StalePage re-observes),
     with two differences: a tentative BLOCKED on a page not yet retried is
@@ -1841,6 +2035,16 @@ def tick(agent, retried, rejected=None):
         agent.command("predict", {})
         decision = state["decision"]
         fingerprint = state["page"]["fingerprint"]
+        doubt = done_doubt(state, decision)
+        if doubt and fingerprint not in retried and len(retried) < MAX_BLOCKED_RETRIES:
+            # Adaptation 30: a DONE without evidence is not the end. Jev hears why and goes on.
+            retried.add(fingerprint)
+            state["decision"] = None
+            state["status"] = "ready"
+            state["history"].append({"step": len(state["history"]) + 1, "action": "Not done yet: " + doubt, "kind": "check",
+                                     "text": None, "page_changed": None, "url": state["page"].get("url")})
+            emit("status", message=f"Jev said done, but {doubt} — carrying on")
+            return "not_done"
         if blocked_is_tentative(decision) and fingerprint not in retried and len(retried) < MAX_BLOCKED_RETRIES:
             retried.add(fingerprint)
             state["decision"] = None
@@ -1992,7 +2196,7 @@ def summarize(history, status):
     if not history:
         return "No actions were taken." if status == "blocked" else "Nothing to do."
     parts = []
-    for h in history[-6:]:
+    for h in [h for h in history if h["kind"] not in {"coach", "check"}][-6:]:
         if h["kind"] == "fill" and h.get("text"):
             parts.append(f"typed “{h['text'][:40]}” into {h['action'].split(' → ')[0]}")
         elif h["kind"] == "wait":
@@ -2085,7 +2289,7 @@ def purchase_note(goal, status):
 
 def acted_on_page(history):
     """Did any step do something on the page? Claude's coaching notes and waits act on nothing."""
-    return any(h.get("kind") not in {"coach", "wait", "WAIT"} for h in history)
+    return any(h.get("kind") not in {"coach", "wait", "WAIT", "check"} for h in history)
 
 
 def main():
