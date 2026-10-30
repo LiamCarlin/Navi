@@ -378,6 +378,29 @@ def field_text_claude(context):
     }
 
 
+# --- Adaptation 25: a new tab opens here -------------------------------------
+#
+# McDonald's "Order Delivery" → "Yes, Continue" opened the ordering site in a new tab; the
+# runner kept observing the old one and clicked "Order Now" again until the step limit. In
+# the runner's own tab (never a tab of the user's it attaches to), a link to a new tab and a
+# plain window.open(url) load in this tab instead, so the run follows where the click went.
+# A window.open with features (an OAuth popup) is left alone.
+
+ONE_TAB_JS = """(() => {
+  if (window.__naviOneTab) return;
+  window.__naviOneTab = true;
+  const open = window.open;
+  window.open = function (u, t, f) {
+    if (u && (!t || t === '_blank' || t === '_new') && !f) { location.assign(new URL(u, location.href).href); return window; }
+    return open.apply(this, arguments);
+  };
+  document.addEventListener('click', ev => {
+    const a = ev.target && ev.target.closest && ev.target.closest('a[target]');
+    if (a && a.href && /^_(blank|new)$/i.test(a.target) && !a.hasAttribute('download')) a.target = '_self';
+  }, true);
+})()"""
+
+
 # --- Adaptation 3: observe at "interactive" ---------------------------------
 
 class FastBrowser(Browser):
@@ -417,6 +440,12 @@ class FastBrowser(Browser):
             except Exception:  # noqa: BLE001 — cosmetic
                 pass
         if not self.attached:
+            try:
+                # The script only runs with the Page domain on (the daemon's event buffer is bounded).
+                self.call("Page.enable")
+                self.call("Page.addScriptToEvaluateOnNewDocument", source=ONE_TAB_JS)
+            except Exception:  # noqa: BLE001 — without it a new tab is simply not followed
+                pass
             self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -1670,6 +1699,7 @@ def looks_unsettled(page, previous_url=None):
 
 
 GROWTH_CHECK_S = 0.3
+SAME_DOCUMENT_CHECK_S = 0.15
 GROWTH_MIN_ACTIONS = 2
 
 
@@ -1688,7 +1718,22 @@ def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
     observations = 0
     if not looks_unsettled(page, previous_url):
         if previous_url is not None and Coach.same_document(previous_url, page.get("url")):
-            return 0
+            # A click that changed this document (a dialog, a menu) may still be drawing it:
+            # DoorDash's item dialog animated in after the snapshot, and Jev clicked the menu
+            # behind it. One quick second look; a table still changing settles like a new page.
+            history = agent.state.get("history") or []
+            if not history or history[-1].get("page_changed") is not True:
+                return 0
+            time.sleep(SAME_DOCUMENT_CHECK_S)
+            try:
+                probe = browser.observe(screenshot=agent.screenshots)
+            except Exception:  # noqa: BLE001 — swapped mid-observe; Jev's next look handles it
+                return 0
+            agent.state["page"] = probe
+            if probe.get("fingerprint") == page.get("fingerprint"):
+                return 1
+            page, observations = probe, 1
+            return observations + settle_loop(agent, page, max_s)
         time.sleep(GROWTH_CHECK_S)
         try:
             probe = browser.observe(screenshot=agent.screenshots)
@@ -1699,6 +1744,13 @@ def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
         agent.state["page"] = page = probe
         if not grew:
             return observations
+    return observations + settle_loop(agent, page, max_s)
+
+
+def settle_loop(agent, page, max_s):
+    """Observes until the document is complete and two snapshots agree; returns how many looks."""
+    browser = agent.state["browser"]
+    observations = 0
     deadline = time.monotonic() + max_s
     stable = page["fingerprint"]
     while time.monotonic() < deadline:
