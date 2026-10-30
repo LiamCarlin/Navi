@@ -233,8 +233,14 @@ enum AppSkills {
         let query = words.joined(separator: " ").trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
         let stop: Set<String> = ["", "it", "that", "this", "there", "here", "page", "site", "tab", "up"]
         if let link = s.deepLinks.first(where: { $0.key.lowercased() == query })?.value { return link }
-        if !stop.contains(query), let search = s.deepLinks["search"], search.hasSuffix("=") || search.hasSuffix("/") {
-            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? query
+        // "the cheapest one": a site that can sort by price starts sorted, with the price words left out of the query.
+        let cheapest = #"\s*[-,]?\s*\b(the )?(cheapest|lowest[- ]priced?|least expensive)( one| option)?( possible| available)?\b"#
+        let wantsCheapest = query.range(of: cheapest, options: .regularExpression) != nil
+        let terms = wantsCheapest ? query.replacingOccurrences(of: cheapest, with: " ", options: .regularExpression)
+            .split(separator: " ").joined(separator: " ") : query
+        if !stop.contains(terms), let search = (wantsCheapest ? s.deepLinks["search cheapest"] : nil) ?? s.deepLinks["search"],
+           search.hasSuffix("=") || search.hasSuffix("/") {
+            let encoded = terms.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? terms
             return search + encoded
         }
         return s.deepLinks["home"] ?? s.hosts.first.map { "https://" + $0 }

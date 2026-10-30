@@ -122,6 +122,7 @@ import argparse
 import json
 import math
 import os
+import re
 import signal
 import sys
 import threading
@@ -330,6 +331,7 @@ def field_text_claude(context):
         hints = playbook.field_hints_for((context.get("page") or {}).get("url") or playbook.current_url)
         if hints:
             context = {**context, "field_hints": hints}
+    context = with_user_details(context)
     started = time.perf_counter()
     for attempt in range(3):
         try:
@@ -339,7 +341,7 @@ def field_text_claude(context):
                 json={
                     "model": model,
                     "max_tokens": 512,
-                    "system": TEXT_VALUE + " Output only the JSON object.",
+                    "system": TEXT_VALUE + " " + TEXT_ADDENDUM + " Output only the JSON object.",
                     "messages": [{"role": "user", "content": json.dumps(context)}],
                 },
             )
@@ -374,6 +376,29 @@ def field_text_claude(context):
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "usage": {"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": usage.get("output_tokens", 0)},
     }
+
+
+# --- Adaptation 25: a new tab opens here -------------------------------------
+#
+# McDonald's "Order Delivery" → "Yes, Continue" opened the ordering site in a new tab; the
+# runner kept observing the old one and clicked "Order Now" again until the step limit. In
+# the runner's own tab (never a tab of the user's it attaches to), a link to a new tab and a
+# plain window.open(url) load in this tab instead, so the run follows where the click went.
+# A window.open with features (an OAuth popup) is left alone.
+
+ONE_TAB_JS = """(() => {
+  if (window.__naviOneTab) return;
+  window.__naviOneTab = true;
+  const open = window.open;
+  window.open = function (u, t, f) {
+    if (u && (!t || t === '_blank' || t === '_new') && !f) { location.assign(new URL(u, location.href).href); return window; }
+    return open.apply(this, arguments);
+  };
+  document.addEventListener('click', ev => {
+    const a = ev.target && ev.target.closest && ev.target.closest('a[target]');
+    if (a && a.href && /^_(blank|new)$/i.test(a.target) && !a.hasAttribute('download')) a.target = '_self';
+  }, true);
+})()"""
 
 
 # --- Adaptation 3: observe at "interactive" ---------------------------------
@@ -415,6 +440,12 @@ class FastBrowser(Browser):
             except Exception:  # noqa: BLE001 — cosmetic
                 pass
         if not self.attached:
+            try:
+                # The script only runs with the Page domain on (the daemon's event buffer is bounded).
+                self.call("Page.enable")
+                self.call("Page.addScriptToEvaluateOnNewDocument", source=ONE_TAB_JS)
+            except Exception:  # noqa: BLE001 — without it a new tab is simply not followed
+                pass
             self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -632,6 +663,16 @@ class Coach:
             return "the last %d actions changed nothing" % FAILURES_BEFORE_COACHING
         if len({h.get("action") for h in last}) == 1 and last[-1].get("kind") != "wait":
             return "‘%s’ was chosen %d times in a row" % (last[-1].get("action", "?")[:60], FAILURES_BEFORE_COACHING)
+        return Coach.circling(history)
+
+    @staticmethod
+    def circling(history):
+        """The same few actions over and over (Order Now → Order Delivery → Yes, Continue, 30×):
+        every step changed the page, so the no-change rule never fired."""
+        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll"}]
+        for period in (2, 3, 4):
+            if len(acts) >= 2 * period and acts[-period:] == acts[-2 * period:-period] and len(set(acts[-period:])) == period:
+                return "going in circles (%s)" % " → ".join(a[1].split("\n")[0][:30] for a in acts[-period:])
         return None
 
     playbook = None   # set by main(): the Playbook, so the coach reads the same site knowledge
@@ -1223,8 +1264,34 @@ CLICK_POINT_JS = """(action => {
 _upstream_browser_operation = browser_module.browser_operation
 
 
+# Adaptation 26 — a dropdown is set where it is, even under the site's own widget. Amazon's
+# "Sort by" is a real <select> covered by a styled button, so upstream's hit test failed and
+# raised "Dropdown execution was not confirmed", which ended the run ("buy … the cheapest one").
+SELECT_JS = """(action => {
+  const e=window.__jevFast?.nodes.get(action.node);
+  if (!e?.isConnected || e.tagName!=='SELECT' || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return null;
+  if (![...e.options].some(o=>o.value===action.value && !o.disabled && !o.closest('optgroup[disabled]'))) return null;
+  e.focus();
+  e.value=action.value;
+  e.dispatchEvent(new Event('input',{bubbles:true}));
+  e.dispatchEvent(new Event('change',{bubbles:true}));
+  return e.value===action.value;
+})"""
+
+
 def browser_operation_navi(request):
-    """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS."""
+    """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS and
+    dropdowns set by SELECT_JS. A target that is gone is a StalePage (observe again), never
+    an error that ends the run."""
+    if request["operation"] == "act" and request["action"]["kind"] == "select":
+        action = request["action"]
+        if type(action["node"]) is not int:
+            raise ValueError("Invalid observed node")
+        result = cdp("Runtime.evaluate", session_id=request["session"],
+                     expression=SELECT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+        if result.get("exceptionDetails") or not result.get("result", {}).get("value"):
+            raise StalePage("Dropdown changed or is gone. Observe again.")
+        return {"executed": action["id"]}
     if request["operation"] != "act" or request["action"]["kind"] not in {"click", "fill"}:
         return _upstream_browser_operation(request)
     action, session = request["action"], request["session"]
@@ -1591,6 +1658,21 @@ SNAPSHOT_PATCHES = [
      "      if (itemCell || e.hasAttribute('aria-selected')) actions.push({...rowBase,kind:'click',dblclick:true,value:'',label:'Open (double-click): '+rowText});\n"
      "      continue;\n"
      "    }"),
+    # Adaptation 23 — an open modal is all that can be clicked: elements behind it are left out.
+    ("  const actions=[];\n",
+     "  const modals=[...document.querySelectorAll('[aria-modal=\"true\"],dialog')].filter(m=>{\n"
+     "    if (m.tagName==='DIALOG' && !m.matches(':modal')) return false;\n"
+     "    if (!m.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) || m.closest('[aria-hidden=\"true\"],[inert]')) return false;\n"
+     "    const b=m.getBoundingClientRect();\n"
+     "    if (b.width*b.height < innerWidth*innerHeight*0.06) return false;\n"
+     "    const cx=Math.min(innerWidth-1,Math.max(0,b.x+b.width/2)), cy=Math.min(innerHeight-1,Math.max(0,b.y+b.height/2));\n"
+     "    const top=document.elementFromPoint(cx,cy);\n"
+     "    return !!top && m.contains(top);\n"
+     "  });\n"
+     "  const actions=[];\n"),
+    ("if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;",
+     "if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;\n"
+     "    if (modals.length && !modals.some(m=>m.contains(e))) continue;"),
 ]
 
 
@@ -1653,6 +1735,7 @@ def looks_unsettled(page, previous_url=None):
 
 
 GROWTH_CHECK_S = 0.3
+SAME_DOCUMENT_CHECK_S = 0.15
 GROWTH_MIN_ACTIONS = 2
 
 
@@ -1671,7 +1754,22 @@ def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
     observations = 0
     if not looks_unsettled(page, previous_url):
         if previous_url is not None and Coach.same_document(previous_url, page.get("url")):
-            return 0
+            # A click that changed this document (a dialog, a menu) may still be drawing it:
+            # DoorDash's item dialog animated in after the snapshot, and Jev clicked the menu
+            # behind it. One quick second look; a table still changing settles like a new page.
+            history = agent.state.get("history") or []
+            if not history or history[-1].get("page_changed") is not True:
+                return 0
+            time.sleep(SAME_DOCUMENT_CHECK_S)
+            try:
+                probe = browser.observe(screenshot=agent.screenshots)
+            except Exception:  # noqa: BLE001 — swapped mid-observe; Jev's next look handles it
+                return 0
+            agent.state["page"] = probe
+            if probe.get("fingerprint") == page.get("fingerprint"):
+                return 1
+            page, observations = probe, 1
+            return observations + settle_loop(agent, page, max_s)
         time.sleep(GROWTH_CHECK_S)
         try:
             probe = browser.observe(screenshot=agent.screenshots)
@@ -1682,6 +1780,13 @@ def settle_page(agent, previous_url=None, max_s=SETTLE_MAX_S):
         agent.state["page"] = page = probe
         if not grew:
             return observations
+    return observations + settle_loop(agent, page, max_s)
+
+
+def settle_loop(agent, page, max_s):
+    """Observes until the document is complete and two snapshots agree; returns how many looks."""
+    browser = agent.state["browser"]
+    observations = 0
     deadline = time.monotonic() + max_s
     stable = page["fingerprint"]
     while time.monotonic() < deadline:
@@ -1772,6 +1877,79 @@ def tick(agent, retried, rejected=None):
         return "stale"
 
 
+# --- Adaptation 23: dialogs and app-install detours ---------------------------
+#
+# A modal in front (McDonald's "Order Now" → "Scan the code, download the app") hides the
+# page: clicks on what is behind it are rejected, and Jev kept choosing them (5 steps, then
+# the coach). The snapshot offers only the top modal's controls while one is open (patch
+# above). And a web task never wants the phone app: "Open in App Store", "Download the app",
+# a QR "scan the code" button took a McDonald's order to the App Store. Those are dropped
+# from the table unless the goal is about an app.
+
+APP_DETOUR = re.compile(r"\b(app store|google play|play store|download (the |our )?([\w’'.]+ )?app|get the app|open (it )?in (the )?app|"
+                        r"scan (the )?(qr )?code|install (the |our )?app|use (the |our )?app)\b", re.I)
+WANTS_APP = re.compile(r"\b(app store|apps?|download|install|qr)\b", re.I)
+
+
+def drop_app_detours(page, goal):
+    """The page without links that send the user to a phone app instead of doing the task here."""
+    if WANTS_APP.search(goal or ""):
+        return page
+    actions = [a for a in page["actions"] if a.get("kind") not in {"click"} or not APP_DETOUR.search(a.get("label") or "")]
+    return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+
+# --- Adaptation 27: Navi never pays; the user does ---------------------------
+#
+# "buy a roll of toilet paper from amazon" may reach Amazon's 'Buy Now' — one click charges the
+# saved card — and the runner had nothing but playbook text against it. The buttons that
+# spend money are never offered to Jev: a purchase ends with the item in the cart (or the
+# checkout page) and the user places the order.
+
+PAYS = re.compile(r"\b(buy now|buy it now|place (your |my )?order|pay now|pay \$|complete (your |my )?(purchase|order)|"
+                  r"confirm (and pay|purchase|order|payment)|submit (order|payment)|place bid|purchase now|book now and pay)\b", re.I)
+PURCHASE_GOAL = re.compile(r"\b(buy|purchase|order|get me|checkout|check out)\b", re.I)
+
+
+def drop_payments(page):
+    actions = [a for a in page["actions"] if a.get("kind") not in {"click", "fill"} or not PAYS.search(a.get("label") or "")]
+    return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+
+# --- Adaptation 24: the user's own details for their own errands -------------
+#
+# "Order me a burger" needs a delivery address; the text helper is told never to invent
+# personal information, so a ZIP / address field got {"text": null} and the run stalled.
+# Navi passes the user's own contact card (NAVI_USER_PROFILE_JSON: name, address, city,
+# ZIP, phone, email — only what the card has); the helper sees it only for a field that
+# asks for one of those, never in Jev's state.
+
+PERSONAL_FIELD = re.compile(r"address|street|zip|postal|post ?code|city|town|location|deliver|state|"
+                            r"\bname\b|phone|mobile|e-?mail|where", re.I)
+TEXT_ADDENDUM = ("When present, about_the_user holds the user's own details from their contact card: use them for "
+                 "their address, ZIP, city, name, phone or email on their own errands (that is not inventing). "
+                 "A search box takes the key words of what the goal is looking for; do not return null for one.")
+
+
+def user_profile():
+    try:
+        profile = json.loads(os.environ.get("NAVI_USER_PROFILE_JSON") or "{}")
+    except ValueError:
+        return {}
+    return {k: v for k, v in profile.items() if isinstance(v, str) and v.strip()} if isinstance(profile, dict) else {}
+
+
+def with_user_details(context, profile=None):
+    """The helper's context plus about_the_user, for a field that asks for the user's own details."""
+    profile = user_profile() if profile is None else profile
+    if not profile or not isinstance(context, dict):
+        return context
+    field = context.get("field") or {}
+    if not PERSONAL_FIELD.search(f"{field.get('label') or ''} {field.get('role') or ''}"):
+        return context
+    return {**context, "about_the_user": profile}
+
+
 def install_adaptations():
     if navi_cloud():
         jev_model.post_json = post_json_navi
@@ -1800,7 +1978,7 @@ def install_adaptations():
     original_choose = agent_module.choose
 
     def choose(page, goal, history):
-        page = rejected.filter(page)
+        page = drop_payments(drop_app_detours(rejected.filter(page), goal))
         speculative.speculate(goal, page, history)
         return original_choose(page, goal, history)
 
@@ -1900,6 +2078,16 @@ def selftest():
     return 0 if ok else 1
 
 
+def purchase_note(goal, status):
+    """A finished purchase task: say the order is the user's to place (adaptation 27)."""
+    return "Ready for you to place the order — Navi never pays. " if status == "done" and PURCHASE_GOAL.search(goal or "") else ""
+
+
+def acted_on_page(history):
+    """Did any step do something on the page? Claude's coaching notes and waits act on nothing."""
+    return any(h.get("kind") not in {"coach", "wait", "WAIT"} for h in history)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url")
@@ -1996,6 +2184,7 @@ def main():
             return None
 
         retried_blocked = set()
+        early_block_exit = os.environ.get("NAVI_EARLY_BLOCK_EXIT") == "1"
 
         def run_until_stop():
             while agent.state["status"] not in {"done", "blocked"}:
@@ -2058,7 +2247,12 @@ def main():
                     recent = recent[i + 1:]
                     break
             why = None
-            if state["status"] == "blocked":
+            if state["status"] == "blocked" and early_block_exit and not acted_on_page(state["history"]):
+                # Nothing for this task on the page it started on (an unrelated tab): Navi starts
+                # over where the task itself starts — no Claude diagnosis of the wrong page.
+                emit("status", message="Nothing to do for this on this page")
+                stop = ("blocked", "Stopped: nothing to do for this on this page.")
+            elif state["status"] == "blocked":
                 why = Coach.flailing(recent) or "Jev answered BLOCKED"
             elif state["status"] == "ready":
                 why = Coach.flailing(recent)
@@ -2076,7 +2270,7 @@ def main():
                     status=status,
                     elapsed_ms=state["elapsed_ms"],
                     steps=len(state["history"]),
-                    summary=stop[1] if stop else summarize(state["history"], state["status"]),
+                    summary=stop[1] if stop else purchase_note(args.goal, status) + summarize(state["history"], state["status"]),
                     url=state["page"]["url"],
                     title=state["page"].get("title", ""),
                     page_text=(state["page"].get("text") or "")[:6000],

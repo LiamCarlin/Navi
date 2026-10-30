@@ -145,6 +145,10 @@ struct VoiceSpeedTests {
         // Finding something is still a web search.
         #expect(surface("find me the newest Patriots game score", front: nil) == (.browser, false))
         #expect(surface("search for cheap flights", front: nil) == (.browser, false))
+        // Errands elsewhere (2026-10-29: each one ran on the open Canvas tab and was BLOCKED there).
+        #expect(surface("order me a burger", front: "com.google.Chrome") == (.browser, false))
+        #expect(surface("Go to McDonald's", front: "com.google.Chrome") == (.browser, false))
+        #expect(surface("book a table for two tonight", front: "com.google.Chrome") == (.browser, false))
         // Naming a page keeps it a web task.
         let named = VoiceCommandExecutor.voiceSurface(goal: "open my canvas calendar", surface: .browser, frontmostBundle: nil, namesPage: { _ in true })
         #expect(named.surface == .browser && !named.currentTab)

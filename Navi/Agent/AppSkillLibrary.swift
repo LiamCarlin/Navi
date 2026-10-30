@@ -1363,10 +1363,16 @@ extension AppSkills {
                 .init(goal: "find / price a product", keywords: ["find", "price", "how much", "buy", "search", "look", "product", "cheapest", "best", "order"],
                       steps: ["Open https://www.amazon.com/s?k=<words>", "Read the result cards", "CLICK the product to open it if details are needed", "DONE when the price is visible"]),
                 .init(goal: "add to cart", keywords: ["add", "cart", "basket"], steps: ["Open the product page", "CLICK 'Add to Cart'", "DONE when 'Added to Cart' shows"]),
+                // 2026-10-30: "buy a roll of toilet paper from amazon - cheapest one possible" died on the sort dropdown.
+                .init(goal: "buy something / the cheapest one", keywords: ["buy", "purchase", "order", "get me", "cheapest", "cheap", "lowest price", "least expensive"],
+                      steps: ["Search for the product", "for the cheapest: SELECT 'Sort by' → 'Price: Low to High'",
+                              "CLICK the first real match (skip 'Sponsored' cards and items that are not the product asked for)",
+                              "CLICK 'Add to Cart' (choose a size/quantity first if the page asks)",
+                              "DONE when 'Added to Cart' shows — the user places the order; Navi never clicks 'Buy Now' or 'Place your order'"]),
                 .init(goal: "check an order", keywords: ["order", "orders", "package", "delivery", "tracking", "where is my"], steps: ["Open https://www.amazon.com/gp/css/order-history", "CLICK the order / 'Track package'", "DONE when the status is visible"]),
             ],
             avoid: [neverPurchase],
-            deepLinks: ["search": "https://www.amazon.com/s?k=", "cart": "https://www.amazon.com/gp/cart/view.html", "orders": "https://www.amazon.com/gp/css/order-history", "home": "https://www.amazon.com"],
+            deepLinks: ["search": "https://www.amazon.com/s?k=", "search cheapest": "https://www.amazon.com/s?s=price-asc-rank&k=", "cart": "https://www.amazon.com/gp/cart/view.html", "orders": "https://www.amazon.com/gp/css/order-history", "home": "https://www.amazon.com"],
             aliases: ["amazon", "amazon prime"]
         ),
         AppSkill(
@@ -1388,6 +1394,28 @@ extension AppSkills {
             ],
             avoid: [neverPurchase],
             aliases: ["doordash", "door dash", "uber eats", "ubereats", "grubhub", "instacart", "postmates"]
+        ),
+        // 2026-10-30: "go to mcdonalds and order me a burger" clicked Order Now → a QR code for the
+        // phone app, then Open in App Store. On the web McDonald's orders only through Order
+        // Delivery → mcdonalds.order.online (DoorDash's storefront), so a run starts there.
+        AppSkill(
+            name: "McDonald's", bundleIDs: [], hosts: ["mcdonalds.order.online", "mcdonalds.com"],
+            howItWorks: ["mcdonalds.com cannot take an order itself: 'Order Now' / 'Order Pickup' only show a QR code for the phone app; 'Order Delivery' goes to mcdonalds.order.online, where ordering happens.",
+                         "mcdonalds.order.online starts with 'Street Address': type the user's address, CLICK its suggestion (the list takes a second to appear), then a drop-off form ('Hand it to me' / 'Leave it at my door', instructions optional) needs 'Save'; the closest store's menu opens.",
+                         "The menu is sections of item cards (Burgers, Chicken, Fries & Sides, Drinks…); an item opens a dialog with options and 'Add to cart'; the cart at the top-right has 'Checkout' → 'Place order' (that pays)."],
+            recipes: [
+                .init(goal: "order food", keywords: ["order", "burger", "big mac", "fries", "nuggets", "mcflurry", "meal", "food", "delivery", "hungry", "cart"],
+                      steps: ["On mcdonalds.com: CLICK 'Order Now', then 'Order Delivery' (never 'Order Pickup': that is the phone app)",
+                              "TYPE_TEXT the user's address into 'Street Address' and CLICK the matching suggestion",
+                              "CLICK 'Save' on the drop-off options",
+                              "CLICK the item's card (a burger: e.g. 'Big Mac®' or 'Quarter Pounder® with Cheese'); a card that opens nothing right after the menu loads gets one more click",
+                              "CLICK 'Add to cart - $…' in the item dialog (not the menu's small 'Add item to cart' buttons behind it)",
+                              "CLICK the cart and 'Checkout'; stop at 'Place order' for the user's OK"]),
+            ],
+            doneWhen: ["The item is in the cart (the cart shows 1 item), or the checkout page shows the order total"],
+            avoid: [neverPurchase, "Never 'Download App', 'Open in App Store', 'Order Pickup' or a QR code: the order happens on the web."],
+            deepLinks: ["home": "https://mcdonalds.order.online"],
+            aliases: ["mcdonalds", "mcdonald's", "mcdonald", "mcdonalds.com"]
         ),
         AppSkill(
             name: "Travel booking", bundleIDs: [], hosts: ["airbnb.com", "booking.com", "expedia.com", "kayak.com", "hotels.com", "vrbo.com", "priceline.com", "skyscanner.com", "tripadvisor.com"],

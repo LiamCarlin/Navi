@@ -127,12 +127,27 @@ struct AppSkillsTests {
         #expect(AppSkills.startURL(for: "pull up netflix") == "https://www.netflix.com/browse")
         #expect(AppSkills.startURL(for: "text mom I'm late") == nil)                                   // no web app named
         #expect(AppSkills.startURL(for: "open notes") == nil)                                          // native app named
+        // McDonald's orders on the web only at its DoorDash storefront (mcdonalds.com offers the phone app).
+        #expect(AppSkills.startURL(for: "go to mcdonalds and order me a burger") == "https://mcdonalds.order.online")
+        // "The cheapest one" starts sorted by price where the site can.
+        #expect(AppSkills.startURL(for: "buy a roll of toilet paper from amazon - cheapest one possible") == "https://www.amazon.com/s?s=price-asc-rank&k=roll%20of%20toilet%20paper")
+        #expect(AppSkills.mentioned(in: "Go to McDonald’s")?.name == "McDonald's")
+        // A task given an unrelated tab starts over where it starts itself, else at a search.
+        #expect(UltrafastBridge.freshStart(for: "go to mcdonalds and order me a burger", after: "https://canvas.olin.edu/courses/1079") == "https://mcdonalds.order.online")
+        #expect(UltrafastBridge.freshStart(for: "order me a burger", after: "https://canvas.olin.edu/courses/1079").hasPrefix("https://www.google.com/search"))
         // Planned browser steps and the planner-less path both use it.
         #expect(TaskSurface.startURL(task: "watch the new trailer on youtube", frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=new%20trailer")
         var step = TaskPlanner.Step(surface: .browser, goal: "on youtube play lofi beats")
         #expect(TaskPlanner.startURL(for: step, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=lofi%20beats")
         step.url = "https://example.com/"
         #expect(TaskPlanner.startURL(for: step, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://example.com/")   // an explicit URL still wins
+        // The planner Googling a site the task names starts on that site (2026-10-30: McDonald's app-only page).
+        var mcd = TaskPlanner.Step(surface: .browser, goal: "go and buy me some mcdonalds burgers")
+        mcd.url = "https://www.google.com/search?hl=en&q=McDonald's%20burgers%20near%20me%20order%20online"
+        #expect(TaskPlanner.startURL(for: mcd, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://mcdonalds.order.online")
+        var plain = TaskPlanner.Step(surface: .browser, goal: "find the best pizza near me")
+        plain.url = "https://www.google.com/search?q=best%20pizza%20near%20me"
+        #expect(TaskPlanner.startURL(for: plain, frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == plain.url)
     }
 
     @Test func hostEntriesMayCarryPaths() {

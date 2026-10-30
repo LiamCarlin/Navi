@@ -46,7 +46,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
@@ -209,7 +209,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     failures than successes = no longer offered; older procedures are aligned to the journal by the
     control names their steps quote). `UserRoutines.match` (prepared while typing, in parallel with
     grounding at run start, cached 3 min): lexical candidates (verb synonyms folded; the task's own
-    names fill slots; the app it implies or the person is reached in first) → one Jev `same_task`
+    names fill slots; the app it implies or the person is reached in first; each phrasing must
+    explain most of the task *and* the task must name most of the phrasing's own content words —
+    or a third plus its verb; app/site words are no slot names; an all-slots phrasing must share
+    the task's verb: "order me a burger" once followed the Tatte hot-chocolate routine, 13/13
+    unrelated tasks now match nothing on Liam's 820 routines) → one Jev `same_task`
     choice ≥ 0.5 (no Jev: only a routine done ≥ 2× that covers the task). The native loop then
     **follows** it (`UserRoute.direct`): before each Jev call, the next pending step (looking two
     ahead; an app to open that is already in front is done) whose control is on screen exactly once
@@ -241,7 +245,26 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     parked on it (`agentAutoApproveChrome`), and closes the "controlled by automated
     test software" bar (`agentHideChromeAutomationBar`; never "Turn off in settings"). `BrowserControls` handles "close the tab / go back /
     reload / next tab / scroll / zoom" with one key press, no agent. Page actions with a
-    browser in front stay on the current tab (`TaskSurface.isPageAction`).
+    browser in front stay on the current tab (`TaskSurface.isPageAction`); a spoken errand
+    ("order…", "go to McDonald's", "book…") does not. A start page with nothing for the task
+    (Jev BLOCKED before any action — coaching notes and waits are not actions) ends at once
+    (`NAVI_EARLY_BLOCK_EXIT`, no Claude) and `UltrafastBridge.freshStart` reruns it from the
+    task's own site, else a search. Runner adaptations from the McDonald's runs: 23 — while an
+    `aria-modal`/`:modal` dialog is on top only its controls are offered, and app-install
+    detours (App Store, "download the app", "scan the code") are dropped; 24 — the text helper
+    gets `about_the_user` (`UserCard`, `NAVI_USER_PROFILE_JSON`) only for an address/ZIP/name/
+    phone/email field, and a search box gets the goal's key words instead of null; 25 — in
+    Navi's own tab a `target=_blank` link / plain `window.open` loads in the same tab; a
+    same-document click that changed the page gets a 150 ms second look before Jev decides.
+    Live replay 2026-10-30: "go to mcdonalds and order me a burger" → mcdonalds.order.online →
+    address → Big Mac in the cart, 1 coach call (was: App Store / Canvas tab, failed).
+    26 — a `<select>` under the site's own widget (Amazon "Sort by") is set directly; a dropdown
+    that is gone is a StalePage, never a run-ending error; 27 — Navi never pays: Buy Now / Place
+    (your) order / Pay… are never offered, a purchase ends in the cart ("Ready for you to place
+    the order"). A run going in circles (A → B → C twice, each changing the page) counts as
+    stuck. A planner step that only Googles a site the task names starts on that site's own
+    page (`TaskPlanner.isWebSearch`); "the cheapest" opens a site's price-sorted search
+    (`deepLinks["search cheapest"]`).
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,

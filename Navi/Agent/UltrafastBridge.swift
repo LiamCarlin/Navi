@@ -369,16 +369,24 @@ enum UltrafastBridge {
                                             allowEarlyBlockRetry: first != search, background: background,
                                             openedIsDone: navigationOnly, attachURL: attachURL)
         if outcome == .blockedBeforeActing {
-            // Jev found nothing useful on the starting page (e.g. an unrelated tab).
-            // Start over from a search-results page for the task.
-            handle.emit(.status("Nothing actionable on \(first) — retrying from a Google search"))
-            (outcome, text) = await runOnce(task: task, url: search, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+            // Jev found nothing useful on the starting page (e.g. an unrelated tab). Start over
+            // where the task itself starts — the site it names, else a search-results page.
+            let fresh = freshStart(for: task, after: first)
+            handle.emit(.status("Nothing to do for this on \(URL(string: first)?.host ?? first) — starting over at \(URL(string: fresh)?.host ?? fresh)"))
+            (outcome, text) = await runOnce(task: task, url: fresh, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
                                             allowEarlyBlockRetry: false, background: background)
         }
         // The runner fronted its tab inside Chrome ("reveal"); Chrome itself may still
         // be behind the user's windows — the tab *is* the result, so bring it forward.
         if outcome == .completed, background, lastTabPolicy == "reveal" { await bringBrowserForward() }
         return text
+    }
+
+    /// Where a task starts when the page it was given had nothing for it: the page or site the
+    /// task itself names (`TaskSurface.startURL` without the open tab), else a search for it.
+    static func freshStart(for task: String, after first: String) -> String {
+        let own = TaskSurface.startURL(task: task, frontmost: FrontmostProbe.Info()) ?? searchURL(for: task)
+        return own == first ? searchURL(for: task) : own
     }
 
     /// The policy of the most recent run (set in `runOnce`), for `run`'s reveal.
@@ -454,6 +462,9 @@ enum UltrafastBridge {
         var env = environment(credentials: credentials)
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
+        // Nothing to do on the starting page ("order me a burger" on a Canvas tab): end at once —
+        // `run` starts over from the task's own page — instead of asking Claude about this one.
+        if allowEarlyBlockRetry { env["NAVI_EARLY_BLOCK_EXIT"] = "1" }
         // The people/projects/documents the task names, as the user's screen memory knows them.
         // …and how they did tasks like this themselves (`UserMoves` procedures and habits).
         let things = UserKnowledge.context(for: task, original: handle.task)
@@ -463,6 +474,8 @@ enum UltrafastBridge {
         if !things.isEmpty || moves != nil, let data = try? JSONSerialization.data(withJSONObject: userContext, options: [.sortedKeys]) {
             env["NAVI_USER_CONTEXT_JSON"] = String(decoding: data, as: UTF8.self)
         }
+        // Their own address, ZIP, name… for a form field on their own errand (adaptation 24).
+        if let card = UserCard.runnerJSON() { env["NAVI_USER_PROFILE_JSON"] = card }
         // What the user clicks on each site, so the runner marks the page's elements (adaptation 21).
         if let marks = UserMoves.liveRunnerJSON(startURL: url) { env["NAVI_USER_MOVES_JSON"] = marks }
         // The user's own routine for this task, when it is one (`UserRoutines`): the runner marks
@@ -503,6 +516,8 @@ enum UltrafastBridge {
         }
         var finished = false
         var stepIndex = 0
+        /// Steps that did something on the page (Claude's coaching notes and waits are steps too, but act on nothing).
+        var acted = 0
         // Keep the raw event stream of the last run for debugging (local only).
         // Privacy (`TaskLogs`): only while task logs are on; lines redacted, screenshots never kept.
         var logHandle: FileHandle?
@@ -549,6 +564,7 @@ enum UltrafastBridge {
                 case "step":
                     stepIndex += 1
                     let kind = (json["kind"] as? String ?? "").uppercased()
+                    if kind != "COACH", kind != "WAIT" { acted += 1 }
                     let action = (json["action"] as? String ?? "").split(separator: "→").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
                     var desc: String
                     switch kind {
@@ -593,7 +609,7 @@ enum UltrafastBridge {
                             finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
                                 .joined(separator: "\n")
                             handle.emit(.completed(summary: opened))
-                        } else if stepIndex == 0, allowEarlyBlockRetry {
+                        } else if acted == 0, allowEarlyBlockRetry {
                             outcome = .blockedBeforeActing
                         } else {
                             outcome = .failed

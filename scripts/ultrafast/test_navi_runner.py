@@ -580,3 +580,48 @@ note = nr.pick_recipient(fc, 7, "Zxqvwt")
 assert "NOT set" in note and not fc.clicks, note
 nr.RECIPIENT_FIRST_LOOK_S, nr.RECIPIENT_POLL_S = saved
 print("recipient picking ok")
+
+# Adaptation 23: a modal in front is all Jev can click; app-install detours are dropped.
+js = nr.patched_snapshot_js()
+assert "const modals=" in js and "modals.some(m=>m.contains(e))" in js
+mcd = {"actions": [{"id": "e1", "kind": "click", "label": "Close"},
+                   {"id": "e2", "kind": "click", "label": "Order Pickup Scan the code, download the McD’s app & start earning points.*"},
+                   {"id": "e3", "kind": "click", "label": "Order Delivery"},
+                   {"id": "e4", "kind": "click", "label": "Open in App Store"},
+                   {"id": "e5", "kind": "fill", "label": "Search the app store"}]}
+kept = [a["id"] for a in nr.drop_app_detours(mcd, "go to mcdonalds and order me a burger")["actions"]]
+assert kept == ["e1", "e3", "e5"], kept
+assert nr.drop_app_detours(mcd, "download the mcdonalds app") is mcd
+print("app detours ok")
+
+# Adaptation 24: the user's card reaches the text helper for a personal field only.
+os.environ["NAVI_USER_PROFILE_JSON"] = json.dumps({"address": "1000 Olin Way, Needham, MA 02492", "zip": "02492", "phone": " "})
+assert nr.user_profile() == {"address": "1000 Olin Way, Needham, MA 02492", "zip": "02492"}
+ctx = {"goal": "order me a burger", "field": {"label": "Zip or City & State", "role": "textbox"}}
+assert nr.with_user_details(ctx)["about_the_user"]["zip"] == "02492"
+assert "about_the_user" not in nr.with_user_details({"goal": "x", "field": {"label": "Search menu", "role": "searchbox"}})
+captured.clear()
+nr.field_text_claude({"goal": "order me a burger", "field": {"label": "Delivery address", "role": "textbox"}, "page": {"url": "https://mcdonalds.order.online"}})
+sent = json.loads(captured["json"]["messages"][0]["content"])
+assert sent["about_the_user"]["address"].startswith("1000 Olin Way") and "about_the_user" in captured["json"]["system"]
+del os.environ["NAVI_USER_PROFILE_JSON"]
+assert nr.with_user_details(ctx) is ctx
+print("user details ok")
+
+# Nothing done on the page yet: Claude's coaching notes and waits are not actions.
+assert not nr.acted_on_page([{"kind": "coach"}, {"kind": "wait"}])
+assert nr.acted_on_page([{"kind": "coach"}, {"kind": "click"}])
+print("early block ok")
+
+# Adaptation 26/27 and circling.
+assert "e.tagName!=='SELECT'" in nr.SELECT_JS and "elementFromPoint" not in nr.SELECT_JS
+amz = {"actions": [{"id": "e1", "kind": "click", "label": "Add to Cart"}, {"id": "e2", "kind": "click", "label": "Buy Now"},
+                   {"id": "e3", "kind": "click", "label": "Place your order"}, {"id": "e4", "kind": "click", "label": "Proceed to checkout"},
+                   {"id": "e5", "kind": "select", "label": "Sort by: → Price: Low to High"}]}
+assert [a["id"] for a in nr.drop_payments(amz)["actions"]] == ["e1", "e4", "e5"]
+assert nr.purchase_note("buy a roll of toilet paper from amazon", "done").startswith("Ready for you to place the order")
+assert nr.purchase_note("open my amazon orders", "done") == ""
+loop = [{"kind": "click", "action": a, "page_changed": True} for a in ["Order Now", "Order Delivery", "Yes, Continue"] * 2]
+assert "going in circles" in nr.Coach.flailing(loop), nr.Coach.flailing(loop)
+assert nr.Coach.flailing([{"kind": "click", "action": a, "page_changed": True} for a in ["Search", "Item A", "Add", "Back", "Item B", "Add"]]) is None
+print("payments, selects and circles ok")
