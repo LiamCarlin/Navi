@@ -273,6 +273,29 @@ import Testing
         #expect(UserRoutines.candidates(task: "message mikey on slack saying the review is done", routines: Self.routines).first?.fills == ["mikey"])
     }
 
+    /// Live false matches (2026-10-29/30): each sent a run to the wrong app or page.
+    @Test func sharingAVerbOrAnAppIsNotTheSameTask() throws {
+        func routine(_ goal: String, _ labels: [String], site: String? = nil, bundle: String = Self.chrome, app: String = "Google Chrome") -> Routine {
+            let p = Self.procedure(goal, at: 300, site: site, bundle: bundle)
+            let acts = labels.enumerated().map { Self.act(.click, $1, role: "link", bundle: bundle, app: app, url: site.map { "https://\($0)/" }, at: 300 + Double($0) * 3) }
+            return try! #require(RoutineMiner.mine([p]) { _ in acts }.first)
+        }
+        let tatte = routine("order a 12 oz hot chocolate with nonfat milk from Tatte Bakery for pickup at Wellesley",
+                            ["Order Online", "Hot Chocolate", "Add to Order"], site: "tattebakery.com")
+        let queue = routine("queue Jane! to play next in Apple Music", ["Jane!", "Play Next"], bundle: "com.apple.Music", app: "Music")
+        let claude = routine("ask Claude a question about making a note called Ideas", ["New chat", "Send"], site: "claude.ai")
+        let gear = routine("Share the updated gear string with Logan via Slack", ["Logan", "Send"], site: "app.slack.com")
+        let all = Self.routines + [tatte, queue, claude, gear]
+        for task in ["order me a burger", "go to mcdonalds and order me a burger", "play the newest song", "press play in music",
+                     "make a new note called Student Spark that says hello class", "updated it", "what's the weather"] {
+            #expect(UserRoutines.candidates(task: task, routines: all).isEmpty, "\(task)")
+        }
+        // …while the same tasks again still find them.
+        #expect(UserRoutines.candidates(task: "order a hot chocolate from tatte for pickup", routines: all).first?.routine.site == "tattebakery.com")
+        #expect(UserRoutines.candidates(task: "queue Blinding Lights to play next in Music", routines: all).first?.routine.bundleID == "com.apple.Music")
+        #expect(UserRoutines.candidates(task: "text pia on slack", routines: all).first?.routine.bundleID == Self.slack)
+    }
+
     @Test func jevPicksAndWithoutJevOnlyAClearRepeat() throws {
         let cs = UserRoutines.candidates(task: "message mikey on slack", routines: Self.routines)
         let (state, questions) = UserRoutines.request(task: "message mikey on slack", candidates: cs)

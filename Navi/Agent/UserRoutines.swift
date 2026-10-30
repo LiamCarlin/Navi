@@ -131,31 +131,97 @@ final class UserRoutines: @unchecked Sendable {
     /// message, not names to look for.
     static func taskWords(_ task: String) -> Set<String> { bag(TaskGrounding.withoutDictation(task)) }
 
+    /// Words that say nothing about which task it is ("what's", "do", "your").
+    static let functionWords: Set<String> = ["what", "whats", "when", "where", "why", "how", "who", "which", "do", "does", "did", "your",
+                                             "our", "its", "there", "here", "just", "like", "want", "need", "could", "would", "should",
+                                             "will", "be", "are", "was", "some", "any"]
+    static let appWords: Set<String> = ["slack", "outlook", "canvas", "chrome", "app", "open", "go"]
+
+    /// How much a word says about which task it is: names and things fully; verbs, kinds of
+    /// things and app words ("send", "assignment", "slack", "updated", "making") a little.
+    static func weight(_ w: String) -> Double {
+        let g = RoutineMiner.generic
+        if g.contains(w) { return 0.3 }
+        for (suffix, back) in [("ing", ""), ("ing", "e"), ("ed", ""), ("d", ""), ("es", ""), ("s", "")] where w.hasSuffix(suffix) && w.count > suffix.count + 2 {
+            if g.contains(String(w.dropLast(suffix.count)) + back) { return 0.3 }
+        }
+        return 1
+    }
+
+    static func weight(_ s: Set<String>) -> Double { s.reduce(0) { $0 + weight($1) } }
+
+    /// A phrasing's first word after filler: what it does ("queue …", "reply to …").
+    static func verb(_ s: String) -> String? {
+        RoutineMiner.tokens(s).first { $0.count > 1 && !AgentExperience.stopWords.contains($0) && !CUReplay.filler.contains($0) }
+            .map { synonyms[$0] ?? $0 }
+    }
+
+    /// How well a task (its `words`) is another instance of one phrasing of a routine.
+    /// - `precision`: the task's words the phrasing has, names it ran with last time, or new
+    ///   names its slots can take (worth a little less; no slots, no room for them);
+    /// - `recall`: the phrasing's own content words (not verbs, kinds or app words) the task
+    ///   names. "order me a burger" names 1 of the 10 in "order a … oz hot chocolate with
+    ///   nonfat milk from Tatte Bakery for pickup at Wellesley": another task sharing a verb.
+    /// - `verb`: the task does the phrasing's verb; `sameVerb` also counts the task's own verb
+    ///   in the phrasing ("text joão" ↔ "send a message to …").
+    struct Fit: Equatable { var precision: Double; var recall: Double; var named: Bool; var verb: Bool; var sameVerb: Bool; var onlySlots: Bool }
+
+    /// `place`: the routine's app and site words; "Music" in "queue … to play next in Music" is
+    /// where it happened, not a name the task repeats.
+    static func fit(words: Set<String>, phrasing: String, slots: Set<String>, place: Set<String>, taskVerb: String? = nil) -> Fit? {
+        let known = bag(phrasing, minus: slots)
+        let shared = words.intersection(known)
+        let named = words.intersection(slots).subtracting(place)
+        let content = known.filter { weight($0) == 1 }
+        let sharedContent = shared.filter { weight($0) == 1 }
+        // At least one of the phrasing's own words, and one that says what is done, not only
+        // the app's or a generic one ("View the … Review assignment for …" fits no task alone).
+        let anchored = !shared.isEmpty && (!sharedContent.isEmpty || !named.isEmpty || (content.isEmpty && shared.contains { !appWords.contains($0) }))
+        let total = weight(words)
+        guard anchored, total > 0 else { return nil }
+        let newNames = words.subtracting(known).subtracting(slots).filter { !RoutineMiner.generic.contains($0) }
+        let room = Double(min(newNames.count, max(0, slots.subtracting(place).count - named.count)))
+        let precision = min(1, (weight(shared) + weight(named) + 0.7 * room) / total)
+        let recall = content.isEmpty && named.isEmpty ? 1 : Double(sharedContent.count + named.count) / Double(content.count + named.count)
+        let does = verb(phrasing).map(words.contains) ?? false
+        return Fit(precision: precision, recall: recall, named: !named.isEmpty, verb: does,
+                   sameVerb: does || taskVerb.map(known.contains) == true, onlySlots: content.isEmpty)
+    }
+
+    /// Another instance of the task: most of the task is explained, and the task names most of
+    /// what makes the routine that routine, or a third of it when it also does the routine's
+    /// own verb ("reply to premkumar's message" ↔ "Reply to … message about VCs"; not "play the
+    /// newest song" ↔ "queue … to play next in …"). A phrasing that is all verbs and slots
+    /// ("submit … on Canvas") must at least do what the task does.
+    static func accepts(_ f: Fit) -> Bool {
+        guard f.precision >= 0.5 else { return false }
+        if f.onlySlots { return f.sameVerb }
+        return f.recall >= 0.6 || (f.verb && f.recall >= 0.33)
+    }
+
     /// Routines the task could be another instance of, best first. `places`: bundle ids or
     /// site keys the task implies (its app, the app the person is reached in, the frontmost).
     static func candidates(task: String, routines: [Routine], places: Set<String> = [], limit: Int = maxCandidates) -> [Candidate] {
-        let words = taskWords(task)
+        let words = taskWords(task).subtracting(functionWords)
         guard !words.isEmpty else { return [] }
+        let taskVerb = verb(TaskGrounding.withoutDictation(task))
         var out: [Candidate] = []
         for r in routines where !r.isDiscredited {
             let slots = r.slotWords
+            let place = Set(RoutineMiner.tokens(r.appName + " " + (r.site ?? "")))
+            let fits = (r.goals + [r.template]).compactMap { fit(words: words, phrasing: $0, slots: slots, place: place, taskVerb: taskVerb) }.filter(accepts)
+            guard let best = fits.max(by: { $0.precision + $0.recall < $1.precision + $1.recall }) else { continue }
             var known = Set<String>()
             for g in r.goals + [r.template] { known.formUnion(bag(g, minus: slots)) }
-            let shared = words.intersection(known)
-            // At least one word that says what is done, not only the app's or a generic one.
-            guard shared.contains(where: { !["slack", "outlook", "canvas", "chrome", "app", "open", "go"].contains($0) }) else { continue }
             let fills = words.subtracting(known).filter { !RoutineMiner.generic.contains($0) }
-            let rest = words.subtracting(fills)
-            let coverage = rest.isEmpty ? 0 : Double(shared.count) / Double(rest.count)
-            guard coverage >= AgentExperience.minOverlap else { continue }
-            var score = coverage
-            // A task naming something new fits a routine with a slot for it, not a fixed one.
-            if !fills.isEmpty { score += slots.isEmpty ? -0.25 : 0.15 }
+            var score = (best.precision + best.recall) / 2
+            // The task names what it ran with last time ("reply to premkumar's message").
+            if best.named { score += 0.15 }
             if places.contains(r.bundleID) || r.site.map(places.contains) == true { score += 0.2 }
             if let site = r.site, words.contains(where: { site.contains($0) && $0.count >= 4 }) { score += 0.1 }
             if words.contains(where: { r.appName.lowercased().contains($0) && $0.count >= 4 }) { score += 0.1 }
             score += 0.05 * Double(min(r.count - 1, 3)) + 0.05 * Double(min(r.worked, 3))
-            out.append(Candidate(routine: r, score: score, fills: fills.sorted(), coverage: coverage))
+            out.append(Candidate(routine: r, score: score, fills: fills.sorted(), coverage: min(best.precision, best.recall)))
         }
         return Array(out.sorted { $0.score != $1.score ? $0.score > $1.score : $0.routine.last > $1.routine.last }.prefix(limit))
     }
