@@ -265,6 +265,18 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     stuck. A planner step that only Googles a site the task names starts on that site's own
     page (`TaskPlanner.isWebSearch`); "the cheapest" opens a site's price-sorted search
     (`deepLinks["search cheapest"]`).
+    Structure, not per-site rules (2026-10-30, after Chipotle failed): 28 — a control is offered
+    only if a click reaches it (5-point hit test: any overlay, banner or loader hides what is
+    behind it); an unnamed control is named from its title / icon / test id / nearby text;
+    controls sharing a label carry their own card's title ("Add item to cart — Big Mac®",
+    the largest box holding none of its twins, badges and prices skipped); 29 — what looks
+    clickable is a target: the viewport is sampled for pointer-cursor boxes that are not
+    already a control (Chipotle's filling cards), with a `selected` state; 30 — DONE needs
+    evidence: a purchase goal needs the cart/bag count to rise, "added to…", or the cart /
+    checkout page; a DONE below 50 % gets one more look (Chipotle "done" twice with the
+    builder on screen); 31 — every Jev request carries `facts` (today, the goal's relative
+    dates resolved: "next friday" → Friday, November 6, 2026). Replays: McDonald's → 2 items
+    in cart with no coach; Flights picks the right Friday; Chipotle false "done" now refused.
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,

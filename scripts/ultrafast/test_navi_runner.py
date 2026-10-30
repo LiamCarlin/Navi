@@ -625,3 +625,32 @@ loop = [{"kind": "click", "action": a, "page_changed": True} for a in ["Order No
 assert "going in circles" in nr.Coach.flailing(loop), nr.Coach.flailing(loop)
 assert nr.Coach.flailing([{"kind": "click", "action": a, "page_changed": True} for a in ["Search", "Item A", "Add", "Back", "Item B", "Add"]]) is None
 print("payments, selects and circles ok")
+
+# Adaptations 28/29: reachable targets, names for unnamed controls, pointer-cursor cards.
+js = nr.patched_snapshot_js()
+for needle in ["if (covered(e,r)) continue;", "fallbackName(e,rname)", "sameLabel[a.label]>1", "cursor==='pointer'", "pointer:true"]:
+    assert needle in js, needle
+print("snapshot structure ok")
+
+# Adaptation 30: DONE needs evidence; adaptation 31: dates.
+import datetime as _dt
+st = {"goal": "order me a random chipotle bowl", "page": {"text": "BUILD YOUR BURRITO BOWL\nADD TO BAG", "url": "https://www.chipotle.com/order/build/burrito-bowl", "actions": []}, "history": []}
+assert nr.done_doubt(st, {"operation": "CLICK", "confidence": 0.9}) is None and st["navi_cart_start"] is None
+assert "cart or bag" in nr.done_doubt(st, {"operation": "DONE", "confidence": 0.9})
+st["page"] = {"text": "Big Mac added to cart", "url": "https://x.test/store", "actions": []}
+assert nr.done_doubt(st, {"operation": "DONE", "confidence": 0.9}) is None
+st2 = {"goal": "go to mcdonalds and order me a burger", "page": {"text": "", "url": "https://x.test", "actions": [{"label": "0 items, open Order Cart"}]}, "history": []}
+nr.done_doubt(st2, None)
+st2["page"] = {"text": "", "url": "https://x.test", "actions": [{"label": "1 items, open Order Cart"}]}
+assert nr.done_doubt(st2, {"operation": "DONE", "confidence": 0.8}) is None
+assert nr.cart_count({"text": "6 items in cart", "actions": []}) == 6 and nr.cart_count({"text": "Bag (2)", "actions": []}) == 2
+st3 = {"goal": "track my amazon order", "page": {"text": "", "url": "https://x.test", "actions": []}, "history": []}
+assert nr.done_doubt(st3, {"operation": "DONE", "confidence": 0.9}) is None
+assert "unsure" in nr.done_doubt(st3, {"operation": "DONE", "confidence": 0.3})
+fri = _dt.date(2026, 10, 30)   # a Friday
+f = nr.date_facts("find flights from boston to new york next friday", fri)
+assert f["today"] == "Friday, October 30, 2026" and f["dates_in_goal"]["next friday"] == "Friday, November 6, 2026", f
+assert nr.date_facts("dinner on sunday", fri)["dates_in_goal"]["on sunday"] == "Sunday, November 1, 2026"
+assert nr.date_facts("book it tomorrow", fri)["dates_in_goal"]["tomorrow"] == "Saturday, October 31, 2026"
+assert "dates_in_goal" not in nr.date_facts("open youtube", fri)
+print("done evidence and dates ok")
