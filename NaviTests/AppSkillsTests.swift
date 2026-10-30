@@ -127,6 +127,12 @@ struct AppSkillsTests {
         #expect(AppSkills.startURL(for: "pull up netflix") == "https://www.netflix.com/browse")
         #expect(AppSkills.startURL(for: "text mom I'm late") == nil)                                   // no web app named
         #expect(AppSkills.startURL(for: "open notes") == nil)                                          // native app named
+        // McDonald's orders on the web only at its DoorDash storefront (mcdonalds.com offers the phone app).
+        #expect(AppSkills.startURL(for: "go to mcdonalds and order me a burger") == "https://mcdonalds.order.online")
+        #expect(AppSkills.mentioned(in: "Go to McDonald’s")?.name == "McDonald's")
+        // A task given an unrelated tab starts over where it starts itself, else at a search.
+        #expect(UltrafastBridge.freshStart(for: "go to mcdonalds and order me a burger", after: "https://canvas.olin.edu/courses/1079") == "https://mcdonalds.order.online")
+        #expect(UltrafastBridge.freshStart(for: "order me a burger", after: "https://canvas.olin.edu/courses/1079").hasPrefix("https://www.google.com/search"))
         // Planned browser steps and the planner-less path both use it.
         #expect(TaskSurface.startURL(task: "watch the new trailer on youtube", frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=new%20trailer")
         var step = TaskPlanner.Step(surface: .browser, goal: "on youtube play lofi beats")

@@ -1389,6 +1389,27 @@ extension AppSkills {
             avoid: [neverPurchase],
             aliases: ["doordash", "door dash", "uber eats", "ubereats", "grubhub", "instacart", "postmates"]
         ),
+        // 2026-10-30: "go to mcdonalds and order me a burger" clicked Order Now → a QR code for the
+        // phone app, then Open in App Store. On the web McDonald's orders only through Order
+        // Delivery → mcdonalds.order.online (DoorDash's storefront), so a run starts there.
+        AppSkill(
+            name: "McDonald's", bundleIDs: [], hosts: ["mcdonalds.order.online", "mcdonalds.com"],
+            howItWorks: ["mcdonalds.com cannot take an order itself: 'Order Now' / 'Order Pickup' only show a QR code for the phone app; 'Order Delivery' goes to mcdonalds.order.online, where ordering happens.",
+                         "mcdonalds.order.online starts with 'Delivery address': type the user's address, CLICK its suggestion, and the closest store's menu opens.",
+                         "The menu is sections of item cards (Burgers, Chicken, Fries & Sides, Drinks…); an item opens a dialog with options and 'Add to cart'; the cart at the top-right has 'Checkout' → 'Place order' (that pays)."],
+            recipes: [
+                .init(goal: "order food", keywords: ["order", "burger", "big mac", "fries", "nuggets", "mcflurry", "meal", "food", "delivery", "hungry", "cart"],
+                      steps: ["On mcdonalds.com: CLICK 'Order Now', then 'Order Delivery' (never 'Order Pickup': that is the phone app)",
+                              "TYPE_TEXT the user's address into 'Delivery address' and CLICK the matching suggestion",
+                              "CLICK the item (a burger: the Burgers section, e.g. 'Big Mac' or 'Quarter Pounder with Cheese')",
+                              "CLICK 'Add to cart' in the item dialog",
+                              "CLICK the cart and 'Checkout'; stop at 'Place order' for the user's OK"]),
+            ],
+            doneWhen: ["The item is in the cart (the cart shows 1 item), or the checkout page shows the order total"],
+            avoid: [neverPurchase, "Never 'Download App', 'Open in App Store', 'Order Pickup' or a QR code: the order happens on the web."],
+            deepLinks: ["home": "https://mcdonalds.order.online"],
+            aliases: ["mcdonalds", "mcdonald's", "mcdonald", "mcdonalds.com"]
+        ),
         AppSkill(
             name: "Travel booking", bundleIDs: [], hosts: ["airbnb.com", "booking.com", "expedia.com", "kayak.com", "hotels.com", "vrbo.com", "priceline.com", "skyscanner.com", "tripadvisor.com"],
             howItWorks: ["A search form: destination ('Where'), check-in / check-out (or departure / return) date pickers (click the dates, then Search), guests/travellers; results are cards with price per night / total and filters on the left; a listing page has 'Reserve' / 'Book' (that pays or holds a card)."],
