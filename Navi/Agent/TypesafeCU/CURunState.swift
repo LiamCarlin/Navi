@@ -121,6 +121,16 @@ struct CURunState: Sendable {
         repeats = 0
     }
 
+    /// The user answered a question the run paused on: every later call reads it (`user_said`), and
+    /// the stall that led to asking does not count against the run — the answer is new ground.
+    mutating func afterReply(question: String, reply: String) {
+        guidance.exchanges.append(.init(question: question, reply: reply))
+        history.append("asked the user “\(question)” — they said “\(reply)”")
+        idle = 0
+        repeats = 0
+        stalls = 0
+    }
+
     /// After Claude drove for a while and the screen moved on: what it did joins the history Jev
     /// reads, and the stall counters start over (Jev is on new ground, not on the old loop).
     mutating func afterTakeover(_ what: String) {

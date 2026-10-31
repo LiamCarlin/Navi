@@ -38,6 +38,10 @@ struct AgentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let q = vm.pendingQuestion {
+                QuestionCard(question: q)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             HStack(alignment: .top, spacing: 16) {
                 timeline
                 if let shot = vm.agentScreenshot {
@@ -58,6 +62,7 @@ struct AgentView: View {
         .padding(.top, 12)
         .padding(.bottom, 14)
         .animation(PanelStyle.spring, value: vm.pendingApproval?.id)
+        .animation(PanelStyle.spring, value: vm.pendingQuestion?.id)
         .animation(PanelStyle.spring, value: vm.agentScreenshot == nil)
     }
 
@@ -66,7 +71,7 @@ struct AgentView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
             AgentStatusChip(isRunning: isRunning, outcome: outcome, awaitingApproval: vm.pendingApproval != nil,
-                            needsUser: vm.agentVerdict == .needsUser)
+                            needsUser: vm.agentVerdict == .needsUser || vm.pendingQuestion != nil)
             Text(taskTitle)
                 .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(.primary)
@@ -253,6 +258,14 @@ struct AgentEventRow: View {
             card(tint: .gray, icon: "stop.circle.fill") {
                 Text("Cancelled").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
             }
+        case .needsAnswer(let q):
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.bubble.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(.orange)
+                Text("Asked you · \(q.question)")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .padding(.leading, 6)
+            .padding(.bottom, 8)
         case .screenshot:
             EmptyView()
         }

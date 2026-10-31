@@ -157,6 +157,21 @@ private var previewScreenshot: NSImage {
     }
 }
 
+#Preview("Agent · paused on a question") {
+    PreviewBackdrop {
+        NaviPanelView().environmentObject(
+            PanelViewModel.preview(mode: .agent,
+                                   agentTask: "order me a big mac from mcdonalds",
+                                   agentEvents: [
+                                    .step(index: 1, description: "Opened mcdonalds.order.online"),
+                                    .step(index: 2, description: "Clicked “Big Mac®”"),
+                                   ],
+                                   pendingQuestion: AgentQuestion(question: "Which size do you want?",
+                                                                  detail: "The Big Mac page offers it on its own or as a meal.",
+                                                                  choices: ["Just the Big Mac", "Medium meal", "Large meal"])))
+    }
+}
+
 #Preview("Agent · completed") {
     PreviewBackdrop {
         NaviPanelView().environmentObject(

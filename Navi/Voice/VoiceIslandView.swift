@@ -60,7 +60,7 @@ struct VoiceIslandView: View {
     private var width: CGFloat {
         let body: CGFloat
         if !session.answerText.isEmpty || session.isAnswering { body = IslandStyle.answerWidth }
-        else if session.approval != nil || session.phase.isError || hasTranscript || session.activity != nil { body = IslandStyle.wideWidth }
+        else if session.approval != nil || session.question != nil || session.phase.isError || hasTranscript || session.activity != nil { body = IslandStyle.wideWidth }
         else { body = IslandStyle.compactWidth }
         return max(body, model.metrics.notchWidth + 56) + 2 * IslandStyle.fillet
     }
@@ -68,7 +68,7 @@ struct VoiceIslandView: View {
     private var hasTranscript: Bool { !session.pendingText.isEmpty || !session.committed.isEmpty }
 
     private var layoutKey: String {
-        "\(width)|\(session.activity?.label ?? "")|\(session.approval?.description ?? "")|\(hasTranscript)|\(Int(answerHeight))|\(session.phase)|\(session.lastOutcome?.text ?? "")|\(hovering)"
+        "\(width)|\(session.activity?.label ?? "")|\(session.approval?.description ?? "")|\(session.question?.id.uuidString ?? "")|\(hasTranscript)|\(Int(answerHeight))|\(session.phase)|\(session.lastOutcome?.text ?? "")|\(hovering)"
     }
 
     // MARK: Content
@@ -77,11 +77,14 @@ struct VoiceIslandView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 9) {
             header
-            if hasTranscript, session.approval == nil {
+            if hasTranscript, session.approval == nil, session.question == nil {
                 transcript
             }
             if let a = session.approval {
                 approvalRow(a.description, risk: a.risk)
+            }
+            if let q = session.question {
+                questionRow(q)
             }
             if !session.answerText.isEmpty || session.isAnswering {
                 answer
@@ -160,11 +163,15 @@ struct VoiceIslandView: View {
         }
         if let a = session.activity { return a.label }
         if session.approval != nil { return "Say “yes” or “no”" }
+        if session.question != nil { return "Navi has a question" }
         if let o = session.lastOutcome { return o.text }
         return "Listening"
     }
 
     private var secondaryLine: String? {
+        if let q = session.question {
+            return q.allowsOther ? "Say an answer, or click one" : "Do it, then say “done”"
+        }
         if let a = session.activity {
             var s = a.detail.map { DeveloperMode.isEnabled ? $0 : PanelWording.userFacing($0) } ?? (a.isAnswer ? "" : "Working out each step")
             if session.queueCount > 0 { s = (s.isEmpty ? "" : s + " · ") + "\(session.queueCount) more queued" }
@@ -238,6 +245,43 @@ struct VoiceIslandView: View {
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.orange.opacity(0.12)))
+    }
+
+    // MARK: Question
+
+    private func questionRow(_ q: AgentQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange).font(.system(size: 13, weight: .semibold))
+                Text(q.question)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            FlowChips(spacing: 6) {
+                ForEach(Array(q.choices.enumerated()), id: \.offset) { i, choice in
+                    Button { session.answerQuestion(choice) } label: {
+                        Text(choice).font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12).frame(height: 26)
+                            .background(Capsule().fill(i == 0 ? Color.orange.opacity(0.9) : Color.white.opacity(0.16)))
+                            .foregroundStyle(i == 0 ? Color.black : Color.white)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { session.answerQuestion(nil) } label: {
+                    Text("Stop").font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12).frame(height: 26)
+                        .background(Capsule().strokeBorder(Color.white.opacity(0.22)))
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.orange.opacity(0.12)))
@@ -351,5 +395,48 @@ struct WaveformBars: View {
             let l = CGFloat(min(1, max(0, level)))
             return 4 + 18 * l * Self.multipliers[i]
         }
+    }
+}
+
+
+/// Lays out answer chips in rows that wrap at the island's width.
+private struct FlowChips: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(width: proposal.width ?? .infinity, subviews)
+        let h = rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(width: bounds.width, subviews) {
+            var x = bounds.minX
+            for i in row.items {
+                let size = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height))
+                x += min(size.width, bounds.width) + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private func rows(width: CGFloat, _ subviews: Subviews) -> [(items: [Int], width: CGFloat, height: CGFloat)] {
+        var rows: [(items: [Int], width: CGFloat, height: CGFloat)] = []
+        var cur: (items: [Int], width: CGFloat, height: CGFloat) = ([], 0, 0)
+        for i in subviews.indices {
+            let s = subviews[i].sizeThatFits(.unspecified)
+            let w = min(s.width, width)
+            if !cur.items.isEmpty, cur.width + spacing + w > width {
+                rows.append(cur)
+                cur = ([], 0, 0)
+            }
+            cur.width += (cur.items.isEmpty ? 0 : spacing) + w
+            cur.height = max(cur.height, s.height)
+            cur.items.append(i)
+        }
+        if !cur.items.isEmpty { rows.append(cur) }
+        return rows
     }
 }

@@ -413,6 +413,28 @@ enum VoiceDecider {
         return nil
     }
 
+    /// What a clause means while the running task waits on a question (no Jev call).
+    enum QuestionReply: Equatable {
+        /// It answers it: a choice's words, or the user's own (allowed answers only).
+        case answer(String)
+        /// Not finished saying it yet: decide again after this many ms.
+        case wait(Int)
+        /// Not an answer ("stop", or something else when only the listed answer will do).
+        case notAReply
+    }
+
+    /// A choice it names ("the second one", "large") answers at once; anything else answers once the
+    /// user pauses — a sentence mark needs a short pause, a bare clause the usual one.
+    static func questionReply(head: String, silenceMs: Int, question q: AgentQuestion) -> QuestionReply {
+        let said = normalizedGoal(head).trimmingCharacters(in: .whitespacesAndNewlines)
+        let plain = said.lowercased().trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+        guard !plain.isEmpty, !instantStops.contains(plain) else { return .notAReply }
+        if let c = q.choice(matching: plain) { return .answer(c) }
+        let need = ".?!".contains(head.trimmingCharacters(in: .whitespaces).last ?? " ") ? sentencePauseMs : pauseMs
+        if silenceMs < need { return .wait(max(60, need - silenceMs)) }
+        return q.allowsOther ? .answer(said.trimmingCharacters(in: CharacterSet(charactersIn: ".!"))) : .notAReply
+    }
+
     static let instantStops: Set<String> = ["stop", "stop it", "stop that", "stop stop", "cancel", "cancel that", "never mind", "nevermind"]
     static let instantConfirms: Set<String> = ["yes", "yeah", "yep", "yes please", "go ahead", "do it", "confirm"]
 

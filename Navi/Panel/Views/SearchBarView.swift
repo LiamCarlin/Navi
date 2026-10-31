@@ -28,7 +28,14 @@ struct SearchBarView: View {
             .frame(width: 26, height: 26)
 
             ZStack(alignment: .leading) {
-                if vm.query.isEmpty {
+                if vm.query.isEmpty, vm.mode == .agent, let q = vm.pendingQuestion {
+                    // The bar is the reply box while a paused task waits on its question.
+                    Text(q.allowsOther ? "Type an answer, or pick one below" : "Pick an answer below")
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                } else if vm.query.isEmpty {
                     Text(Self.hints[hintIndex])
                         .font(.system(size: 26, weight: .light))
                         .foregroundStyle(.tertiary)
