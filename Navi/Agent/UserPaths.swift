@@ -112,23 +112,29 @@ final class UserPaths: @unchecked Sendable {
         // filament" is any one, not the one they looked at last time.
         let anyOne = PathWords.wantsAnyOne(task)
         let items = !PathWords.isEmailTask(task) && !anyOne
+        // A task that reaches someone goes where they are reached (their chat, a new mail); the doc or page it
+        // names is what to send ("email dhvan the hci notes"), not where to go.
+        let reaches = TaskGrounding.isCommunication(task)
+        let pages = !anyOne && !reaches
         let recent = TaskGrounding.scope(of: task, now: Date()).recent
 
         func targets(in scope: PathGraph.Scope) -> [PathGraph.Target] {
             var out: [PathGraph.Target] = []
             // The thing the task names in their own work (grounded, or known by name): its own page.
-            if !anyOne, let gr = grounded, let u = gr.url, let page = RoutineMiner.pagePattern(u), scope.allows(site: UserHabits.siteKey(of: u), bundle: nil) {
+            if pages, let gr = grounded, let u = gr.url, let page = RoutineMiner.pagePattern(u), scope.allows(site: UserHabits.siteKey(of: u), bundle: nil) {
                 out.append(.init(kind: .page, page: page, url: UserHabits.cleanURL(u), node: nil, label: gr.name, fill: [], cost: 0, what: gr.name, source: "thing"))
             }
-            if !anyOne { out += g.pageTargets(words: want, scope: scope) }
+            if pages { out += g.pageTargets(words: want, scope: scope) }
             if items { out += g.itemTargets(words: want, scope: scope) }
-            out += g.pageKindTargets(words: want, recent: recent, scope: scope)
+            if pages { out += g.pageKindTargets(words: want, recent: recent, scope: scope) }
             out += g.intentTargets(intents, scope: scope)
             return out.sorted { $0.cost < $1.cost }
         }
         var found = targets(in: scope)
         // Nothing where the task seemed to point (implied places are a guess): anywhere of theirs.
-        if found.isEmpty, !scope.strict, !scope.places.isEmpty { found = targets(in: .init(places: [], strict: false)).filter { $0.kind != .intent } }
+        // Only their own pages that carry every name: an item elsewhere ("Focus" in System Settings for "play my
+        // focus playlist") is another thing with the same word.
+        if found.isEmpty, !scope.strict, !scope.places.isEmpty { found = targets(in: .init(places: [], strict: false)).filter { $0.kind == .page } }
         for t in found.prefix(6) {
             if let p = g.plan(to: t, start: start, intents: intents) { return p }
         }

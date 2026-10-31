@@ -390,7 +390,13 @@ import AppKit
                 }
             }
             if let match = await routineMatch(goal, memory: m, jev: jev) {
-                r.routine = "\(match.routine.template) (\(Int(match.confidence * 100))%)" + (match.path.map { " [path: \($0.source)]" } ?? "")
+                // A stored routine is a `routine`; the user's path to the target (`UserPaths`) is a note — a path is
+                // no false routine match ("routine": "none" checks stored routines).
+                if let p = match.path {
+                    r.notes.append("path (\(p.source)): \(match.routine.template) (\(Int(match.confidence * 100))%)")
+                } else {
+                    r.routine = "\(match.routine.template) (\(Int(match.confidence * 100))%)"
+                }
                 if !useCurrentTab, let start = AgentRun.routineStartPlace(match, task: goal, surface: surface) {
                     switch start {
                     case .page(let u):

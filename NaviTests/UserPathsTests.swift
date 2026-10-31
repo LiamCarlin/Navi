@@ -342,6 +342,20 @@ import Testing
         #expect(AgentRun.routineStartPlace(low, task: "x", surface: .browser) == nil)
     }
 
+    /// Bench regressions: "email dhvan the hci notes" started on the doc, "email the registrar…" on a registrar
+    /// page, "play my focus playlist" in System Settings' Focus.
+    @Test func reachingSomeoneNeverStartsOnTheThingItSends() {
+        let g = PathGraph.build(actions: Self.history + [
+            Self.act(.click, "New Mail", role: "button", bundle: "com.microsoft.Outlook", app: "Microsoft Outlook", at: 20 * Self.day),
+            Self.act(.click, "Read", role: "link", url: "https://docs.google.com/document/d/HCI1/edit", title: "HCI Notes - Google Docs", at: 21 * Self.day),
+            Self.act(.click, "Focus", role: "row", bundle: "com.apple.systempreferences", app: "System Settings", path: "Sidebar", at: 22 * Self.day),
+            Self.act(.click, "Focus", role: "row", bundle: "com.apple.systempreferences", app: "System Settings", path: "Sidebar", at: 23 * Self.day)])
+        let mail = UserPaths.plan(task: "email dhvan the hci notes", graph: g, grounded: ("https://docs.google.com/document/d/HCI1/edit", nil, "HCI Notes"),
+                                  named: ["com.microsoft.Outlook"])
+        #expect(mail?.source == "intent" && mail?.bundleID == "com.microsoft.Outlook" && mail?.startURL == nil)
+        #expect(UserPaths.plan(task: "play my focus playlist", graph: g, places: ["com.apple.Music", "com.spotify.client"]) == nil)
+    }
+
     @Test func coverageCountsPlacesWithUsablePaths() {
         let c = UserPaths.coverage(Self.graph, minActions: 5)
         #expect(c.places >= 2 && c.withChains >= 2 && c.withChains <= c.withRepeats)
