@@ -908,3 +908,62 @@ pins = {"w": 1000, "h": 600, "actions": [{"id": f"e{i}", "node": i, "kind": "cli
         + [{"id": "e9", "node": 9, "kind": "click", "role": "link", "label": "link", "rect": {"x": 950, "y": 10, "w": 30, "h": 30}}]}
 assert [a["label"] for a in nr.tidy_unnamed(pins)["actions"]] == ["link with no label at the top right"] and pins["omitted_unnamed"] == 7
 print("frames, labels, unnamed controls and perception gaps ok")
+
+# --- Adaptation 37: a needs-user stop is a question, and the answer comes back ---
+v = nr.normalize_verdict({"verdict": "needs_user", "answer": "The burger comes in three sizes.", "question": "Which size do you want?",
+                          "question_kind": "choice", "question_choices": ["Small", "Medium", " Large ", "medium", "", "Extra large", "Huge"]})
+assert v["question"] == "Which size do you want?" and v["question_kind"] == "choice", v
+assert v["question_choices"] == ["Small", "Medium", "Large", "Extra large"], v          # tidy: distinct, ≤ 4
+v = nr.normalize_verdict({"verdict": "needs_user", "answer": "DoorDash wants you to sign in.", "question": "Sign in to DoorDash in this tab.",
+                          "question_choices": ["x"]})
+assert v["question_kind"] == "do_it" and v["question_choices"] == [], v                  # unnamed kind with < 2 choices ⇒ do it
+assert "question" not in nr.normalize_verdict({"verdict": "partial", "answer": "a", "question": "q?"})
+burger = "order me a burger on doordash"
+q = nr.user_question({"verdict": "needs_user", "answer": "Three sizes.", "question": "Which size?", "question_kind": "choice",
+                      "question_choices": ["Small", "Large"]}, burger, "blocked")
+assert q == {"question": "Which size?", "question_kind": "choice", "question_choices": ["Small", "Large"]}, q
+# A takeover's own "Stopped: …" (no judge question) asks the user to do it.
+q = nr.user_question({"verdict": "needs_user", "answer": "Stopped: pick your Google account in the window that opened.", "next_step": ""},
+                     "sign into doordash", "blocked")
+assert q["question_kind"] == "do_it" and q["question"].startswith("Stopped: pick") and q["question_choices"] == [], q
+# Navi's purchase hand-off is never a question: done, or the payment that is the user's.
+assert nr.user_question({"verdict": "achieved", "answer": "In the cart."}, burger, "done") is None
+assert nr.user_question({"verdict": "needs_user", "answer": "The burger is in the cart; the order is yours to place.",
+                         "question": "Place the order and pay?", "question_kind": "do_it"}, burger, "blocked") is None
+assert nr.user_question({"verdict": "needs_user", "answer": "Enter your card number to check out."}, burger, "blocked") is None
+assert nr.user_question({"verdict": "not_achieved", "answer": "a"}, burger, "blocked") is None
+assert nr.user_question({"verdict": "needs_user", "answer": ""}, burger, "blocked") is None
+# The user's answers reach Jev's state, the judge and the takeover.
+said = [{"question": "Which size?", "reply": "Large"}]
+os.environ["NAVI_USER_SAID_JSON"] = json.dumps(said + [{"question": "no reply"}])
+assert nr.user_said_from_env() == said
+seen = {}
+jev_model.post_json = lambda url, key, body: seen.update(body=body) or {"answers": {}}
+nr.Playbook(skills=[], goal=burger).install()
+jev_model.post_json("https://api.typesafe.ai/v1/systemone", "k", {"model": "jev-latest",
+    "state": {"page": {"url": "https://www.doordash.com/"}}, "questions": {"operation": {"type": "choice", "criteria": {}, "instructions": {}}}})
+assert seen["body"]["state"]["user_said"] == said, seen["body"]["state"]
+judged = {}
+
+
+def judge_post(body, timeout=90, what="Claude"):
+    judged["body"] = body
+    return {"content": [{"type": "text", "text": '{"verdict": "not_achieved", "answer": "Large is selected.", "next_step": "Add to cart"}'}]}
+
+
+real_claude_post = nr.claude_post
+nr.claude_post = judge_post
+try:
+    v = nr.judge(burger, {"url": "https://www.doordash.com/", "title": "t", "text": ""}, [], "check")
+    state = json.loads(judged["body"]["messages"][0]["content"][-1]["text"])
+    assert state["user_said"] == said and "question_kind" in nr.JUDGE_SYSTEM and v["verdict"] == "not_achieved", state
+finally:
+    nr.claude_post = real_claude_post
+for bad in ("not json", json.dumps({"reply": "x"}), ""):
+    os.environ["NAVI_USER_SAID_JSON"] = bad
+    assert nr.user_said_from_env() == []
+os.environ.pop("NAVI_USER_SAID_JSON")
+# The rerun finds its own tab by id wherever the user left it.
+targets = [{"type": "page", "targetId": "T1", "url": "https://identity.doordash.com/"}, {"type": "iframe", "targetId": "T2"}]
+assert nr.find_target("T1", targets) == "T1" and nr.find_target("T2", targets) is None and nr.find_target("T9", targets) is None
+print("questions and answers (adaptation 37) ok")

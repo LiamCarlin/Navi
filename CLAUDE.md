@@ -316,8 +316,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     shows itself via `onAttentionNeeded`), ↑↓ ⏎ / ⌘1–4 / click, and while it is up the bar is the
     reply box — typing never switches to results. Island: the question + answer chips; a spoken
     reply answers without Jev (`VoiceDecider.questionReply`: a named choice at once, own words after
-    the pause), the voice idle watchdog ignores a run waiting on the user. Not yet: the Chrome CDP
-    runner still ends a needs-user stop instead of pausing.
+    the pause), the voice idle watchdog ignores a run waiting on the user. Chrome CDP runner (adaptation
+    37): the judge's needs_user verdict carries `question` + `question_kind` (choice: 2–4
+    `question_choices` from the page; do_it: sign in / a code / a captcha — a takeover's "Stopped:" is
+    re-judged to word it) in the done event with `tab` (its target id; the tab is kept, a do_it tab is
+    fronted). `UltrafastBridge.question(fromDone:)` → `RunOutcome.paused`; `run` asks (≤ 3,
+    `AgentRun.maxQuestions`), then reruns the runner on that tab (`NAVI_ATTACH_TARGET`, else
+    `NAVI_ATTACH_URL`) with the answers as `NAVI_USER_SAID_JSON` → `user_said` in Jev's state, the
+    judge's and the takeover's. No reply ⇒ the needs-user ending as before. Navi's purchase hand-off
+    ("Ready for you to place the order", a payment step) is never a question.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the

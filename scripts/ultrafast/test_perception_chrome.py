@@ -307,5 +307,36 @@ try:
     assert again["fingerprint"] == page["fingerprint"] and again["perception_gap"]["reason"] == "unseen_change", again.get("perception_gap")
     chrome.cdp("Target.closeTarget", targetId=target)
     print("unseen change ok")
+
+    # --- after a question the rerun continues in its own tab, wherever the user left it (adaptation 37) ---
+    import browser_harness.admin as harness_admin
+    import browser_harness.helpers as harness_helpers
+    PAGES["/menu"] = "<title>Menu</title><button>Small</button><button>Large</button>"
+    PAGES["/signed-in"] = "<title>Signed in</title><p>Welcome back</p>"
+    real_cdp, real_daemon = harness_helpers.cdp, harness_admin.ensure_daemon
+    harness_helpers.cdp, harness_admin.ensure_daemon = chrome.cdp, lambda: None
+    try:
+        target, s = open_page("/menu")
+        menu = f"http://127.0.0.1:{A}/menu"
+        # The user signs in on that tab meanwhile: it is on another page now.
+        chrome.cdp("Page.navigate", session_id=s, url=f"http://127.0.0.1:{A}/signed-in")
+        time.sleep(0.5)
+        os.environ.update(NAVI_ATTACH_TARGET=target, NAVI_ATTACH_URL=menu, NAVI_BACKGROUND_TAB="1")
+        fb = nr.FastBrowser(menu)
+        assert fb.target == target and fb.attached, (fb.target, target)
+        assert fb.evaluate("document.title") == "Signed in"          # attached, not navigated back
+        fb.close()
+        assert target in [t["targetId"] for t in chrome.cdp("Target.getTargets")["targetInfos"]]   # the tab stays
+        # A tab that is gone: the URL is tried next, else a new tab opens at the start URL.
+        chrome.cdp("Target.closeTarget", targetId=target)
+        time.sleep(0.2)
+        fb = nr.FastBrowser(menu)
+        assert fb.target != target and not fb.attached and fb.evaluate("document.title") == "Menu"
+        chrome.cdp("Target.closeTarget", targetId=fb.target)
+    finally:
+        harness_helpers.cdp, harness_admin.ensure_daemon = real_cdp, real_daemon
+        for k in ("NAVI_ATTACH_TARGET", "NAVI_ATTACH_URL", "NAVI_BACKGROUND_TAB"):
+            os.environ.pop(k, None)
+    print("attach to own tab after a question ok")
 finally:
     chrome.close()

@@ -369,16 +369,43 @@ enum UltrafastBridge {
         // nothing to do on it means the task is done — not a reason to close the tab
         // the user just watched open and start over from a Google search.
         let navigationOnly = first != search && isNavigationOnly(task)
+        // Only a run something can answer pauses (`AgentRun` gives every handle it drives an asker).
+        let mayAsk = handle.asker != nil
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
                                             allowEarlyBlockRetry: first != search, background: background,
-                                            openedIsDone: navigationOnly, attachURL: attachURL)
+                                            openedIsDone: navigationOnly, attachURL: attachURL, mayAsk: mayAsk)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab). Start over
             // where the task itself starts — the site it names, else a search-results page.
             let fresh = freshStart(for: task, after: first)
             handle.emit(.status("Nothing to do for this on \(URL(string: first)?.host ?? first) — starting over at \(URL(string: fresh)?.host ?? fresh)"))
             (outcome, text) = await runOnce(task: task, url: fresh, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                            allowEarlyBlockRetry: false, background: background)
+                                            allowEarlyBlockRetry: false, background: background, mayAsk: mayAsk)
+        }
+        // A stop only the user can unblock (a choice the task leaves open, a sign-in): the run pauses on the
+        // question, then goes on in the same tab with the reply in Jev's and the judge's state.
+        var said: [UserReply] = []
+        while case .paused(let pause) = outcome {
+            // Something to do on the page itself ("sign in"): the user needs to see the tab.
+            if !pause.question.allowsOther { await bringBrowserForward() }
+            guard let reply = await handle.ask(pause.question) else {
+                // Stopped from the card, or never answered: the stop it was, as before.
+                if Task.isCancelled {
+                    outcome = .cancelled
+                    handle.emit(.cancelled)
+                } else {
+                    outcome = .failed
+                    handle.verdict = .needsUser
+                    handle.emit(.failed(pause.summary))
+                }
+                break
+            }
+            said.append(UserReply(question: pause.question.question, reply: reply))
+            handle.emit(.status("You said: \(reply)"))
+            (outcome, text) = await runOnce(task: task, url: pause.url, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
+                                            allowEarlyBlockRetry: false, background: background, attachURL: pause.url,
+                                            attachTarget: pause.tab, stepBase: pause.steps, userSaid: said,
+                                            mayAsk: said.count < AgentRun.maxQuestions)
         }
         // The runner fronted its tab inside Chrome ("reveal"); Chrome itself may still
         // be behind the user's windows — the tab *is* the result, so bring it forward.
@@ -409,7 +436,50 @@ enum UltrafastBridge {
         }
     }
 
-    enum RunOutcome: Equatable { case completed, failed, cancelled, blockedBeforeActing }
+    enum RunOutcome: Equatable { case completed, failed, cancelled, blockedBeforeActing, paused(Pause) }
+
+    /// A run stopped on a question for the user (runner adaptation 37): what to ask, and where to go on.
+    struct Pause: Equatable {
+        var question: AgentQuestion
+        /// The tab's page when it stopped, and its Chrome target id (the rerun attaches to it).
+        var url: String
+        var tab: String?
+        /// Steps reported so far (the rerun numbers on from here).
+        var steps: Int
+        /// The stop's own words, the failure shown when the question goes unanswered.
+        var summary: String
+    }
+
+    /// One answer the user gave mid-run, for the rerun's `NAVI_USER_SAID_JSON`.
+    struct UserReply: Equatable {
+        var question: String
+        var reply: String
+    }
+
+    static func userSaidJSON(_ said: [UserReply]) -> String? {
+        guard !said.isEmpty else { return nil }
+        let list = said.map { ["question": $0.question, "reply": $0.reply] }
+        guard let data = try? JSONSerialization.data(withJSONObject: list, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The question a runner's done event puts to the user, or nil: only a needs-user stop that came with
+    /// one (adaptation 37). A choice offers the page's own options and a typed answer; "do it" (sign in,
+    /// a code, a captcha) has the one answer "I did it — keep going". Navi's purchase hand-off — the order
+    /// is the user's to place — is never a question.
+    static func question(fromDone json: [String: Any]) -> AgentQuestion? {
+        guard (json["status"] as? String) != "done", (json["status"] as? String) != "cancelled",
+              (json["outcome"] as? String).flatMap(RunVerdict.init(loose:)) == .needsUser,
+              let asked = (json["question"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !asked.isEmpty
+        else { return nil }
+        let answer = (json["answer"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let said = "\(asked) \(answer) \(json["summary"] as? String ?? "")".lowercased()
+        if said.contains("place the order") || said.contains("never pays") { return nil }
+        if json["question_kind"] as? String == "choice" {
+            return AgentQuestion(question: asked, detail: answer, choices: json["question_choices"] as? [String] ?? [])
+        }
+        return AgentQuestion(question: AgentRun.yourTurn(asked), choices: [AgentRun.didItChoice], allowsOther: false)
+    }
 
     /// The runner's done event as a typed verdict: its `outcome` when it sent one (adaptation 32 —
     /// "done" only when the judge said achieved), else what the status implies. A "done" status
@@ -457,7 +527,8 @@ enum UltrafastBridge {
     @discardableResult
     static func runOnce(task: String, url: String, handle: AgentRunHandle, maxSteps: Int, screenshots: Bool,
                         allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false,
-                        attachURL: String? = nil) async -> (outcome: RunOutcome, text: String?) {
+                        attachURL: String? = nil, attachTarget: String? = nil, stepBase: Int = 0,
+                        userSaid: [UserReply] = [], mayAsk: Bool = false) async -> (outcome: RunOutcome, text: String?) {
         let developer = DeveloperMode.isEnabled
         guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else {
             // "runtime not installed" is what `NativeBrowser.isRunnerUnavailable` matches: the
@@ -477,6 +548,9 @@ enum UltrafastBridge {
         var env = environment(credentials: credentials)
         if background { env["NAVI_BACKGROUND_TAB"] = "1" }
         if let attachURL { env["NAVI_ATTACH_URL"] = attachURL }
+        // After a question: the run's own tab, wherever the user left it, and what they answered (adaptation 37).
+        if let attachTarget { env["NAVI_ATTACH_TARGET"] = attachTarget }
+        if let said = userSaidJSON(userSaid) { env["NAVI_USER_SAID_JSON"] = said }
         // Nothing to do on the starting page ("order me a burger" on a Canvas tab): end at once —
         // `run` starts over from the task's own page — instead of asking Claude about this one.
         if allowEarlyBlockRetry { env["NAVI_EARLY_BLOCK_EXIT"] = "1" }
@@ -530,7 +604,7 @@ enum UltrafastBridge {
             String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         }
         var finished = false
-        var stepIndex = 0
+        var stepIndex = stepBase
         /// Steps that did something on the page (Claude's coaching notes and waits are steps too, but act on nothing).
         var acted = 0
         // Keep the raw event stream of the last run for debugging (local only).
@@ -632,6 +706,10 @@ enum UltrafastBridge {
                             finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
                                 .joined(separator: "\n")
                             handle.emit(.completed(summary: opened))
+                        } else if mayAsk, let q = Self.question(fromDone: json) {
+                            // Not the end: `run` asks the user and goes on in this tab.
+                            outcome = .paused(Pause(question: q, url: json["url"] as? String ?? url, tab: json["tab"] as? String,
+                                                    steps: stepIndex, summary: developer ? "Blocked: \(summary)" : summary))
                         } else if acted == 0, allowEarlyBlockRetry {
                             outcome = .blockedBeforeActing
                         } else {

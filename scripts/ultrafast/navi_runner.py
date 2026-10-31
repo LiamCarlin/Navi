@@ -137,6 +137,13 @@ Reliability adaptations (from failed runs, see git log):
  36. A perception gap (unreadable_frame / empty_dialog / unseen_change /
      captcha) is reported in the page and as one event; the run controller
      decides what to do with it.
+ 37. A question, not an ending: a needs_user judgment carries `question`,
+     `question_kind` (choice: 2–4 `question_choices` from the page; do_it: a
+     sign-in, code or captcha only the user can do) in the done event, and
+     the tab is kept (`tab` = its target id). Navi pauses on it and reruns
+     the runner on that tab (NAVI_ATTACH_TARGET) with the answers so far
+     (NAVI_USER_SAID_JSON) in Jev's state, the judge's and the takeover's as
+     `user_said`. Navi's own purchase hand-off is never a question.
 """
 
 import argparse
@@ -483,7 +490,13 @@ class FastBrowser(Browser):
         # opening a second tab with a Google search. The user's tab is never closed.
         self.attached = False
         attach_url = os.environ.get("NAVI_ATTACH_URL", "").strip()
-        existing = find_open_tab(attach_url) if attach_url else None
+        # Adaptation 37: after a question the run goes on in its own tab, wherever the user left it
+        # (signing in moves it to another URL) — found by its target id first, else by its URL.
+        attach_target = os.environ.get("NAVI_ATTACH_TARGET", "").strip()
+        existing = find_target(attach_target) if attach_target else None
+        own_tab = existing is not None
+        if existing is None and attach_url:
+            existing = find_open_tab(attach_url)
         if existing:
             self.target = existing
             self.attached = True
@@ -501,13 +514,14 @@ class FastBrowser(Browser):
                 cdp("Target.activateTarget", targetId=self.target)
             except Exception:  # noqa: BLE001 — cosmetic
                 pass
-        if not self.attached:
+        if not self.attached or own_tab:
             try:
                 # The script only runs with the Page domain on (the daemon's event buffer is bounded).
                 self.call("Page.enable")
                 self.call("Page.addScriptToEvaluateOnNewDocument", source=ONE_TAB_JS)
             except Exception:  # noqa: BLE001 — without it a new tab is simply not followed
                 pass
+        if not self.attached:
             self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -627,6 +641,17 @@ def find_open_tab(url, targets=None):
         if t.get("type") == "page" and same_page(t.get("url"), url):
             return t.get("targetId")
     return None
+
+
+def find_target(target_id, targets=None):
+    """`target_id` when that Chrome tab is still open, else None (adaptation 37)."""
+    if targets is None:
+        try:
+            from browser_harness.helpers import cdp
+            targets = cdp("Target.getTargets").get("targetInfos", [])
+        except Exception:  # noqa: BLE001 — no daemon yet: open our own tab
+            return None
+    return next((t["targetId"] for t in targets if t.get("type") == "page" and t.get("targetId") == target_id), None)
 
 
 # --- Adaptation 4: warm the model connections during navigation -------------
@@ -1001,7 +1026,7 @@ VERDICTS = ("achieved", "partial", "not_achieved", "impossible", "needs_user")
 
 JUDGE_SYSTEM = """You check where a web task stands for Navi, an assistant that works in the user's browser. You get the user's goal, a screenshot of the browser tab now (when available), the page's URL, title and visible text, the actions taken so far, and why you were asked.
 
-Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user"}
+Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user", "question": "...", "question_kind": "choice" | "do_it", "question_choices": ["...", ...]}
 
 - achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag or checkout is reached — Navi never pays; the user places the order. For a sign-in, the account is signed in.
 - partial: some parts are done, others not yet.
@@ -1009,7 +1034,12 @@ Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved
 - impossible: it cannot be done on this site at all (say why).
 - needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, a payment, a choice the goal leaves open.
 answer: one to three plain sentences for the user, true to the screen. Never claim something was done that the screen does not show, and never talk about what you yourself can or cannot do.
-next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details."""
+next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details.
+question, question_kind, question_choices — only with needs_user (else "", "", []); Navi pauses the task and puts this to the user:
+- "choice" when the user must decide something the goal leaves open: question is one short question ("Which size do you want?"), question_choices 2–4 short answers — the options the page itself offers, as labelled there, the likeliest first.
+- "do_it" when only the user can do the next step on screen (their password or a code, a captcha, an account to pick in a sign-in window): question says what to do in one sentence ("Sign in to DoorDash in this tab."), question_choices is [].
+Never ask about paying or placing the order: an item in the cart/bag is achieved, and the order is the user's to place.
+user_said, when present, holds what the user already answered in this task: follow it, and never ask the same thing again."""
 
 COULD_NOT = re.compile(r"\b(i (could ?n[o']t|can ?n[o']t|cannot|was(n't| not) able|am unable|did ?n[o']t manage)|unable to|"
                        r"(is|was|has|have)(n't| not) (been |yet )?(confirmed|created|added|sent|found|done|completed|opened|saved)|"
@@ -1030,7 +1060,60 @@ def normalize_verdict(out):
     answer = str(out.get("answer") or "").strip()
     if verdict == "achieved" and says_could_not(answer):
         verdict = "partial"
-    return {"verdict": verdict, "answer": answer[:800], "next_step": str(out.get("next_step") or "").strip()[:300]}
+    result = {"verdict": verdict, "answer": answer[:800], "next_step": str(out.get("next_step") or "").strip()[:300]}
+    if verdict == "needs_user":
+        # Adaptation 37: what to put to the user. An unnamed kind follows the choices it came with.
+        choices = tidy_choices(out.get("question_choices"))
+        kind = str(out.get("question_kind") or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if kind not in {"choice", "do_it"}:
+            kind = "choice" if len(choices) >= 2 else "do_it"
+        result.update(question=str(out.get("question") or "").strip()[:200], question_kind=kind,
+                      question_choices=choices if kind == "choice" else [])
+    return result
+
+
+MAX_CHOICES = 4
+
+
+def tidy_choices(raw):
+    """Up to four distinct, short, non-empty answers (the same rule as Navi's `AgentQuestion.tidy`)."""
+    out, seen = [], set()
+    for c in raw if isinstance(raw, list) else []:
+        t = str(c or "").strip().strip("•-– ")
+        if t and len(t) <= 80 and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+        if len(out) == MAX_CHOICES:
+            break
+    return out
+
+
+def user_said_from_env():
+    """What the user answered earlier in this task (NAVI_USER_SAID_JSON: [{question, reply}]), or []."""
+    try:
+        raw = json.loads(os.environ.get("NAVI_USER_SAID_JSON") or "[]")
+    except ValueError:
+        return []
+    return [{"question": str(x.get("question") or "")[:200], "reply": str(x.get("reply") or "")[:300]}
+            for x in raw if isinstance(x, dict) and x.get("reply")][-3:] if isinstance(raw, list) else []
+
+
+PAYMENT_STEP = re.compile(r"\b(pay|payment|place (the |your )?order|checkout|check out|card number|billing)\b", re.I)
+
+
+def user_question(verdict, goal, status):
+    """What a stop puts to the user (adaptation 37), or None. Only a needs-user stop asks; Navi's own
+    purchase hand-off — the order and its payment are the user's — ends as it always has."""
+    if status == "done" or (verdict or {}).get("verdict") != "needs_user":
+        return None
+    question = (verdict.get("question") or verdict.get("answer") or "").strip()
+    if not question:
+        return None
+    if PURCHASE_GOAL.search(goal or "") and PAYMENT_STEP.search(question + " " + (verdict.get("answer") or "")):
+        return None
+    kind = verdict.get("question_kind") or "do_it"
+    return {"question": question, "question_kind": kind,
+            "question_choices": verdict.get("question_choices") or [] if kind == "choice" else []}
 
 
 def judge(goal, page, history, why, screenshot_b64=None):
@@ -1042,6 +1125,9 @@ def judge(goal, page, history, why, screenshot_b64=None):
         "actions_taken": [{k: h.get(k) for k in ("action", "kind", "text", "page_changed")}
                           for h in history if h.get("kind") != "check"][-14:],
     }
+    said = user_said_from_env()
+    if said:
+        state["user_said"] = said
     content = []
     if screenshot_b64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
@@ -1265,6 +1351,9 @@ class Takeover:
             "page": {"url": start_url, "title": page.get("title")},
             "recent_actions": recent,
         }
+        said = user_said_from_env()
+        if said:
+            intro["user_said"] = said
         messages = [{"role": "user", "content": [
             {"type": "text", "text": json.dumps(intro, ensure_ascii=False)},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": shot}},
@@ -1579,11 +1668,15 @@ class Playbook:
         user_context = self.user_context_from_env()
 
         facts = date_facts(self.goal)
+        said = user_said_from_env()
 
         def post_json(url, key, body):
             if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict):
                 body = dict(body)
                 body["state"] = {**body["state"], "facts": facts}
+                if said:
+                    # Adaptation 37: the user's answers to this task's questions ("Which size?" → "Large").
+                    body["state"]["user_said"] = said
             if isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict) and user_context:
                 body = dict(body)
                 body["state"] = {**body["state"], "user_context": user_context}
@@ -3690,6 +3783,7 @@ def main():
     signal.signal(signal.SIGTERM, on_term)
     policy = tab_policy()
     final_status, final_steps = "error", 0
+    asked_user = False
     try:
         # An SPA start page (Google Maps, Flights, …) is often blank at "interactive".
         settled = settle_page(agent)
@@ -3811,7 +3905,13 @@ def main():
                 pass
             coach.current_url = playbook.current_url = agent.state["page"].get("url")
             if res["result"] == "stopped":
-                return ("blocked", res["summary"]), {"verdict": "needs_user", "answer": res["summary"], "next_step": ""}
+                stopped = {"verdict": "needs_user", "answer": res["summary"], "next_step": ""}
+                # Adaptation 37: Claude's "Stopped: …" becomes a question for the user — the judge words it
+                # (a choice with the page's options, or what to do on screen); its own words otherwise.
+                checked = look("Claude, driving, stopped: " + (res["summary"] or "(nothing)"))
+                if checked and checked["verdict"] == "needs_user" and checked.get("question"):
+                    stopped = dict(checked, answer=checked["answer"] or res["summary"])
+                return ("blocked", res["summary"]), stopped
             if res["result"] in {"done", "no_progress"}:
                 # Claude's "Done" — or a reply with no action, which is its read of the page ("the
                 # Google option is clearly visible") — is checked on a fresh look, never taken on trust.
@@ -3941,8 +4041,17 @@ def main():
                 summary = stop[1] if stop and stop[1] else (verdict.get("answer") or summarize(state["history"], status))
                 if status == "done":
                     summary = purchase_note(args.goal, status) + summary
+                # Adaptation 37: a stop only the user can unblock is a question; the tab stays for the rerun,
+                # and something to do on it ("sign in") brings it forward.
+                ask = user_question(verdict, args.goal, status)
+                if ask:
+                    asked_user = True
+                    if ask["question_kind"] == "do_it":
+                        reveal_tab(agent)
                 emit(
                     "done",
+                    **(ask or {}),
+                    tab=getattr(agent.state.get("browser"), "target", None),
                     status=status,
                     outcome=verdict["verdict"],
                     answer=verdict.get("answer") or "",
@@ -3977,7 +4086,7 @@ def main():
     finally:
         # The tab is what the user asked for ("make a Google Doc"): it stays open
         # unless nothing happened on it, or a background lookup completed.
-        if should_close_tab(policy, final_status, final_steps):
+        if not asked_user and should_close_tab(policy, final_status, final_steps):
             try:
                 agent.close()
             except Exception:  # noqa: BLE001
