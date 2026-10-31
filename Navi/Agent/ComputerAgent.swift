@@ -90,6 +90,9 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
         /// control keeps this small: the user is watching and can simply say what to
         /// do next, which beats a 10 s screenshot loop every time.
         var maxClaudeFallbacks: Int? = nil
+        /// WorkingSurface hook: continue where an earlier run worked (its tab or app) instead of
+        /// starting from the task's own place or the screen in front. Skips grounding/routine starts.
+        var continueOn: WorkingSurface? = nil
     }
 
     @MainActor
@@ -106,13 +109,16 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
                                      revealWhenDone: s.agentRevealWhenDone,
                                      planWithClaude: options.planWithClaude,
                                      surfaceHint: options.surface,
-                                     useCurrentTab: options.useCurrentTab)
+                                     useCurrentTab: options.useCurrentTab,
+                                     continueOn: options.continueOn)
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
                                     respond: { run.respond($0) })
         let log = AgentRunLog(task: task)
-        handle.onEmit = { log.record($0) }
+        let startedAt = Date()
+        // WorkingSurface hook: the run's last place becomes a recent place when it ends.
+        handle.onEmit = { log.record($0); WorkingSurface.observe($0, task: task, startedAt: startedAt) }
         run.start(handle: handle)
         return handle
     }
@@ -159,6 +165,8 @@ final class AgentRun: @unchecked Sendable {
         var planWithClaude: Bool = true
         var surfaceHint: TaskSurface.Surface = .unsure
         var useCurrentTab: Bool = false
+        /// WorkingSurface hook: see `RunOptions.continueOn`.
+        var continueOn: WorkingSurface? = nil
     }
 
     static let screenshotMaxLongEdge = 1280
@@ -321,7 +329,9 @@ final class AgentRun: @unchecked Sendable {
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
             // …and whether it is something they have done before, their way (in parallel).
             async let routine = UserRoutines.match(task: originalTask)
-            if let g = await TaskGrounding.ground(task: originalTask) {
+            // WorkingSurface hook: a follow-up of the last run ("open my cart" after the DoorDash order)
+            // is about that place, not about whatever screen memory last showed for its words.
+            if config.continueOn == nil, let g = await TaskGrounding.ground(task: originalTask) {
                 grounded = g
                 handle.emit(.status("From your screen memory: \(g.thing.name) · \(g.thing.place) · \(TaskGrounding.shortWhen(g.thing.lastSeen, now: Date()))"))
             }
@@ -380,6 +390,23 @@ final class AgentRun: @unchecked Sendable {
     private func resolvePlanWithoutPlanner() async -> (FrontmostProbe.Info, TaskPlanner.Plan) {
         var surface = config.surfaceHint
         var front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        // WorkingSurface hook: continue where the earlier run worked — its tab (attached again by
+        // URL) or its app — before grounding, routines or the screen in front get a say.
+        if let s = config.continueOn {
+            if let b = front.bundleID, AXSnapshotter.isBrowser(b) { front.url = FrontmostProbe.browserURL(bundleID: b) }
+            switch WorkingSurface.start(for: s, front: front) {
+            case .page(let url, _) where !url.isEmpty && ComputerAgent.browserRunner != nil:
+                Log.agent.info("WorkingSurface: continuing on \(WorkingSurface.shortURL(url), privacy: .private)")
+                var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+                plan.steps[0].url = url
+                return (front, plan)
+            case .app(let bundle, let name) where bundle != nil || name != nil:
+                Log.agent.info("WorkingSurface: continuing in \(name ?? bundle ?? "?", privacy: .public)")
+                let inFront = bundle != nil && front.bundleID == bundle
+                return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: inFront ? nil : (bundle ?? name)))
+            default: break
+            }
+        }
         // "Open the last assignment I did", "go back to the onshape model": the thing the task was
         // grounded to is where the work happens — its page, or the app it lives in. Only for a
         // command to reopen it; not when the task reaches someone (the thing is what to send),
@@ -531,7 +558,8 @@ final class AgentRun: @unchecked Sendable {
                 ranRunner = true
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 // The start URL is the page that is open now: continue on that tab.
-                let attach = frontmost.url != nil && url == frontmost.url
+                // WorkingSurface hook: …or the tab an earlier run worked in (the runner finds it by URL).
+                let attach = (frontmost.url != nil && url == frontmost.url) || WorkingSurface.Store.shared.isRecentPage(url)
                 let goal = task
                 let background = config.background
                 await showOverlay(step: max(1, actionIndex))
@@ -600,6 +628,9 @@ final class AgentRun: @unchecked Sendable {
                     }
                 }
                 pageText = lastSnapshotText
+                // WorkingSurface hook: the app (or natively driven tab) this step worked in.
+                let worked = await probe(includeURL: true)
+                WorkingSurface.noteApp(task: originalTask, bundleID: worked.bundleID, appName: worked.appName, url: worked.url, title: worked.windowTitle)
             }
             lastStepNative = !ranRunner
             try checkCancelled()

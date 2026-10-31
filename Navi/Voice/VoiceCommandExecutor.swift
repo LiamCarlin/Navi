@@ -62,6 +62,8 @@ final class VoiceCommandExecutor {
     /// What was asked and what came of it, most recent last — the conversation
     /// every later command and question is given (`QueryContext.conversation`).
     private(set) var recent: [String] = []
+    /// The app in front when a quit ran (best guess at what was quit), to forget its working surface.
+    private var lastQuitBundle: String?
     private let input = InputController()
 
     static let maxRecent = 8
@@ -111,6 +113,33 @@ final class VoiceCommandExecutor {
         if current != nil { stopCurrent() } else { pump() }
     }
 
+    /// What was said just before a new clause and is still being carried out or waiting: the last
+    /// queued command, else the running one (controls and answers excluded).
+    var previousInstruction: String? {
+        let cmd = queue.last?.command ?? current?.command
+        switch cmd {
+        case .some(.control), .some(.answer), .none: return nil
+        case .some(let c): return c.spoken
+        }
+    }
+
+    /// The last queued command, when it was queued less than `amendWindow` ago and hasn't started.
+    func amendableCommand(now: Date = Date()) -> VoiceCommand? {
+        guard let last = queue.last, now.timeIntervalSince(last.enqueuedAt) < Self.amendWindow else { return nil }
+        return last.command
+    }
+
+    static let amendWindow: TimeInterval = 8
+
+    /// Replaces the last queued command (still not started) with its amended version.
+    @discardableResult
+    func amendLastQueued(with command: VoiceCommand) -> Bool {
+        guard let last = queue.last else { return false }
+        queue[queue.count - 1] = Item(id: last.id, command: command, enqueuedAt: last.enqueuedAt)
+        onEvent?(.queueChanged)
+        return true
+    }
+
     func respondToApproval(_ approve: Bool) {
         guard let p = pendingApproval else { return }
         pendingApproval = nil
@@ -143,6 +172,7 @@ final class VoiceCommandExecutor {
         currentTask = nil
         pendingApproval = nil
         remember(item, outcome)
+        if case .done = outcome { recordPlace(item.command) }
         onEvent?(.finished(item, outcome))
         pump()
     }
@@ -164,6 +194,37 @@ final class VoiceCommandExecutor {
         }
         recent.append("“\(item.command.spoken)” → \(Self.oneLine(result, max: 220))")
         if recent.count > Self.maxRecent { recent.removeFirst(recent.count - Self.maxRecent) }
+    }
+
+    /// Commands that reach a place without the agent ("go to youtube", "open notes") leave it as
+    /// the working surface a follow-up continues in; agent runs record theirs themselves.
+    private func recordPlace(_ command: VoiceCommand) {
+        let now = Date()
+        switch command {
+        case .openURL(_, let text), .webSearch(_, let text):
+            let page: URL
+            switch command {
+            case .webSearch(let q, _): page = URLAndWeb.googleURL(for: q)
+            case .openURL(let u, _): page = u
+            default: return
+            }
+            let browser = NSWorkspace.shared.urlForApplication(toOpen: page)
+            let bid = browser.flatMap { Bundle(url: $0)?.bundleIdentifier }
+            let name = browser.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+            WorkingSurface.Store.shared.record(WorkingSurface(kind: .browserTab, task: text, outcome: .completed, summary: "opened \(page.host ?? "the page")",
+                                                              bundleID: bid, appName: name, url: page.absoluteString, at: now))
+        case .openApp(let e, let text):
+            WorkingSurface.Store.shared.record(WorkingSurface(kind: .app, task: text, outcome: .completed, summary: "opened \(e.name)",
+                                                              bundleID: e.bundleID, appName: e.name, at: now))
+        case .openAppNamed(_, let text):
+            guard let last = lastApp else { return }
+            WorkingSurface.Store.shared.record(WorkingSurface(kind: .app, task: text, outcome: .completed, summary: "opened \(last.name)",
+                                                              bundleID: last.bundleID, appName: last.name, at: now))
+        case .window(let w, _):
+            if w.verb == .quit, let b = lastQuitBundle { WorkingSurface.Store.shared.forget(bundleID: b) }
+        default:
+            break
+        }
     }
 
     static func oneLine(_ s: String, max: Int) -> String {
@@ -193,9 +254,9 @@ final class VoiceCommandExecutor {
                 if foreground, let bid = t?.bundleID { await Self.waitForFrontmost(bundleID: bid) }
                 return Task.isCancelled ? .cancelled : .done("Opened \(t?.appName ?? name.capitalized)")
             }
-            return await runTask(item, goal: text, surface: .nativeApp, useCurrentTab: false, continues: false)
-        case .task(let goal, let surface, let useCurrentTab, _, let continues):
-            return await runTask(item, goal: goal, surface: surface, useCurrentTab: useCurrentTab, continues: continues)
+            return await runTask(item, goal: text, surface: .nativeApp, useCurrentTab: false, place: nil)
+        case .task(let goal, let surface, let useCurrentTab, _, let place):
+            return await runTask(item, goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: place)
         case .openURL(let url, _):
             let ok = NSWorkspace.shared.open(url)
             try? await Task.sleep(for: .milliseconds(300))
@@ -228,6 +289,7 @@ final class VoiceCommandExecutor {
             }
             return Task.isCancelled ? .cancelled : .done(done)
         case .window(let w, _):
+            lastQuitBundle = w.verb == .quit ? Self.userFrontApp()?.bundleIdentifier : nil
             switch await WindowControls.perform(w, fallbackApp: lastApp?.bundleID ?? lastApp?.name, input: input) {
             case .success(let done):
                 if w.verb == .quit || w.verb == .hide, let f = Self.userFrontApp() {
@@ -269,12 +331,63 @@ final class VoiceCommandExecutor {
         return !["com.apple.loginwindow", "com.apple.ScreenSaver.Engine", "com.apple.SecurityAgent", "com.apple.UserNotificationCenter"].contains(b)
     }
 
-    static func continuesOnCurrentTab(goal: String, surface: TaskSurface.Surface, frontmostApp: String?,
-                                      continues: Bool, lastWasBrowser: Bool) -> Bool {
+    /// Without Jev's `work_where` (offline, or unsure): a browser task continues on the tab in
+    /// front when it acts on that page ("click …", "scroll …"), or when the last task worked on
+    /// that very tab — not merely because the last task was on the web: "order me a burger"
+    /// after "open my canvas" once ran on the Canvas tab.
+    nonisolated static func continuesOnCurrentTab(goal: String, surface: TaskSurface.Surface, frontmostApp: String?, lastWorkedHere: Bool) -> Bool {
         guard surface != .nativeApp, let bid = frontmostApp, AXSnapshotter.isBrowser(bid) else { return false }
         guard TextCandidates.urls(in: goal).isEmpty, UltrafastBridge.knownSiteURL(in: goal) == nil, AppSkills.startURL(for: goal) == nil else { return false }
         // The page in front is where "click …", "type …", "scroll …" happen, whatever came before.
-        return continues || lastWasBrowser || TaskSurface.isPageAction(goal)
+        return TaskSurface.isPageAction(goal) || (lastWorkedHere && !wantsElsewhere(goal))
+    }
+
+    /// An errand or a named place of its own ("order me a burger", "go to McDonald's", "text mom").
+    nonisolated static func wantsElsewhere(_ goal: String) -> Bool {
+        goal.lowercased().range(of: #"\b(go to|navigate to|take me to|head to|visit|order|buy|purchase|shop|book|reserve|deliver|delivery|tickets?|text|message|email|call)\b"#,
+                                options: .regularExpression) != nil
+    }
+
+    struct Placement: Equatable {
+        var surface: TaskSurface.Surface
+        var useCurrentTab: Bool
+        var continueOn: WorkingSurface?
+    }
+
+    /// Where a spoken task runs. Jev's `work_where` decides when it answered: an earlier task's
+    /// place is continued (its tab or app), the screen in front is the open tab, a place of the
+    /// task's own never starts on the open tab. Undecided ⇒ the local rules (`voiceSurface`,
+    /// `continuesOnCurrentTab`).
+    nonisolated static func placement(goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, place: WorkingSurface.Choice?,
+                                      frontmostBundle: String?, compound: Bool, lastWorkedHere: Bool,
+                                      hereSurface: WorkingSurface? = nil, previousSurface: WorkingSurface? = nil,
+                                      namesPage: (String) -> Bool) -> Placement {
+        switch place {
+        case .last(let s)?:
+            return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s)
+        case .here?:
+            // The screen in front is where the last task worked: continuing that task, so screen
+            // memory's guess at what the words mean ("my cart" → an old Amazon cart) stays out of it.
+            if let s = hereSurface { return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s) }
+            return Placement(surface: surface, useCurrentTab: useCurrentTab, continueOn: nil)
+        case .newPlace?:
+            return Placement(surface: surface, useCurrentTab: false, continueOn: nil)
+        case .previous?:
+            // The instruction before it has finished by now: its place is the latest recent place.
+            if let s = previousSurface { return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s) }
+            return placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: nil, frontmostBundle: frontmostBundle,
+                             compound: compound, lastWorkedHere: lastWorkedHere, namesPage: namesPage)
+        case nil:
+            var p = Placement(surface: surface, useCurrentTab: useCurrentTab, continueOn: nil)
+            if !compound, !p.useCurrentTab {
+                let r = voiceSurface(goal: goal, surface: surface, frontmostBundle: frontmostBundle, namesPage: namesPage)
+                p.surface = r.surface
+                p.useCurrentTab = r.currentTab
+            }
+            p.useCurrentTab = p.useCurrentTab
+                || continuesOnCurrentTab(goal: goal, surface: p.surface, frontmostApp: frontmostBundle, lastWorkedHere: lastWorkedHere)
+            return p
+        }
     }
 
     /// Two or more instructions in one goal — "open chrome, find the newest Patriots score, and
@@ -340,36 +453,24 @@ final class VoiceCommandExecutor {
         try? await Task.sleep(for: .milliseconds(120))
     }
 
-    private func runTask(_ item: Item, goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, continues: Bool) async -> Outcome {
-        var context = self.context()
-        var task = goal
+    private func runTask(_ item: Item, goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, place: WorkingSurface.Choice?) async -> Outcome {
+        let context = self.context()
+        let task = goal
         let compound = Self.isCompound(goal) && services.claude.isConfigured
-        var surface = surface
-        var useCurrentTab = useCurrentTab
-        if !compound, !useCurrentTab {
-            let r = Self.voiceSurface(goal: goal, surface: surface, frontmostBundle: context.frontmostApp, namesPage: Self.namesPage)
-            surface = r.surface
-            useCurrentTab = r.currentTab
-        }
-        // "Look up Matt Armstrong" right after "go to YouTube": the page in front is
-        // where it happens. Jev's start_from head is not always asked (no URL yet
-        // when the words arrived), so decide locally too: a browser is in front,
-        // the previous instruction was on the web or this one continues it, and
-        // no other site or URL is named.
-        useCurrentTab = useCurrentTab || Self.continuesOnCurrentTab(goal: goal, surface: surface, frontmostApp: context.frontmostApp,
-                                                                        continues: continues, lastWasBrowser: lastWasBrowser)
-        // A follow-up meant for the app the previous instruction used, when that app isn't in front (background mode).
-        if continues, let last = lastApp, let bid = last.bundleID, context.frontmostApp != bid,
-           !goal.lowercased().contains(last.name.lowercased()) {
-            task = "In \(last.name): \(goal)"
-            context.frontmostApp = bid
-            context.frontmostAppName = last.name
-        }
+        // Did the last task work on what is in front now (the same tab's site / the same app)?
+        var front = FrontmostProbe.Info(bundleID: context.frontmostApp, appName: context.frontmostAppName, windowTitle: context.frontmostWindowTitle)
+        if let b = front.bundleID, AXSnapshotter.isBrowser(b) { front.url = await Task.detached { FrontmostProbe.browserURL(bundleID: b) }.value }
+        let last = WorkingSurface.Store.shared.recent(limit: 1).first
+        let lastWorkedHere = last?.isShown(by: front) ?? lastWasBrowser
+        let p = Self.placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: place, frontmostBundle: context.frontmostApp,
+                               compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil,
+                               previousSurface: last.flatMap { $0.at >= item.enqueuedAt.addingTimeInterval(-5) ? $0 : nil }, namesPage: Self.namesPage)
+        if let s = p.continueOn { Log.voice.info("voice task continues in \(s.placeDescription, privacy: .private)") }
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
         let options = ComputerAgent.RunOptions(background: !foreground, showOverlay: false, maxSteps: maxSteps,
-                                               planWithClaude: compound, surface: surface, useCurrentTab: useCurrentTab,
-                                               maxClaudeFallbacks: Self.voiceClaudeFallbacks)
+                                               planWithClaude: compound && p.continueOn == nil, surface: p.surface, useCurrentTab: p.useCurrentTab,
+                                               maxClaudeFallbacks: Self.voiceClaudeFallbacks, continueOn: p.continueOn)
         let handle = services.agent.run(task: task, context: context, options: options)
         currentRun = handle
         var outcome: Outcome = .failed("The task ended without a result")

@@ -203,7 +203,8 @@ struct UtteranceSegmenter: Equatable {
                     break scan
                 }
             }
-            if i > start, !ignoredBoundaries.contains(i), let c = Self.connector(at: i, in: words) {
+            if i > start, !ignoredBoundaries.contains(i), let c = Self.connector(at: i, in: words),
+               !Self.isInsideDictation(connector: c, at: i, headStart: start, in: words) {
                 end = i; resume = i + c.count; connector = c.joined(separator: " "); break scan
             }
             if !ignoredBoundaries.contains(i), Self.startsNewInstruction(at: i, headStart: start, in: words) {
@@ -228,6 +229,20 @@ struct UtteranceSegmenter: Equatable {
         guard !softSplitBlockers.contains(core(words[index - 1])) else { return false }
         return !words[headStart..<index].contains { dictationVerbs.contains(core($0)) }
     }
+
+    /// "text mom that I'm running late and I'll call her tonight": once the head dictates text, a
+    /// plain "and" / "also" / "plus" belongs to that text — unless an instruction verb follows it
+    /// ("text mom I'm late and open spotify"), which Jev still confirms. "and then", "then",
+    /// "after that" and sentence marks always end the head.
+    static func isInsideDictation(connector c: [String], at index: Int, headStart: Int, in words: [String]) -> Bool {
+        guard weakConnectors.contains(c) else { return false }
+        guard words[headStart..<index].contains(where: { dictationVerbs.contains(core($0)) }) else { return false }
+        let next = index + c.count
+        guard next < words.count else { return true }     // nothing after it yet: still the text
+        return !imperativeVerbs.contains(core(words[next]))
+    }
+
+    static let weakConnectors: [[String]] = [["and"], ["also"], ["plus"], ["and", "also"]]
 
     /// Everything after the cursor, as one string (for the UI).
     var pendingText: String { words[dispatched...].joined(separator: " ") }

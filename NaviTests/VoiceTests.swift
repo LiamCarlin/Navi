@@ -511,7 +511,7 @@ import Testing
         #expect(transcript?["FOLLOWING"] as? String == "make hi the title")
         #expect((state["installed_apps_possibly_named_in_HEAD"] as? [[String: Any]])?.count == 1)
         let q = VoiceDecider.questions(inp)
-        #expect(Set(q.keys) == ["boundary", "kind", "control", "app_target", "surface", "start_from", "is_risky", "continues_previous", "wants_memory"])
+        #expect(Set(q.keys) == ["boundary", "kind", "control", "app_target", "surface", "whole_instruction", "is_risky", "wants_memory"])
         // Serialisable for the wire.
         #expect(JSONSerialization.isValidJSONObject(state))
     }
@@ -574,15 +574,15 @@ struct VoiceCurrentTabTests {
     @Test @MainActor func followUpsOnABrowserPageStayOnThatTab() {
         let chrome = "com.google.Chrome"
         // After "go to YouTube", "look up Matt Armstrong" continues on the YouTube tab.
-        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: true))
-        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "click the first video", surface: .unsure, frontmostApp: chrome, continues: true, lastWasBrowser: false))
+        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, lastWorkedHere: true))
+        #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "click the first video", surface: .unsure, frontmostApp: chrome, lastWorkedHere: false))
         // Naming another site or a URL is a new destination.
-        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "go to reddit", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: true))
-        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "open github.com", surface: .browser, frontmostApp: chrome, continues: true, lastWasBrowser: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "go to reddit", surface: .browser, frontmostApp: chrome, lastWorkedHere: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "open github.com", surface: .browser, frontmostApp: chrome, lastWorkedHere: true))
         // Not in a browser, or nothing browser-related before it, or a native task: no.
-        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: "com.apple.MobileSMS", continues: true, lastWasBrowser: true))
-        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, continues: false, lastWasBrowser: false))
-        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "close this tab", surface: .nativeApp, frontmostApp: chrome, continues: true, lastWasBrowser: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: "com.apple.MobileSMS", lastWorkedHere: true))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "look up Matt Armstrong", surface: .browser, frontmostApp: chrome, lastWorkedHere: false))
+        #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "close this tab", surface: .nativeApp, frontmostApp: chrome, lastWorkedHere: true))
     }
 }
 

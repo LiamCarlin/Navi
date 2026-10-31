@@ -138,11 +138,11 @@ struct VoiceBrowserTests {
         #expect(TaskSurface.startURL(task: "open youtube", frontmost: front, start: .webSearch)?.contains("youtube.com") == true)
         // The voice executor's local rule: a browser in front + a page action ⇒ current tab, whatever came before.
         #expect(VoiceCommandExecutor.continuesOnCurrentTab(goal: "click the write a message area", surface: .browser, frontmostApp: "com.apple.Safari",
-                                                           continues: false, lastWasBrowser: false))
+                                                           lastWorkedHere: false))
         #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "go to youtube", surface: .browser, frontmostApp: "com.apple.Safari",
-                                                            continues: true, lastWasBrowser: true))
+                                                            lastWorkedHere: true))
         #expect(!VoiceCommandExecutor.continuesOnCurrentTab(goal: "click the button", surface: .browser, frontmostApp: "com.apple.Notes",
-                                                            continues: true, lastWasBrowser: true))
+                                                            lastWorkedHere: true))
     }
 
     // MARK: Local text guess
