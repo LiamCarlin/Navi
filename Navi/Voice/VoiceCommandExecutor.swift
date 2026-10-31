@@ -70,6 +70,8 @@ final class VoiceCommandExecutor {
     /// What was asked and what came of it, most recent last — the conversation
     /// every later command and question is given (`QueryContext.conversation`).
     private(set) var recent: [String] = []
+    /// The last task or search carried out, and when it ended: what "do it through ubereats" means.
+    private var lastTask: (text: String, at: Date)?
     /// The app in front when a quit ran (best guess at what was quit), to forget its working surface.
     private var lastQuitBundle: String?
     private let input = InputController()
@@ -131,6 +133,13 @@ final class VoiceCommandExecutor {
         case .some(let c): return c.spoken
         }
     }
+
+    /// The last task or search carried out, while a follow-up may still mean it (`followUpWindow`).
+    func lastInstruction(now: Date = Date()) -> String? {
+        guard let t = lastTask, now.timeIntervalSince(t.at) < Self.followUpWindow else { return nil }
+        return t.text
+    }
+    static let followUpWindow: TimeInterval = 10 * 60
 
     /// The last queued command, when it was queued less than `amendWindow` ago and hasn't started.
     func amendableCommand(now: Date = Date()) -> VoiceCommand? {
@@ -213,6 +222,10 @@ final class VoiceCommandExecutor {
         case .failed(let m): result = "failed: \(m)"
         case .needsYou(let m): result = "waiting for the user: \(m)"
         case .cancelled: result = "stopped by the user"
+        }
+        switch item.command {
+        case .task, .webSearch: lastTask = (item.command.spoken, Date())
+        default: break
         }
         recent.append("“\(item.command.spoken)” → \(Self.oneLine(result, max: 220))")
         if recent.count > Self.maxRecent { recent.removeFirst(recent.count - Self.maxRecent) }

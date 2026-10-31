@@ -413,15 +413,22 @@ enum TaskSurface {
             // action on whatever page is open. Googling the sentence instead once
             // produced a results page explaining that Google cannot click things.
             if isPageAction(task) { return u }
-            if let start { return start == .currentTab ? u : UltrafastBridge.searchURL(for: task) }
-            let refersToTab = ["this page", "this tab", "current page", "current tab", "here", "on this site", "this site"].contains { lower.contains($0) }
-            let host = URL(string: u)?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
-            let namesHost = !host.isEmpty && !host.hasPrefix("localhost") && lower.contains(host.split(separator: ".").first.map(String.init) ?? "\u{0}")
-            if refersToTab || namesHost { return u }
+            if let start {
+                // Jev's "start somewhere new" falls through to the errand pages below, not straight to a search.
+                if start == .currentTab { return u }
+            } else {
+                let refersToTab = ["this page", "this tab", "current page", "current tab", "here", "on this site", "this site"].contains { lower.contains($0) }
+                let host = URL(string: u)?.host?.replacingOccurrences(of: "www.", with: "") ?? ""
+                let namesHost = !host.isEmpty && !host.hasPrefix("localhost") && lower.contains(host.split(separator: ".").first.map(String.init) ?? "\u{0}")
+                if refersToTab || namesHost { return u }
+            }
         }
         // WorkingSurface hook (start surface): an errand at a business Navi has no page for starts on
         // that business's own site (the user's history, else the top result), not a search for the sentence.
-        if let errand = TaskPlanner.errandStartURL(for: task, sites: UserHabits.current?.cachedProfile()?.sites.map(\.key) ?? []) { return errand }
+        let sites = UserHabits.current?.cachedProfile()?.sites.map(\.key) ?? []
+        if let errand = TaskPlanner.errandStartURL(for: task, sites: sites) { return errand }
+        // "Order me a burger": their delivery site, searched for the burger.
+        if let food = AppSkills.foodErrandStartURL(for: task, sites: sites) { return food }
         return UltrafastBridge.searchURL(for: task)
     }
 
