@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         services = NaviServices.bootstrap()
         panelController = PanelController(services: services)
         panelController.viewModel.onVoiceRequested = { [weak self] in self?.toggleVoice() }
+        panelController.notchIsBusy = { [weak self] in self?.voice?.isVisible ?? false }
         hotKey = HotKeyManager()
         hotKey.onActivate = { [weak self] in self?.togglePanel() }
         hotKey.onVoice = { [weak self] in self?.toggleVoice() }
@@ -127,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and Navi acts on each instruction as it is spoken.
     func toggleVoice() {
         if panelController.isVisible { panelController.hide() }
+        panelController.notchQuestion.hide()   // the island takes the notch; ⌘Space still has the question
         // The first time voice control starts without a voiceprint, offer (once) to learn the
         // user's voice so other people talking nearby are ignored (`VoiceEnrollment`).
         let settings = NaviSettings.shared

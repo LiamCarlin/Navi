@@ -16,6 +16,10 @@ import SwiftUI
 final class PanelController {
     let panel: NaviPanel
     let viewModel: PanelViewModel
+    /// Where a paused task asks while the panel is closed.
+    let notchQuestion: NotchQuestionController
+    /// True while something else owns the notch (the voice island): then a question opens the panel.
+    var notchIsBusy: () -> Bool = { false }
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var previousApp: NSRunningApplication?
@@ -30,6 +34,7 @@ final class PanelController {
 
     init(services: NaviServices) {
         viewModel = PanelViewModel(services: services)
+        notchQuestion = NotchQuestionController(viewModel: viewModel)
         panel = NaviPanel(contentRect: NSRect(x: 0, y: 0,
                                              width: Self.width + Self.shadowInsets.left + Self.shadowInsets.right,
                                              height: PanelStyle.barHeight + Self.shadowInsets.top + Self.shadowInsets.bottom))
@@ -44,11 +49,13 @@ final class PanelController {
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         viewModel.onDismiss = { [weak self] in self?.hide() }
-        // A running task paused on a question: drop the panel down on it, wherever the user is.
+        // A running task paused on a question: ask from the notch, wherever the user is — the panel
+        // stays closed unless it is already open (then its card asks) or the voice island has the notch.
         viewModel.onAttentionNeeded = { [weak self] in
             guard let self, !self.isVisible else { return }
-            self.show()
+            if self.notchIsBusy() { self.show() } else { self.notchQuestion.show() }
         }
+        notchQuestion.onOpenPanel = { [weak self] in self?.show() }
         viewModel.onContentHeightChange = { [weak self] h in self?.contentHeight = max(PanelStyle.barHeight, h) }
         panel.onResignKey = { [weak self] in self?.hide() }
         panel.cardRect = { [weak self] in self?.cardRectInWindow() ?? .zero }
@@ -69,6 +76,7 @@ final class PanelController {
         #if DEBUG
         DebugTrace.log("show prefill=\(prefill ?? "-") submit=\(submit)")
         #endif
+        notchQuestion.hide()   // the panel's card asks instead
         previousApp = NSWorkspace.shared.frontmostApplication
         let ctx = ContextProbe.current(recent: [])
         viewModel.willShow(prefill: prefill, context: ctx)
@@ -103,6 +111,8 @@ final class PanelController {
                 guard let self else { return }
                 self.panel.orderOut(nil)
                 self.viewModel.reset()
+                // Closed while the task still waits on an answer: the question goes back to the notch.
+                if self.viewModel.pendingQuestion != nil, !self.notchIsBusy() { self.notchQuestion.show() }
                 // If something activated Navi (e.g. the settings window), hand focus back.
                 if NSApp.isActive, let app = self.previousApp, app != NSRunningApplication.current,
                    !NSApp.windows.contains(where: { $0.isVisible && AppActivation.isMainWindow($0) }) {
