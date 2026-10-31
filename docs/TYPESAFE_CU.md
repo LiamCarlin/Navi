@@ -39,7 +39,10 @@ below into the Swift file beside it, and its test case into `NaviTests/TypesafeC
 
 ## A step
 
-1. **Observe.** `AXSnapshotter` walks the target app's window (150 ms box). `CUPerception`
+1. **Observe.** `AXSnapshotter` walks the target app's window (150 ms box, stretched to 450 ms
+   while it has found fewer than 12 controls; a container with more than 12 children gets its
+   first 12 now and the rest after every other region; a sheet on the window is the root, and a
+   popover or `AXModal` group limits the items to itself — `modalScope`). `CUPerception`
    makes one numbered list: every control (`ax`), every line of static text (`text` — the tree
    hands text over exactly, where upstream needs OCR), OCR blocks the tree did not carry
    (`ocr`), and a control merged with the text naming it (`ax+ocr`). A symbol read off a

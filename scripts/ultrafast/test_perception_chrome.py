@@ -142,6 +142,9 @@ PAGES = {
       <a href="#menu" style="position:absolute;right:10px;top:10px;width:30px;height:30px;display:block"></a>
       <script>for (let i=0;i<8;i++){const b=document.createElement('button');b.style.cssText=
       'position:absolute;width:20px;height:20px;left:'+(40+i*60)+'px;top:'+(100+i*20)+'px';document.getElementById('map').appendChild(b);}</script></body>""",
+    # A click whose effect is only pixels (a canvas too flat to be offered as one).
+    "/pixels": """<body style="margin:0;background:#fff"><button onclick="const c=document.querySelector('canvas').getContext('2d');
+      c.fillStyle='#000';c.fillRect(0,0,1100,119)">Paint</button><canvas width=1100 height=119 style="display:block"></canvas></body>""",
 }
 
 
@@ -287,5 +290,17 @@ try:
     assert page["omitted_unnamed"] == 8
     chrome.cdp("Target.closeTarget", targetId=target)
     print("unnamed controls ok")
+
+    # --- a click that changed only pixels: unseen_change (adaptation 35) ---
+    target, s = open_page("/pixels")
+    fb = object.__new__(nr.FastBrowser)
+    fb.session, fb.target, fb.screenshots = s, target, False
+    page = fb.observe(screenshot=False)
+    assert "perception_gap" not in page
+    fb.act(find(page, "Paint"), page)
+    after = fb.observe(screenshot=False)
+    assert after["fingerprint"] == page["fingerprint"] and after["perception_gap"]["reason"] == "unseen_change", after.get("perception_gap")
+    chrome.cdp("Target.closeTarget", targetId=target)
+    print("unseen change ok")
 finally:
     chrome.close()

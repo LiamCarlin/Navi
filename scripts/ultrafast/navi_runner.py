@@ -528,7 +528,7 @@ class FastBrowser(Browser):
             return None
 
     def act(self, action, page, text=None):
-        self.acted_on = (action, page)
+        self.acted_on = (page, action)
         self.before_thumb = self.thumbnail(page) if action.get("kind") in {"click", "select"} else None
         return super().act(action, page, text=text)
 
@@ -2456,7 +2456,7 @@ def frame_select(session, action):
 GAP_RETRIES = 4
 GAP_RETRY_S = 0.25
 VISUAL_CHANGE_MIN = 0.12      # share of thumbnail cells that must change for "unseen_change"
-CLOSER = re.compile(r"^\s*(close|dismiss|cancel|no,? thanks|not now|skip|maybe later|go back|back)\b|^\s*[×✕✖xX]\s*$", re.I)
+CLOSER =re.compile(r"^\s*(close|dismiss|cancel|no,? thanks|not now|skip|maybe later|go back|back)\b|^\s*[×✕✖xX]\s*$", re.I)
 
 
 def thumbnail_cells(jpeg_b64, cols=32, rows=20):
@@ -2469,7 +2469,7 @@ def thumbnail_cells(jpeg_b64, cols=32, rows=20):
 
         from PIL import Image
         with Image.open(io.BytesIO(base64.b64decode(jpeg_b64))) as img:
-            return list(img.convert("L").resize((cols, rows)).getdata())
+            return list(img.convert("L").resize((cols, rows)).tobytes())
     except Exception:  # noqa: BLE001
         return None
 
