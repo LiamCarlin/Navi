@@ -445,7 +445,7 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         let (d1, v1) = try await ask("I meant in DoorDash where we just were", front: amazonFront, recent: [amazonCart(now: now), doordash(now: now)],
                                      recentDone: ["“order me a burger” → completed", "“open my cart to see where I'm gonna pay” → completed: click Go to Cart"])
         if case .commit(.task(_, _, _, _, .last(let s)?)) = d1 { #expect(s.site == "doordash.com") } else {
-            Issue.record("I meant in DoorDash → \(d1) \(String(describing: v1.workWhere))")
+            Issue.record("I meant in DoorDash → \(d1) \(String(describing: v1.workWhere)) boundary=\(String(describing: v1.boundary)) kind=\(v1.kind?.choice ?? "?")")
         }
 
         let slack = FrontmostProbe.Info(bundleID: "com.tinyspeck.slackmacgap", appName: "Slack", windowTitle: "general")
@@ -481,6 +481,32 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
             let (d, v) = try await ask(head, front: canvas, recent: [], recentDone: ["“Open up my class canvas” → completed"])
             #expect(!isRun(d), Comment(rawValue: "\(head) → \(d) whole=\(v.whole ?? -1)"))
         }
+    }
+
+    @Test(.needsNetwork) func benchmarkBaselinePhrases() async throws {
+        let amazon = chromeFront("https://www.amazon.com/cart?ref_=ox", title: "Amazon.com Shopping Cart")
+        // No recent place: still never an app named after the sentence.
+        let (d1, _) = try await ask("I meant in DoorDash where we just were", front: amazon, recent: [],
+                                    recentDone: ["“open my cart to see where I'm gonna pay” → completed: click Go to Cart"])
+        if case .commit(.task) = d1 {} else { Issue.record("I meant in DoorDash → \(d1)") }
+        let (d2, _) = try await ask("Wait close this tab", front: amazon, recent: [amazonCart()])
+        if case .commit(.browser(let b, _)) = d2 { #expect(b.key == "cmd+w") } else { Issue.record("Wait close this tab → \(d2)") }
+        let (d3, v3) = try await ask("continue where I left off", front: FrontmostProbe.Info(bundleID: "com.apple.finder", appName: "Finder"), recent: [])
+        if case .commit(.task) = d3 {} else { Issue.record("continue where I left off → \(d3) kind=\(v3.kind?.choice ?? "?")") }
+    }
+
+    @Test(.needsNetwork) func theNextPartOfAQueuedInstructionWorksWhereItDoes() async throws {
+        let jev = JevClient()
+        try #require(jev.isConfigured)
+        var ctx = VoiceDecider.Context()
+        ctx.frontmostApp = "Slack"; ctx.frontmostBundle = "com.tinyspeck.slackmacgap"
+        ctx.busyWith = "Go to canvas"
+        ctx.previousInstruction = "go to canvas"
+        ctx.recentDone = []
+        let inp = VoiceDecider.Input(clause: .init(head: "open my assignments", following: "", connector: "", start: 0, end: 3, resume: 3), silenceMs: 2500, context: ctx)
+        let r = try await jev.ask(state: JevClient.JSONValue(any: VoiceDecider.stateJSON(inp)), questions: VoiceDecider.questions(inp), cacheable: false)
+        let v = VoiceDecider.verdict(from: r)
+        #expect(v.workWhere?.choice == "previous", Comment(rawValue: String(describing: v.workWhere)))
     }
 
     @Test(.needsNetwork) func aMisheardCanvasIsPutRight() async throws {
@@ -522,5 +548,116 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         // Something else entirely does not go to DoorDash.
         let (other, _, raw) = try await TaskPlanner.planRaw(task: "text mom I'm running late", frontmost: slack, claude: claude)
         #expect(other?.steps.first?.surface == .app, Comment(rawValue: raw))
+    }
+}
+
+// MARK: - Decision-layer baseline failures (benchmark, 2026-10-30)
+
+@Suite struct VoiceBaselineFailureTests {
+    private func clause(_ head: String) -> UtteranceSegmenter.Clause {
+        UtteranceSegmenter.Clause(head: head, following: "", connector: "", start: 0, end: 3, resume: 3)
+    }
+
+    private func verdict(kind: String, control: String = "none", work: (String, Double)? = nil, whole: Double? = 0.9,
+                         boundary: [String: Double] = ["complete": 0.9, "continues": 0.05, "not_a_command": 0.05]) -> VoiceDecider.Verdict {
+        var v = VoiceDecider.Verdict()
+        let best = boundary.max { $0.value < $1.value }!
+        v.boundary = .init(choice: best.key, probabilities: boundary, confidence: best.value)
+        v.kind = .init(choice: kind, probabilities: [kind: 0.9], confidence: 0.9)
+        v.control = .init(choice: control, probabilities: [control: 0.9], confidence: 0.9)
+        v.surface = .init(choice: "unsure", probabilities: ["unsure": 0.6], confidence: 0.6)
+        if let (w, p) = work { v.workWhere = .init(choice: w, probabilities: [w: p], confidence: p) }
+        v.whole = whole
+        return v
+    }
+
+    private func input(_ head: String, silence: Int = 2500, front: FrontmostProbe.Info? = nil, recent: [WorkingSurface] = [],
+                       previous: String? = nil) -> VoiceDecider.Input {
+        var ctx = VoiceDecider.Context()
+        ctx.frontmostApp = front?.appName
+        ctx.frontmostBundle = front?.bundleID
+        ctx.browserURL = front?.url
+        ctx.recentWork = recent
+        ctx.previousInstruction = previous
+        return VoiceDecider.Input(clause: clause(head), silenceMs: silence, context: ctx)
+    }
+
+    @Test func iMeantInDoorDashIsNeverAnAppNamedAfterTheSentence() {
+        // No recent place recorded (the benchmark's memory copy): still the DoorDash site, not open_app "i meant doordash where we were".
+        let d = VoiceDecider.decide(verdict(kind: "open_app"), input: input("I meant in DoorDash where we just were"))
+        guard case .commit(.task(_, let surface, _, _, _)) = d else { Issue.record("got \(d)"); return }
+        #expect(surface == .browser)
+        // A plain "open X" still guesses the app name.
+        guard case .commit(.openAppNamed) = VoiceDecider.decide(verdict(kind: "open_app"), input: input("open figma")) else { Issue.record("open figma"); return }
+    }
+
+    @Test func waitCloseThisTabIsOneKeyPressEvenWithoutTheComma() {
+        let amazon = chromeFront("https://www.amazon.com/cart")
+        for head in ["Wait close this tab", "Wait, close this tab"] {
+            // Even when Jev points the work at an earlier task's tab: the browser in front is what "this tab" is.
+            let d = VoiceDecider.decide(verdict(kind: "do_in_app", work: ("last_1", 0.7)), input: input(head, front: amazon, recent: [doordash()]))
+            guard case .commit(.browser(let b, _)) = d else { Issue.record("\(head) → \(d)"); continue }
+            #expect(b.key == "cmd+w")
+        }
+    }
+
+    @Test func continueWhereILeftOffIsATaskNotResume() {
+        let d = VoiceDecider.decide(verdict(kind: "control_navi", control: "resume"), input: input("continue where I left off"))
+        guard case .commit(.task) = d else { Issue.record("got \(d)"); return }
+    }
+
+    @Test func anAndInsideDictatedTextDoesNotSplitIt() {
+        var s = UtteranceSegmenter()
+        s.update(finalized: "text mom that I'm running late and I'll call her tonight")
+        #expect(s.pending()?.head == "text mom that I'm running late and I'll call her tonight")
+        s = UtteranceSegmenter()
+        s.update(finalized: "send Bella a message saying the meeting moved and the slides are in the drive")
+        #expect(s.pending()?.hasBoundary == false)
+        // A new instruction after the text still splits (Jev confirms it).
+        s = UtteranceSegmenter()
+        s.update(finalized: "text mom I'm late and open spotify")
+        #expect(s.pending()?.head == "text mom I'm late")
+        // "and then" always ends the head.
+        s = UtteranceSegmenter()
+        s.update(finalized: "text mom I'm late and then call dad")
+        #expect(s.pending()?.head == "text mom I'm late")
+    }
+
+    @Test func theSecondHalfOfASplitSentenceContinuesWhereTheFirstHalfWorks() {
+        let canvasFront = FrontmostProbe.Info(bundleID: "com.tinyspeck.slackmacgap", appName: "Slack")
+        let inp = input("open my assignments", front: canvasFront, previous: "go to canvas")
+        #expect(VoiceDecider.questions(inp)["work_where"] != nil)
+        let d = VoiceDecider.decide(verdict(kind: "browse_or_search", work: ("previous", 0.8)), input: inp)
+        guard case .commit(.task(let goal, let surface, let tab, _, .previous?)) = d else { Issue.record("got \(d)"); return }
+        let canvas = WorkingSurface(kind: .browserTab, task: "go to canvas", outcome: .completed, bundleID: "com.google.Chrome",
+                                    appName: "Google Chrome", url: "https://canvas.olin.edu/", at: Date())
+        let p = VoiceCommandExecutor.placement(goal: goal, surface: surface, useCurrentTab: tab, place: .previous, frontmostBundle: nil,
+                                               compound: false, lastWorkedHere: false, previousSurface: canvas, namesPage: { _ in false })
+        #expect(p.continueOn?.site == "canvas.olin.edu")
+        // Not a Google search of "open my assignments".
+        #expect(p.surface == .browser)
+    }
+
+    @Test func aWholeInstructionIsActedOnAfterALongPauseNotGivenUp() {
+        let v = verdict(kind: "do_in_app", whole: 0.9, boundary: ["complete": 0.1, "continues": 0.85, "not_a_command": 0.05])
+        for silence in [VoiceDecider.longPauseMs, VoiceDecider.giveUpMs + 500] {
+            let d = VoiceDecider.decide(v, input: input("submit my lab report for physics on canvas", silence: silence))
+            guard case .commit(.task) = d else { Issue.record("@\(silence) → \(d)"); continue }
+        }
+        // Not whole: still given up.
+        let frag = verdict(kind: "do_in_app", whole: 0.1, boundary: ["complete": 0.05, "continues": 0.9, "not_a_command": 0.05])
+        if case .giveUp = VoiceDecider.decide(frag, input: input("for the physics", silence: VoiceDecider.giveUpMs + 500)) {} else { Issue.record("fragment not given up") }
+    }
+
+    @Test func anErrandAtABusinessStartsFromThatBusinessesOwnSite() {
+        #expect(TaskPlanner.errandQuery(for: "order me a random thing from kfc under 10 bucks") == "kfc order online")
+        #expect(TaskPlanner.errandQuery(for: "get me a large pepperoni pizza from Domino's") == "domino's order online")
+        #expect(TaskPlanner.errandQuery(for: "book a table at Tatte for 7pm") == "tatte reservations")
+        #expect(TaskPlanner.errandQuery(for: "order me a burger") == nil)
+        #expect(TaskPlanner.errandQuery(for: "search for kfc history") == nil)
+        #expect(TaskPlanner.errandQuery(for: "order it from home") == nil)
+        let url = TaskSurface.startURL(task: "order me a random thing from kfc under 10 bucks", frontmost: FrontmostProbe.Info()) ?? ""
+        #expect(url.lowercased().contains("kfc"))
+        #expect(!url.contains("random"))
     }
 }

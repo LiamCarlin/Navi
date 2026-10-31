@@ -419,7 +419,9 @@ enum TaskSurface {
             let namesHost = !host.isEmpty && !host.hasPrefix("localhost") && lower.contains(host.split(separator: ".").first.map(String.init) ?? "\u{0}")
             if refersToTab || namesHost { return u }
         }
-        return UltrafastBridge.searchURL(for: task)
+        // WorkingSurface hook (start surface): an errand at a business Navi has no page for starts
+        // from a search for that business's own site, not for the whole sentence.
+        return UltrafastBridge.searchURL(for: TaskPlanner.errandQuery(for: task) ?? task)
     }
 
     /// Does the task act on the page in front rather than ask for something to be

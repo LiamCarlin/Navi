@@ -739,6 +739,7 @@ final class VoiceSession: ObservableObject {
         // Where the last tasks worked (a follow-up continues there) and the user's own words HEAD may have misheard.
         ctx.recentWork = WorkingSurface.Store.shared.recent()
         ctx.amendable = executor.amendableCommand()
+        ctx.previousInstruction = executor.previousInstruction
         ctx.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: VoiceVocabulary.liveTerms())
         return ctx
     }

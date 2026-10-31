@@ -113,6 +113,16 @@ final class VoiceCommandExecutor {
         if current != nil { stopCurrent() } else { pump() }
     }
 
+    /// What was said just before a new clause and is still being carried out or waiting: the last
+    /// queued command, else the running one (controls and answers excluded).
+    var previousInstruction: String? {
+        let cmd = queue.last?.command ?? current?.command
+        switch cmd {
+        case .some(.control), .some(.answer), .none: return nil
+        case .some(let c): return c.spoken
+        }
+    }
+
     /// The last queued command, when it was queued less than `amendWindow` ago and hasn't started.
     func amendableCommand(now: Date = Date()) -> VoiceCommand? {
         guard let last = queue.last, now.timeIntervalSince(last.enqueuedAt) < Self.amendWindow else { return nil }
@@ -350,7 +360,8 @@ final class VoiceCommandExecutor {
     /// `continuesOnCurrentTab`).
     nonisolated static func placement(goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, place: WorkingSurface.Choice?,
                                       frontmostBundle: String?, compound: Bool, lastWorkedHere: Bool,
-                                      hereSurface: WorkingSurface? = nil, namesPage: (String) -> Bool) -> Placement {
+                                      hereSurface: WorkingSurface? = nil, previousSurface: WorkingSurface? = nil,
+                                      namesPage: (String) -> Bool) -> Placement {
         switch place {
         case .last(let s)?:
             return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s)
@@ -361,6 +372,11 @@ final class VoiceCommandExecutor {
             return Placement(surface: surface, useCurrentTab: useCurrentTab, continueOn: nil)
         case .newPlace?:
             return Placement(surface: surface, useCurrentTab: false, continueOn: nil)
+        case .previous?:
+            // The instruction before it has finished by now: its place is the latest recent place.
+            if let s = previousSurface { return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s) }
+            return placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: nil, frontmostBundle: frontmostBundle,
+                             compound: compound, lastWorkedHere: lastWorkedHere, namesPage: namesPage)
         case nil:
             var p = Placement(surface: surface, useCurrentTab: useCurrentTab, continueOn: nil)
             if !compound, !p.useCurrentTab {
@@ -447,7 +463,8 @@ final class VoiceCommandExecutor {
         let last = WorkingSurface.Store.shared.recent(limit: 1).first
         let lastWorkedHere = last?.isShown(by: front) ?? lastWasBrowser
         let p = Self.placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: place, frontmostBundle: context.frontmostApp,
-                               compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil, namesPage: Self.namesPage)
+                               compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil,
+                               previousSurface: last.flatMap { $0.at >= item.enqueuedAt.addingTimeInterval(-5) ? $0 : nil }, namesPage: Self.namesPage)
         if let s = p.continueOn { Log.voice.info("voice task continues in \(s.placeDescription, privacy: .private)") }
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)

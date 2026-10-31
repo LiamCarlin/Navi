@@ -211,6 +211,30 @@ enum TaskPlanner {
         return TaskSurface.startURL(task: step.goal, frontmost: frontmost) ?? UltrafastBridge.searchURL(for: step.goal)
     }
 
+    /// An errand at a named business with no page Navi knows ("order me a random thing from kfc under
+    /// 10 bucks", "get a large pepperoni from domino's"): the search that finds *that business's own
+    /// ordering site* ("kfc order online"), not a search for the whole sentence — whose results are
+    /// aggregators, recipes and price lists. nil when the task is no errand or names no business.
+    static func errandQuery(for task: String) -> String? {
+        let lower = " " + task.lowercased().replacingOccurrences(of: "’", with: "'") + " "
+        guard lower.range(of: #"\b(order|buy|purchase|get me|deliver|delivery|pick up|pickup|book|reserve|grab me)\b"#, options: .regularExpression) != nil else { return nil }
+        // "from kfc", "at domino's", "on chipotle" — up to the first word that is not part of a name.
+        guard let m = lower.range(of: #"\b(from|at|on)\s+([a-z0-9&'.\-]+(?:\s+[a-z0-9&'.\-]+){0,2})"#, options: .regularExpression) else { return nil }
+        var words = lower[m].split(separator: " ").dropFirst().map(String.init)
+        if let cut = words.firstIndex(where: { errandNameStops.contains($0) || $0.first?.isNumber == true }) { words = Array(words[..<cut]) }
+        while let f = words.first, ["the", "a", "an", "my", "our", "some"].contains(f) { words.removeFirst() }
+        let name = words.joined(separator: " ").trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+        guard name.count >= 2, !errandNonNames.contains(name) else { return nil }
+        let booking = lower.range(of: #"\b(book|reserve)\b"#, options: .regularExpression) != nil
+        return "\(name) \(booking ? "reservations" : "order online")"
+    }
+
+    static let errandNameStops: Set<String> = ["under", "for", "with", "and", "near", "to", "that", "which", "in", "around", "below", "less",
+                                               "cheaper", "please", "now", "tonight", "today", "tomorrow", "delivered", "delivery", "pickup",
+                                               "asap", "by", "before", "after", "using", "via", "then", "but", "so", "if"]
+    static let errandNonNames: Set<String> = ["home", "work", "school", "here", "there", "it", "me", "us", "them", "my place", "the store",
+                                              "store", "a store", "online", "the internet", "the web", "google", "amazon cart", "my cart", "cart"]
+
     /// A search engine's results page (Google, Bing, DuckDuckGo).
     static func isWebSearch(_ url: String) -> Bool {
         guard let c = URLComponents(string: url), let host = c.host?.lowercased() else { return false }

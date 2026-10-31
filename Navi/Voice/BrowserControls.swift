@@ -69,7 +69,8 @@ enum BrowserControls {
     /// Words that may surround the phrase without changing it.
     static let padding: Set<String> = ["please", "can", "could", "would", "you", "navi", "just", "now", "for", "me", "okay", "ok",
                                        "and", "then", "also", "quickly", "real", "quick", "in", "the", "browser", "chrome", "safari",
-                                       "arc", "firefox", "this", "window", "here", "again", "one", "more", "time"]
+                                       "arc", "firefox", "this", "window", "here", "again", "one", "more", "time",
+                                       "wait", "actually", "oh", "sorry", "um", "uh"]
 
     /// The browser command `text` asks for, if it is one and nothing more.
     /// "can you close this tab please" → close tab; "close the tab and open

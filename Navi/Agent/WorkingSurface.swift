@@ -241,6 +241,9 @@ extension WorkingSurface {
         case last(WorkingSurface)
         /// A place of the task's own: never the page in front.
         case newPlace
+        /// Where the instruction just before it (still running or queued) ends up working —
+        /// resolved when this one starts ("open chrome and go to canvas" | "open my assignments").
+        case previous
     }
 
     /// The head plus what its ids mean. nil when there is nothing to choose between.
@@ -257,7 +260,8 @@ extension WorkingSurface {
 
     /// `front`: what is in front (app, window title, tab URL). `subject`: how the task is named
     /// in the criteria ("HEAD" for voice, "the task" for the planner).
-    static func question(recent: [WorkingSurface], front: FrontmostProbe.Info?, subject: String = "HEAD", now: Date = Date()) -> Question? {
+    static func question(recent: [WorkingSurface], front: FrontmostProbe.Info?, subject: String = "HEAD",
+                         previousInstruction: String? = nil, now: Date = Date()) -> Question? {
         var crit: [String: String] = [:]
         var places: [String: WorkingSurface] = [:]
         var state: [[String: Any]] = []
@@ -278,7 +282,10 @@ extension WorkingSurface {
             let ago = max(0, Int(now.timeIntervalSince(s.at) / 60))
             crit[id] = "Carry \(subject) out where the earlier task “\(clip(s.task, 60))” worked (\(ago) min ago): \(s.placeDescription). Pick this when \(subject) continues that task or refers back to it ('where we just were', 'the cart', 'it', 'go back', 'now add…', 'I meant in …', a correction), or when what \(subject) asks belongs on that site or app."
         }
-        guard !places.isEmpty || frontDesc != nil else { return nil }
+        if let p = previousInstruction?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            crit["previous"] = "Carry \(subject) out wherever the instruction said just before it ends up working — Navi is still carrying it out or about to: “\(clip(p, 80))”. Pick this when \(subject) is the next part of that instruction (its next step, on the page or app it opens), e.g. 'open my assignments' right after 'go to canvas'."
+        }
+        guard !places.isEmpty || frontDesc != nil || crit["previous"] != nil else { return nil }
         if let d = frontDesc {
             crit["here"] = "Carry \(subject) out on the screen in front right now (\(d)\(hereNote)): \(subject) acts on what is visible there — click, type, scroll, read, select, close on that page or app — or says 'this page', 'this tab', 'here'\(hereNote.isEmpty ? "" : ", or continues that task")."
         }
@@ -302,6 +309,7 @@ extension WorkingSurface {
         switch a {
         case "here": return .here
         case "new_place": return .newPlace
+        case "previous": return .previous
         default: return places[a].map(Choice.last)
         }
     }

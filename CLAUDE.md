@@ -430,7 +430,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     (`VoiceVocabulary`): the user's people/projects/sites go to the recognizer as contextual strings;
     a word that sounds like one (consonant-skeleton edit distance, near sounds cheap) is offered to
     Jev as `misheard_i` with `users_own_words` in the state and replaced only at ≥ 0.6 ("cannabis" →
-    Canvas 0.78; "order cannabis gummies" 0.25). Live tests: `VoiceWorkingSurfaceLiveTests`,
+    Canvas 0.78; "order cannabis gummies" 0.25). Benchmark fixes (2026-10-30): `work_where` also offers
+    `previous` while a command is running/queued (the second half of a split sentence works wherever
+    the first half ends up — resolved when it starts); "resume" while listening is a task ("continue
+    where I left off"); idle, `replaces_current` asks whether HEAD corrects what Navi just did — a
+    correction is never dropped as chatter; an unknown "open X" app name is only guessed from a short
+    "open …" phrasing (a known web app is its site); with a browser in front "close this tab" is always
+    the key press; a plain "and" after a dictation verb stays in the text unless an instruction verb
+    follows; after a long pause a head with `whole_instruction` ≥ 0.6 is acted on, not given up; an
+    errand at a business Navi has no page for starts from "<business> order online"
+    (`TaskPlanner.errandQuery`), not a search for the sentence. Live tests: `VoiceWorkingSurfaceLiveTests`,
     `PlannerWorkingSurfaceTests` (`.needsNetwork`). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
     **Only my voice** (`Voice/VoicePrint`, toggle `voiceOnlyMyVoice`): once the user taught Navi

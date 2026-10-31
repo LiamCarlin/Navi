@@ -29,9 +29,9 @@ enum VoiceDecider {
             case .complete:
                 return "HEAD is a complete instruction or question Navi can act on right now, exactly as said — a follow-up that leans on recent_instructions_already_carried_out for context ('how many people were on board' after a question about Apollo 11) still counts. If FOLLOWING has words, they begin a separate instruction or are unrelated chatter — nothing in FOLLOWING is needed for HEAD. A CONNECTOR of '?', '.' or '!' means the recognizer heard the sentence end there, which almost always makes HEAD complete. When CONNECTOR says there is no connector word, the split is only a guess at where a new instruction starts ('open chrome' | 'search for cats') — HEAD is complete when it stands on its own and FOLLOWING is a new instruction."
             case .continues:
-                return "HEAD is not finished: FOLLOWING (or words still to come) belongs to the same instruction, e.g. an object, a search query, the text to type, a recipient, or a place to do it. Also pick this when HEAD ends mid-phrase ('open', 'open up the', 'search for', 'and make the title', 'what year did'), or when FOLLOWING is the object or text of HEAD rather than a new instruction ('search for how to' | 'open a file')."
+                return "HEAD is not finished: FOLLOWING (or words still to come) belongs to the same instruction, e.g. an object, a search query, the text to type, a recipient, or a place to do it. Also pick this when HEAD ends mid-phrase ('open', 'open up the', 'search for', 'and make the title', 'what year did'), or when FOLLOWING is the object or text of HEAD rather than a new instruction ('search for how to' | 'open a file'). When HEAD dictates a message, text or note, FOLLOWING that reads as more of that text — still addressed to the recipient ('text mom I'm late' | 'bring the slides') — continues it."
             case .notACommand:
-                return "HEAD is not something Navi should act on: thinking aloud, filler, a reaction ('oh nice', 'hmm okay'), talking to someone else, or a fragment that will never become an instruction."
+                return "HEAD is not something Navi should act on: thinking aloud, filler, a reaction ('oh nice', 'hmm okay'), talking to someone else, or a fragment that will never become an instruction. A correction of something Navi just did ('I meant in DoorDash where we just were', 'no, the other one', 'not that tab') is never this: it is an instruction."
             }
         }
     }
@@ -111,8 +111,13 @@ enum VoiceDecider {
             return FrontmostProbe.Info(bundleID: frontmostBundle, appName: frontmostApp, windowTitle: windowTitle, url: browserURL)
         }
 
+        /// What Navi is carrying out or has queued last (said just before HEAD), if anything.
+        var previousInstruction: String?
+
         /// The `work_where` head for this context (nil when there is nothing to choose between).
-        var workQuestion: WorkingSurface.Question? { WorkingSurface.question(recent: recentWork, front: front) }
+        var workQuestion: WorkingSurface.Question? {
+            WorkingSurface.question(recent: recentWork, front: front, previousInstruction: previousInstruction)
+        }
     }
 
     struct Input: Sendable {
@@ -192,6 +197,10 @@ enum VoiceDecider {
         }
         if ctx.busyWith != nil {
             q["replaces_current"] = .noul(instructions: "HEAD corrects, restates or replaces the instruction Navi is busy with right now (navi.busy_with) — 'no, I mean…', 'actually…', 'not that one…', the same request in other words — rather than a new instruction to carry out after it finishes")
+        } else if !ctx.recentDone.isEmpty {
+            // Idle: the same question about what Navi just did. A correction is an instruction, never
+            // chatter — "I meant in DoorDash where we just were" split boundary ~45/42 noise/complete live.
+            q["replaces_current"] = .noul(instructions: "HEAD corrects, restates or redirects the instruction Navi just carried out (the last of recent_instructions_already_carried_out) — 'no, I mean…', 'actually…', 'I meant in DoorDash', 'not that one…', the same request in other words — rather than something new or chatter")
         }
         q["is_risky"] = .noul(instructions: "Carrying out HEAD would send a message or email, post something, spend money, delete or overwrite data, or otherwise be hard to undo")
         q["wants_memory"] = .noul(instructions: "Answering HEAD well requires knowing what the user was doing, reading or writing earlier on this computer")
@@ -317,9 +326,11 @@ enum VoiceDecider {
         guard let b = v.boundary, Boundary(rawValue: b.choice) != nil else {
             return heuristicDecision(input)
         }
-        let pComplete = b.p(Boundary.complete.rawValue)
+        var pComplete = b.p(Boundary.complete.rawValue)
         let pContinues = b.p(Boundary.continues.rawValue)
-        let pNoise = b.p(Boundary.notACommand.rawValue)
+        var pNoise = b.p(Boundary.notACommand.rawValue)
+        // A correction of what Navi is doing or just did is an instruction, never chatter.
+        if v.replacesCurrent >= replaceP { pComplete += pNoise; pNoise = 0 }
         let silence = input.silenceMs
         // "and" alone may still be joining the object ("cats and dogs"); "and then" / "then" / "after that" never do.
         let bareConnector = c.hasBoundary && c.following.isEmpty && !c.connector.isEmpty && !Self.isSentenceMark(c.connector)
@@ -353,6 +364,9 @@ enum VoiceDecider {
             if pNoise > pComplete, pNoise >= 0.4, silence >= dropAfterMs { return .drop(reason: "more likely chatter (\(pct(pNoise)))") }
             if silence >= longPauseMs, pComplete >= commitOnLongPauseP { return act(v, input: input) }
             if silence >= pauseMs, pComplete >= commitOnPauseP { return act(v, input: input) }
+            // Jev keeps hearing "more to come", but the user has stopped and what they said is a whole
+            // instruction (benchmark school-04: given up after 6 s): act on it.
+            if silence >= longPauseMs, let w = v.whole, w >= wholeActP, pNoise < 0.5 { return act(v, input: input) }
             if silence >= giveUpMs { return .giveUp(reason: "no instruction after \(silence / 1000) s of silence (\(pct(pContinues)) continues)") }
             let retry: Int
             if sentenceEnded { retry = max(100, sentencePauseMs - silence) }
@@ -441,6 +455,8 @@ enum VoiceDecider {
     /// Below this P(whole_instruction) a head is not carried out. Live (2026-10-30): the logged
     /// fragments scored 0.05–0.15, real instructions 0.72–0.98, a correction 0.32.
     static let wholeP = 0.25
+    /// After a long pause, a head this surely whole is acted on even while `boundary` says "continues".
+    static let wholeActP = 0.6
     /// A head that starts with one of these and has no verb is the tail of a sentence.
     static let danglingStarts: Set<String> = ["to", "with", "into", "onto", "from", "of", "at", "by", "for", "about", "in", "on",
                                               "and", "or", "but", "than", "as", "like", "without", "through"]
@@ -482,6 +498,10 @@ enum VoiceDecider {
            text.split(separator: " ").count > 4 {
             kind = .doInApp
         }
+        // "Resume" only means "listen again" while paused — and paused speech never reaches here (the
+        // session watches for it locally). Listening, "continue where I left off" / "resume the video"
+        // are tasks, not a control (benchmark 2026-10-30: read as control_navi "resume").
+        if kind == .control, ctlChoice == .resume, !input.context.isPaused { kind = .doInApp }
         let risky = v.isRisky >= 0.5
         let place = workChoice(v, input: input)
         let front = input.context.front
@@ -489,11 +509,13 @@ enum VoiceDecider {
         let saysControl = heuristicControl(text) != nil
         // An earlier task's place elsewhere ("go back" meant for the DoorDash tab while Slack is in front).
         let elsewhere: Bool = { if case .last = place { return true }; return false }()
+        let frontIsBrowser = input.context.frontmostBundle.map(AXSnapshotter.isBrowser) ?? false
         // Browser-level instructions ("close the tab", "go back", "reload") never
         // need Jev's driver: one key press in the browser. Scrolling and zooming
         // only when a browser is in front — "scroll down" in Notes is Notes' business.
-        if kind != .answer, !(kind == .control && saysControl), !elsewhere, let b = BrowserControls.match(text) {
-            let frontIsBrowser = input.context.frontmostBundle.map(AXSnapshotter.isBrowser) ?? false
+        // With a browser in front, "close this tab" / "go back" are about that browser whatever Jev
+        // says about where the work is; only with something else in front does an earlier task's tab win.
+        if kind != .answer, !(kind == .control && saysControl), !elsewhere || frontIsBrowser, let b = BrowserControls.match(text) {
             if b.key.map({ !["cmd+=", "cmd+-", "cmd+0", "cmd+up", "cmd+down"].contains($0) }) ?? false || frontIsBrowser {
                 return .browser(b, text: text)
             }
@@ -508,7 +530,7 @@ enum VoiceDecider {
         // never an app named "last assignment did" or a spoken answer about it. Not when Jev says
         // it continues a recent task ("go back to the cart" after an order is that order's tab).
         if kind != .control, !elsewhere, appChoice(v, input: input) == nil, TaskGrounding.reopensOwnWork(text) {
-            return .task(goal: text, surface: .unsure, useCurrentTab: false, isRisky: risky, place: place == .newPlace ? .newPlace : nil)
+            return .task(goal: text, surface: .unsure, useCurrentTab: false, isRisky: risky, place: place == .newPlace || place == .previous ? place : nil)
         }
         switch kind {
         case .control:
@@ -521,8 +543,15 @@ enum VoiceDecider {
             if elsewhere { return taskCommand(text, surface: .unsure, risky: risky, place: place, front: front) }
             // "Go to YouTube" reads as open_app to Jev; with no such app it is a site.
             if let url = Self.knownSiteToOpen(text) { return .openURL(url, text: text) }
-            if let name = VoiceAppMatcher.nameGuess(in: text) { return .openAppNamed(name, text: text) }
-            return taskCommand(text, surface: .nativeApp, risky: risky, place: place, front: front)
+            // A web app Navi knows ("I meant in DoorDash", "open doordash and find tacos") is a site, never
+            // an app named after the whole sentence; an app name is only guessed from an "open X" phrasing.
+            if let skill = AppSkills.mentioned(in: text), !skill.hosts.isEmpty, skill.bundleIDs.isEmpty {
+                return taskCommand(text, surface: .browser, risky: risky, place: place, front: front)
+            }
+            if Self.looksLikeOpen(text), text.split(separator: " ").count <= 5, let name = VoiceAppMatcher.nameGuess(in: text) {
+                return .openAppNamed(name, text: text)
+            }
+            return taskCommand(text, surface: .unsure, risky: risky, place: place, front: front)
         case .answer:
             return .answer(question: text, wantsMemory: v.wantsMemory >= 0.5)
         case .system:
@@ -568,7 +597,7 @@ enum VoiceDecider {
             if let b = front?.bundleID, AXSnapshotter.isBrowser(b) { surface = .browser; tab = true } else if front != nil { surface = .nativeApp }
         case .last(let s)?:
             surface = s.kind == .browserTab ? .browser : .nativeApp
-        case .newPlace?, nil:
+        case .newPlace?, .previous?, nil:
             break
         }
         return .task(goal: text, surface: surface, useCurrentTab: tab, isRisky: risky, place: place)
