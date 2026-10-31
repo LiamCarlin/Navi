@@ -117,6 +117,9 @@ enum VoiceDecider {
 
         /// What Navi is carrying out or has queued last (said just before HEAD), if anything.
         var previousInstruction: String?
+        /// The instruction a "do it through ubereats" means: `previousInstruction`, else the last task
+        /// carried out a moment ago (`VoiceCommandExecutor.lastInstruction`).
+        var lastInstruction: String?
 
         /// The `work_where` head for this context (nil when there is nothing to choose between).
         var workQuestion: WorkingSurface.Question? {
@@ -453,6 +456,13 @@ enum VoiceDecider {
     /// behind). Control words ("stop", "yes") are never replacements.
     static func act(_ v: Verdict, input: Input) -> Decision {
         let cmd = command(v, input: input)
+        // "Do it through ubereats" about the instruction still queued or running: that instruction, moved
+        // there — never queued behind it (it would run twice), never a fragment ("it" is the instruction).
+        if followUpGoal(correctedGoal(input.clause.head, v: v, input: input), previous: input.context.lastInstruction) != nil {
+            if input.context.amendable != nil { return .amend(cmd) }
+            if input.context.busyWith != nil, input.context.previousInstruction != nil { return .replace(cmd) }
+            return .commit(cmd)
+        }
         if case .task = cmd, isFragment(input.clause.head, v: v, input: input) {
             return .drop(reason: "fragment, nothing to do")
         }
@@ -527,6 +537,74 @@ enum VoiceDecider {
         return nil
     }
 
+    // MARK: Follow-ups ("do it through ubereats")
+
+    /// HEAD moves the instruction before it to another app or site: that instruction, there, as a task.
+    static func followUpCommand(_ text: String, input: Input, risky: Bool) -> VoiceCommand? {
+        guard let goal = followUpGoal(text, previous: input.context.lastInstruction) else { return nil }
+        let skill = AppSkills.mentioned(in: goal)
+        let surface: TaskSurface.Surface = skill.map { $0.bundleIDs.isEmpty ? .browser : .nativeApp } ?? .browser
+        return taskCommand(goal, surface: surface, risky: risky, place: .newPlace, front: input.context.front)
+    }
+
+    /// "Do it through ubereats", "use doordash instead", "try that on amazon", "on whatsapp instead":
+    /// the instruction before, at another place. Said alone the words only name a place — the agent
+    /// once Googled "do it through ubereats" right after "order me a burger" (2026-10-31). The place
+    /// the instruction before named goes ("order me a burger on doordash" → "… on ubereats"); a
+    /// business it named stays ("from mcdonalds through ubereats"). nil when HEAD is no such
+    /// follow-up, its place is no app or site Navi knows, or nothing came before.
+    static func followUpGoal(_ head: String, previous: String?) -> String? {
+        guard let previous = previous?.trimmingCharacters(in: .whitespacesAndNewlines), !previous.isEmpty else { return nil }
+        let t = head.lowercased().replacingOccurrences(of: "’", with: "'")
+            .replacingOccurrences(of: #"[^a-z0-9.' ]"#, with: " ", options: .regularExpression)
+            .split(separator: " ").joined(separator: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        let pattern = #"^(?:(?:no|nah|actually|instead|wait|okay|ok|and|but|so|um|uh|sorry|i mean|i meant|rather)\s+)*"#
+            + #"(?:((?:do|try|order|get|buy|send|book|search|run|make|find|play)\s+(?:it|that|this|them|the same(?: thing)?))\s+|((?:use|try|switch to|go with))\s+|(same(?: thing)?)\s+)?"#
+            + #"(?:(through|on|with|in|using|via|from|at|over)\s+)?(?:the\s+|my\s+)?(.+?)(?:\s+(?:app|site|website))?(?:\s+(?:instead|then|please|rather))*$"#
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) else { return nil }
+        func group(_ i: Int) -> String? { Range(m.range(at: i), in: t).map { String(t[$0]) } }
+        let prep = group(4)
+        // A bare "ubereats" is an instruction of its own ("open ubereats"); the follow-up says "it" or a preposition.
+        guard group(1) != nil || group(2) != nil || group(3) != nil || prep != nil, let place = group(5),
+              let names = placeNames(place) else { return nil }
+        var rest = previous
+        // The place the instruction before named: "on doordash", "open doordash and …". "From/at" a place of
+        // another kind is the business ("from mcdonalds through ubereats"), so it stays.
+        let newSkill = AppSkills.mentioned(in: place)
+        var oldNames: [(name: String, sameKind: Bool)] = []
+        if let old = AppSkills.mentioned(in: previous) {
+            oldNames += ([old.name] + old.aliases).map { ($0.lowercased(), old.name == newSkill?.name) }
+        }
+        oldNames += UltrafastBridge.knownSites.map { $0.0.trimmingCharacters(in: .whitespaces) }
+            .filter { previous.lowercased().contains($0) }.map { ($0, false) }
+        for (name, sameKind) in oldNames.sorted(by: { $0.name.count > $1.name.count }) {
+            let escaped = NSRegularExpression.escapedPattern(for: name)
+            let preps = sameKind ? "on|in|at|from|using|with|via|through|over" : "on|in|using|with|via|through|over"
+            rest = rest.replacingOccurrences(of: #"(?i)\s*,?\s*\b(?:"# + preps + #")\s+(?:the\s+|my\s+)?"# + escaped + #"(?:\s+(?:app|site|website))?\b"#,
+                                             with: "", options: .regularExpression)
+            rest = rest.replacingOccurrences(of: #"(?i)^\s*(?:open|go to|launch|use)\s+(?:up\s+)?(?:the\s+)?"# + escaped + #"(?:\s+(?:app|site|website))?\s*(?:,|and then|and|then)?\s*"#,
+                                             with: "", options: .regularExpression)
+        }
+        rest = rest.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ",.;")))
+        guard !rest.isEmpty else { return nil }
+        let joiner = ["through", "with", "using", "via", "in"].contains(prep ?? "") ? prep! : "on"
+        return "\(rest) \(joiner) \(names)"
+    }
+
+    /// The words of PLACE when they name an app or site Navi knows and nothing else ("ubereats", "uber
+    /// eats", "the doordash app", "amazon.com"), as said; nil otherwise ("in the morning", "for 5 people").
+    static func placeNames(_ place: String) -> String? {
+        let p = place.trimmingCharacters(in: .whitespaces)
+        let letters = p.filter { $0.isLetter || $0.isNumber }
+        guard !letters.isEmpty, p.split(separator: " ").count <= 4 else { return nil }
+        if p.range(of: #"^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|org|net|io|ai|app|co|edu)$"#, options: .regularExpression) != nil { return p }
+        if let s = AppSkills.mentioned(in: p), ([s.name] + s.aliases).contains(where: { $0.lowercased().filter { $0.isLetter || $0.isNumber } == letters }) { return p }
+        if UltrafastBridge.knownSites.contains(where: { $0.0.filter { $0.isLetter || $0.isNumber } == letters }) { return p }
+        return nil
+    }
+
     // MARK: Dictated messages
 
     /// Verbs that send what follows to someone.
@@ -574,6 +652,7 @@ enum VoiceDecider {
     static func command(_ v: Verdict, input: Input) -> VoiceCommand {
         let c = input.clause
         let text = correctedGoal(c.head, v: v, input: input)
+        if let follow = followUpCommand(text, input: input, risky: v.isRisky >= 0.5) { return follow }
         var kind = v.kind.flatMap { Kind(rawValue: $0.choice) } ?? .doInApp
         // "I meant in DoorDash where we just were" sometimes reads as control_navi ("stop") to Jev: a
         // whole sentence that is no control phrase is an instruction (live 2026-10-30, 1 of 2 calls).
@@ -759,6 +838,7 @@ enum VoiceDecider {
 
     static func heuristicCommand(_ input: Input) -> VoiceCommand {
         let text = normalizedGoal(input.clause.head)
+        if let follow = followUpCommand(text, input: input, risky: false) { return follow }
         if let ctl = heuristicControl(text) { return .control(ctl, text: text) }
         if let b = BrowserControls.match(text) { return .browser(b, text: text) }
         if let w = windowCommand(input) { return .window(w, text: text) }

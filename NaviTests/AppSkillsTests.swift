@@ -134,7 +134,9 @@ struct AppSkillsTests {
         #expect(AppSkills.mentioned(in: "Go to McDonald’s")?.name == "McDonald's")
         // A task given an unrelated tab starts over where it starts itself, else at a search.
         #expect(UltrafastBridge.freshStart(for: "go to mcdonalds and order me a burger", after: "https://canvas.olin.edu/courses/1079") == "https://mcdonalds.order.online")
-        #expect(UltrafastBridge.freshStart(for: "order me a burger", after: "https://canvas.olin.edu/courses/1079").hasPrefix("https://www.google.com/search"))
+        // Food from no named place: a delivery site, searched for the food (was a Google search for the sentence).
+        #expect(UltrafastBridge.freshStart(for: "order me a burger", after: "https://canvas.olin.edu/courses/1079") == "https://www.doordash.com/search/store/burger")
+        #expect(UltrafastBridge.freshStart(for: "what's the weather in boston", after: "https://canvas.olin.edu/courses/1079").hasPrefix("https://www.google.com/search"))
         // Planned browser steps and the planner-less path both use it.
         #expect(TaskSurface.startURL(task: "watch the new trailer on youtube", frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=new%20trailer")
         var step = TaskPlanner.Step(surface: .browser, goal: "on youtube play lofi beats")
