@@ -82,7 +82,8 @@ Per task, hosted inside the Debug app (live Jev, nothing on screen):
 
 ```jsonc
 { "contexts": { "<name>": { "front_app", "front_bundle", "url", "title",
-                            "recent": ["“said” → outcome"], "last_was_browser" } },
+                            "recent": ["“said” → outcome"], "last_was_browser",
+                            "recent_work": [{ "task", "url" | "bundle"+"app", "title", "minutes_ago", "outcome" }] } },  // WorkingSurface store, newest first
   "tasks": [ { "id", "family": "errand|schoolwork|messaging|native", "utterance", "source", "context",
     "expect": {
       "commands": 1,            // exactly N committed commands ("must not be split"); or "max_commands": 2
@@ -91,7 +92,7 @@ Per task, hosted inside the Debug app (live Jev, nothing on screen):
       "start_hosts": ["amazon.com"], // the start page contains one of these…
       "app": ["com.apple.Notes", null], // …or the native app (null = stays in the app in front); either passes when both are given
       "current_tab": false,     // starts on the tab that is open
-      "continues": true,        // Jev's continues_previous ≥ 0.5
+      "continues": true,        // work_where = a recent place / the previous command's place, or the run starts in an earlier task's place (continueOn)
       "memory": { "grounds": true, "start_hosts": [...], "app": [...], "routine": "none" } // only with a DB copy
     },
     "live": { "skip": true, "why": "...", "safe_end": "...", "allow": false } } ] }

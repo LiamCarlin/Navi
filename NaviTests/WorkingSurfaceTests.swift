@@ -300,8 +300,7 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
 
     // Jev's whole_instruction, measured live on 2026-10-30 for each logged phrase.
     static let logged: [(String, Double)] = [
-        ("a burger", 0.05), ("to my cart", 0.06), ("updated it", 0.08), ("to my most recent cannabis assignment", 0.06),
-        ("open up when you do tab", 0.15),
+        ("a burger", 0.05), ("updated it", 0.08), ("open up when you do tab", 0.15),
     ]
 
     @Test func loggedFragmentsAreNeverRun() {
@@ -322,7 +321,7 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
     }
 
     @Test func aDanglingPrepositionIsCaughtEvenWithoutJev() {
-        for head in ["to my cart", "to my most recent cannabis assignment", "with Google", "into the doc"] {
+        for head in ["with Google", "into the doc", "to order"] {
             let d = VoiceDecider.decide(verdict(whole: nil), input: input(head, silence: 2500))
             #expect(!isRun(d), Comment(rawValue: "\(head) → \(d)"))
         }
@@ -335,14 +334,30 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         inp.context.amendable = .task(goal: "add a big mac", surface: .browser, useCurrentTab: false, isRisky: false, place: nil)
         #expect(VoiceDecider.decide(verdict(whole: 0.06), input: inp)
                 == .amend(.task(goal: "add a big mac to my cart", surface: .browser, useCurrentTab: false, isRisky: false, place: nil)))
-        // An app launch takes no tail: the user hears that Navi didn't catch it.
+        // An app launch takes no tail: "to my cart" is then a destination of its own ("go to my cart").
         inp.context.amendable = .openApp(AppEntry(name: "Notes", path: "/System/Applications/Notes.app", bundleID: "com.apple.Notes"), text: "open notes")
         inp.silenceMs = 2500
-        if case .giveUp = VoiceDecider.decide(verdict(whole: 0.06), input: inp) {} else { Issue.record("expected give up") }
+        guard case .commit(.task(let goal, _, _, _, _)) = VoiceDecider.decide(verdict(whole: 0.06), input: inp) else { Issue.record("expected a task"); return }
+        #expect(goal == "go to my cart")
+        // A real fragment with nothing to join is given up on.
+        var frag = input("a burger", silence: 2500)
+        frag.context.amendable = inp.context.amendable
+        if case .giveUp = VoiceDecider.decide(verdict(whole: 0.05), input: frag) {} else { Issue.record("expected give up") }
+    }
+
+    @Test func aDestinationWhoseGoWasSwallowedIsRecovered() {
+        // Benchmark school-04: "go to my most recent Canvas assignment" heard without its "go".
+        #expect(VoiceDecider.recoveringDroppedGo("to my most recent cannabis assignment") == "go to my most recent cannabis assignment")
+        #expect(VoiceDecider.recoveringDroppedGo("to my cart") == "go to my cart")
+        #expect(VoiceDecider.recoveringDroppedGo("to order a burger") == nil)
+        #expect(VoiceDecider.recoveringDroppedGo("with Google") == nil)
+        let d = VoiceDecider.decide(verdict(whole: 0.06), input: input("to my most recent cannabis assignment", silence: 2500))
+        guard case .commit(.task(let goal, _, _, _, _)) = d else { Issue.record("got \(d)"); return }
+        #expect(goal == "go to my most recent cannabis assignment")
     }
 
     @Test func aFragmentWithWordsAfterItJoinsThem() {
-        let d = VoiceDecider.decide(verdict(whole: 0.06), input: input("to my cart", following: "and check out", connector: "and", silence: 200))
+        let d = VoiceDecider.decide(verdict(whole: 0.06), input: input("a burger", following: "and fries", connector: "and", silence: 200))
         #expect(d == .merge)
     }
 
@@ -477,7 +492,7 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
 
     @Test(.needsNetwork) func loggedFragmentsDoNotRun() async throws {
         let canvas = chromeFront("https://canvas.olin.edu/courses/1079", title: "Applied Mathematics for Engineers")
-        for head in ["a burger", "to my cart", "updated it", "open up when you do tab", "to my most recent cannabis assignment"] {
+        for head in ["a burger", "updated it", "open up when you do tab"] {
             let (d, v) = try await ask(head, front: canvas, recent: [], recentDone: ["“Open up my class canvas” → completed"])
             #expect(!isRun(d), Comment(rawValue: "\(head) → \(d) whole=\(v.whole ?? -1)"))
         }
@@ -647,6 +662,44 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         // Not whole: still given up.
         let frag = verdict(kind: "do_in_app", whole: 0.1, boundary: ["complete": 0.05, "continues": 0.9, "not_a_command": 0.05])
         if case .giveUp = VoiceDecider.decide(frag, input: input("for the physics", silence: VoiceDecider.giveUpMs + 500)) {} else { Issue.record("fragment not given up") }
+    }
+
+    @Test func aWebAppNamedIsNotTheBrowserAndAnOwnDocumentIsNotAnApp() {
+        let chrome = VoiceAppMatcher.Candidate(id: "a1", entry: AppEntry(name: "Google Chrome", path: "/Applications/Google Chrome.app", bundleID: "com.google.Chrome"),
+                                               score: 0.8, phrase: "google")
+        var inp = input("Open up a Google Doc")
+        inp.context.appCandidates = [chrome]
+        var v = verdict(kind: "open_app")
+        v.appTarget = .init(choice: "a1", probabilities: ["a1": 0.8], confidence: 0.8)
+        switch VoiceDecider.decide(v, input: inp) {
+        case .commit(.openApp): Issue.record("opened Chrome for a Google Doc")
+        case .commit(.openURL(let u, _)): #expect(u.host?.contains("docs.google.com") == true)
+        case .commit(.task(_, let s, _, _, _)): #expect(s == .browser)
+        case let d: Issue.record("got \(d)")
+        }
+        // "open chrome" still opens Chrome.
+        var plain = input("open chrome")
+        plain.context.appCandidates = [VoiceAppMatcher.Candidate(id: "a1", entry: chrome.entry, score: 1, phrase: "chrome")]
+        guard case .commit(.openApp) = VoiceDecider.decide(v, input: plain) else { Issue.record("open chrome"); return }
+
+        let notes = VoiceAppMatcher.Candidate(id: "a1", entry: AppEntry(name: "Notes", path: "/System/Applications/Notes.app", bundleID: "com.apple.Notes"),
+                                              score: 1, phrase: "notes")
+        var hci = input("open the hci notes")
+        hci.context.appCandidates = [notes]
+        hci.context.namesOwnDocument = true
+        guard case .commit(.task(_, .browser, _, _, _)) = VoiceDecider.decide(v, input: hci) else { Issue.record("hci notes → Notes app"); return }
+        var justNotes = input("open the notes app")
+        justNotes.context.appCandidates = [notes]
+        justNotes.context.namesOwnDocument = true
+        guard case .commit(.openApp) = VoiceDecider.decide(v, input: justNotes) else { Issue.record("open the notes app"); return }
+    }
+
+    @Test func continuingInABrowserAppIsItsTabInFront() {
+        let chromeApp = WorkingSurface(kind: .app, task: "open chrome", outcome: .completed, bundleID: "com.google.Chrome", appName: "Google Chrome", at: Date())
+        let p = VoiceCommandExecutor.placement(goal: "write some random phrase into it", surface: .unsure, useCurrentTab: false, place: .previous,
+                                               frontmostBundle: "com.google.Chrome", compound: false, lastWorkedHere: false,
+                                               previousSurface: chromeApp, namesPage: { _ in false })
+        #expect(p.surface == .browser && p.useCurrentTab && p.continueOn == nil)
     }
 
     @Test func anErrandAtABusinessStartsFromThatBusinessesOwnSite() {

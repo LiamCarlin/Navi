@@ -365,8 +365,14 @@ final class VoiceCommandExecutor {
                                       frontmostBundle: String?, compound: Bool, lastWorkedHere: Bool,
                                       hereSurface: WorkingSurface? = nil, previousSurface: WorkingSurface? = nil,
                                       namesPage: (String) -> Bool) -> Placement {
+        // "Open Chrome" left Chrome itself as the place: continuing there is its tab in front, not a native step.
+        func browserApp(_ s: WorkingSurface) -> Placement? {
+            guard s.kind == .app, let b = s.bundleID, AXSnapshotter.isBrowser(b) else { return nil }
+            return Placement(surface: .browser, useCurrentTab: frontmostBundle == b, continueOn: nil)
+        }
         switch place {
         case .last(let s)?:
+            if let p = browserApp(s) { return p }
             return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s)
         case .here?:
             // The screen in front is where the last task worked: continuing that task, so screen
@@ -377,6 +383,7 @@ final class VoiceCommandExecutor {
             return Placement(surface: surface, useCurrentTab: false, continueOn: nil)
         case .previous?:
             // The instruction before it has finished by now: its place is the latest recent place.
+            if let s = previousSurface, let p = browserApp(s) { return p }
             if let s = previousSurface { return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s) }
             return placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: nil, frontmostBundle: frontmostBundle,
                              compound: compound, lastWorkedHere: lastWorkedHere, namesPage: namesPage)

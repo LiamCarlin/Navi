@@ -535,7 +535,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     the key press; a plain "and" after a dictation verb stays in the text unless an instruction verb
     follows; after a long pause a head with `whole_instruction` ≥ 0.6 is acted on, not given up; an
     errand at a business Navi has no page for starts from "<business> order online"
-    (`TaskPlanner.errandQuery`), not a search for the sentence. Live tests: `VoiceWorkingSurfaceLiveTests`,
+    (`TaskPlanner.errandQuery`), not a search for the sentence; "to my …" with no verb is "go to my …"
+    (the recognizer drops the "go"; a still-queued instruction takes the tail first); a web app named
+    while Jev picked the browser ("open up a Google Doc" → Chrome) is the web app; a head naming one of
+    the user's own documents with a page (`namesOwnDocument`) runs on that page, not in an app a word
+    suggests; an earlier "open Chrome" continues on Chrome's tab. Offline bench after the port: 85 %
+    (errand 70, school 83, messaging 90, native 100; baseline 73). Live tests: `VoiceWorkingSurfaceLiveTests`,
     `PlannerWorkingSurfaceTests` (`.needsNetwork`). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
     **Only my voice** (`Voice/VoicePrint`, toggle `voiceOnlyMyVoice`): once the user taught Navi

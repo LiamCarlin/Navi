@@ -283,13 +283,13 @@ extension WorkingSurface {
             crit[id] = "Carry \(subject) out where the earlier task “\(clip(s.task, 60))” worked (\(ago) min ago): \(s.placeDescription). Pick this when \(subject) continues that task or refers back to it ('where we just were', 'the cart', 'it', 'go back', 'now add…', 'I meant in …', a correction), or when what \(subject) asks belongs on that site or app."
         }
         if let p = previousInstruction?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
-            crit["previous"] = "Carry \(subject) out wherever the instruction said just before it ends up working — Navi is still carrying it out or about to: “\(clip(p, 80))”. Pick this when \(subject) is the next part of that instruction (its next step, on the page or app it opens), e.g. 'open my assignments' right after 'go to canvas'."
+            crit["previous"] = "Carry \(subject) out wherever the instruction said just before it ends up working — Navi is still carrying it out or about to: “\(clip(p, 80))”. Pick this when \(subject) is the next part of that instruction (its next step, on the page or app it opens, even an errand there), e.g. 'open my assignments' right after 'go to canvas', 'add a large fries' right after 'go to wendy's'."
         }
         guard !places.isEmpty || frontDesc != nil || crit["previous"] != nil else { return nil }
         if let d = frontDesc {
             crit["here"] = "Carry \(subject) out on the screen in front right now (\(d)\(hereNote)): \(subject) acts on what is visible there — click, type, scroll, read, select, close on that page or app — or says 'this page', 'this tab', 'here'\(hereNote.isEmpty ? "" : ", or continues that task")."
         }
-        crit["new_place"] = "\(subject) names or implies a place of its own — another website or app, or an errand (order food, book, buy, look something up, message someone) that the screen in front and the recent work have nothing to do with: start there fresh, never on the page in front."
+        crit["new_place"] = "\(subject) names or implies a place of its own — another website or app, or an errand (order food, book, buy, look something up, message someone) that the screen in front, the recent work\(previousInstruction == nil ? "" : " and the instruction just before it") have nothing to do with: start there fresh, never on the page in front."
         let q = JevClient.Question.choice(
             instructions: "Where should \(subject) be carried out? recent_work lists where Navi's last tasks worked, most recent first.",
             criteria: crit)

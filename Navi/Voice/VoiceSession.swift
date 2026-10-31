@@ -743,6 +743,7 @@ final class VoiceSession: ObservableObject {
         ctx.recentWork = WorkingSurface.Store.shared.recent()
         ctx.amendable = executor.amendableCommand()
         ctx.previousInstruction = executor.previousInstruction
+        ctx.namesOwnDocument = UserKnowledge.liveStartURL(for: clause.head) != nil
         ctx.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: VoiceVocabulary.liveTerms())
         return ctx
     }
