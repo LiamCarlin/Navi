@@ -635,7 +635,9 @@ final class UserKnowledge: @unchecked Sendable {
     /// for ("text dhvan …" → where Dhvan's chat is opened, "facetime mom" → FaceTime),
     /// with no app named: a native app's bundle id, or nil.
     static func channelApp(task: String, matches: [Match]) -> String? {
-        let kinds = UserHabits.candidates(for: task).map(\.kind).filter(UserContacts.channelKinds.contains)
+        var kinds = UserHabits.candidates(for: task).map(\.kind).filter(UserContacts.channelKinds.contains)
+        // "open my conversation with mikey": their chat with that person, wherever they text them.
+        if kinds.isEmpty, TaskGrounding.isConversationWith(task) { kinds = ["texting"] }
         guard let kind = kinds.first else { return nil }
         for m in matches where m.thing.type == "person" {
             if let p = reachKinds(m.thing).first(where: { $0.kind == kind })?.place, !p.isWeb { return p.key }

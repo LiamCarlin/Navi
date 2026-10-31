@@ -214,6 +214,9 @@ enum TaskGrounding {
     static func shouldGround(task: String, scope: Scope, words: (specific: Set<String>, generic: Set<String>), named: Bool) -> Bool {
         if scope.recent || refersToMessage(task) { return true }
         if isSearch(task) { return false }
+        // An errand is about the world, not the user's own work: "order me a random chipotle bowl" is
+        // no Onshape "Yarn Bowl", "add it to my cart" no product page from last week (unless "…like last time").
+        if isErrand(task) { return false }
         guard !words.specific.isEmpty || !words.generic.isEmpty else { return false }
         if named || !thingKinds(in: task).isEmpty { return true }
         return task.lowercased().range(of: #"\b(my|our|mine)\b"#, options: .regularExpression) != nil
@@ -461,6 +464,18 @@ enum TaskGrounding {
     static func isCommunication(_ task: String) -> Bool {
         UserHabits.candidates(for: task).contains { UserContacts.channelKinds.contains($0.kind) || $0.kind == "calendar" }
             || task.lowercased().range(of: #"\b(send|share|forward|invite|reply|respond|ping|dm|call|tell|ask|remind|introduce)\b"#, options: .regularExpression) != nil
+            || isConversationWith(task)
+    }
+
+    /// "my conversation with mikey", "the chat with bella": a person's chat, not a project they share.
+    static func isConversationWith(_ task: String) -> Bool {
+        task.lowercased().range(of: #"\b(conversation|convo|chat|thread|dms?|messages|texts)\s+with\b"#, options: .regularExpression) != nil
+    }
+
+    /// Buying, ordering, a cart: things in the world, not the user's own work.
+    static func isErrand(_ task: String) -> Bool {
+        withoutDictation(task).lowercased().range(of: #"\b(order|buy|purchase|checkout|check out|cart|basket|add (it|this|that|them|one) to)\b"#,
+                                                  options: .regularExpression) != nil
     }
 
     /// The grounded thing as `user_context` reads it (planner, Jev, runner).
