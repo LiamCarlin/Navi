@@ -414,6 +414,25 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         #expect(VoiceDecider.questions(inp)["misheard_0"] != nil)
     }
 
+    @Test func theInstructionsVerbIsNeverRenamed() {
+        // Bench school-06: "continue where I left off" became "content where I left off".
+        let t = terms + [VoiceVocabulary.Term("Content", kind: "apps and sites")]
+        #expect(VoiceVocabulary.soundAlikes(in: "continue where I left off", terms: t).isEmpty)
+        #expect(VoiceVocabulary.soundAlikes(in: "please continue the content", terms: t).isEmpty)
+    }
+
+    @Test func aDroppedGoDestinationIsActedOnAfterAPauseEvenIfJevWaits() {
+        // Bench school-04: boundary "continues" 62–68 %, whole 0.03 → given up after 6 s.
+        var v = VoiceDecider.Verdict()
+        v.boundary = .init(choice: "continues", probabilities: ["complete": 0.25, "continues": 0.68, "not_a_command": 0.07], confidence: 0.68)
+        v.kind = .init(choice: "do_in_app", probabilities: ["do_in_app": 0.9], confidence: 0.9)
+        v.whole = 0.03
+        let inp = VoiceDecider.Input(clause: .init(head: "to my most recent cannabis assignment", following: "", connector: "", start: 0, end: 3, resume: 3),
+                                     silenceMs: VoiceDecider.longPauseMs, context: VoiceDecider.Context())
+        guard case .commit(.task(let goal, _, _, _, _)) = VoiceDecider.decide(v, input: inp) else { Issue.record("not acted on"); return }
+        #expect(goal.hasPrefix("go to my most recent"))
+    }
+
     @Test func twoHeardWordsCanBeOneOfTheirs() {
         #expect(VoiceVocabulary.soundAlikes(in: "open my on shape model", terms: terms).first?.meant == "Onshape")
     }
@@ -712,5 +731,82 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         let url = TaskSurface.startURL(task: "order me a random thing from kfc under 10 bucks", frontmost: FrontmostProbe.Info()) ?? ""
         #expect(url.lowercased().contains("kfc"))
         #expect(!url.contains("random"))
+    }
+
+    @Test func anErrandStartsOnTheBusinessesOwnSiteFromHistoryElseTheTopResult() {
+        let task = "get me a large pepperoni pizza from dominos"
+        // The user's own browsing knows the site.
+        #expect(TaskPlanner.errandStartURL(for: task, sites: ["canvas.olin.edu", "dominos.com"]) == "https://dominos.com")
+        #expect(TaskPlanner.errandStartURL(for: "book a table at tatte for 7", sites: ["tattebakery.com"]) == "https://tattebakery.com")
+        #expect(!TaskPlanner.siteCarries("kfcfans.org", name: "kfcx"))
+        // Otherwise the search engine's first-result redirect (no consent page).
+        let lucky = TaskPlanner.errandStartURL(for: "order me a random thing from kfc under 10 bucks", sites: []) ?? ""
+        #expect(lucky.hasPrefix("https://duckduckgo.com/?q=") && lucky.contains("ducky") && lucky.contains("kfc"))
+        #expect(TaskPlanner.errandStartURL(for: "order me a burger", sites: ["dominos.com"]) == nil)
+        // The redirect page's target, as DuckDuckGo served it on 2026-10-31.
+        let page = "<meta http-equiv='refresh' content='0; url=/l/?uddg=https%3A%2F%2Fwww.kfc.com%2F&rut=eff74f'>"
+        #expect(TaskPlanner.landing(inRedirectPage: page) == "https://www.kfc.com/")
+        #expect(TaskPlanner.landing(inRedirectPage: "<html>no redirect</html>") == nil)
+    }
+
+    @Test(.needsNetwork) func theTopResultRedirectLandsOnTheBusinessesSite() async throws {
+        for (task, host) in [("order me a random thing from kfc under 10 bucks", "kfc.com"), ("get me a large pepperoni pizza from dominos", "dominos.com")] {
+            let q = try #require(TaskPlanner.errandQuery(for: task))
+            let landing = await TaskPlanner.luckyLanding(TaskPlanner.luckyURL(q))
+            #expect(landing?.contains(host) == true, Comment(rawValue: "\(task) → \(landing ?? "nil")"))
+        }
+    }
+}
+
+// MARK: - Dictated messages are sent, never dropped or answered (bench msg-02 / msg-06)
+
+@Suite struct VoiceDictatedMessageTests {
+    private func input(_ head: String, people: Set<String> = []) -> VoiceDecider.Input {
+        var ctx = VoiceDecider.Context()
+        ctx.knownPeople = people
+        return VoiceDecider.Input(clause: .init(head: head, following: "", connector: "", start: 0, end: 3, resume: 3), silenceMs: 2500, context: ctx)
+    }
+
+    private func verdict(_ b: String, _ p: Double, kind: String, whole: Double = 0.5) -> VoiceDecider.Verdict {
+        var v = VoiceDecider.Verdict()
+        var probs = ["complete": (1 - p) / 2, "continues": (1 - p) / 2, "not_a_command": (1 - p) / 2]
+        probs[b] = p
+        v.boundary = .init(choice: b, probabilities: probs, confidence: p)
+        v.kind = .init(choice: kind, probabilities: [kind: 0.8], confidence: 0.8)
+        v.control = .init(choice: "none", probabilities: ["none": 0.9], confidence: 0.9)
+        v.surface = .init(choice: "native_app", probabilities: ["native_app": 0.6], confidence: 0.6)
+        v.whole = whole
+        return v
+    }
+
+    @Test func recognisesMessagesToSomeone() {
+        #expect(VoiceDecider.isDictatedMessage("text mom I'm at the store and I'll be home soon", people: []))
+        #expect(VoiceDecider.isDictatedMessage("text joão are we still on for tonight", people: ["joão"]))
+        #expect(VoiceDecider.isDictatedMessage("text João are we still on for tonight", people: []))
+        #expect(VoiceDecider.isDictatedMessage("text joão are we still on for tonight", people: []))   // not known, not capitalised
+        #expect(VoiceDecider.isDictatedMessage("um can you text dhvan uh that I'll be there in ten", people: ["dhvan"]))
+        #expect(VoiceDecider.isDictatedMessage("Send a message to the whole team about lunch", people: []))
+        #expect(VoiceDecider.isDictatedMessage("send Bella a text saying I'm late", people: []))
+        #expect(VoiceDecider.isDictatedMessage("reply to the email from gabi saying sounds good", people: []))
+        for h in ["tell me a joke", "what's the weather tomorrow", "text size bigger", "message", "email", "search for cats"] {
+            #expect(!VoiceDecider.isDictatedMessage(h, people: ["dhvan"]), Comment(rawValue: h))
+        }
+    }
+
+    @Test func aMessageJevCallsChatterIsStillSent() {
+        // Bench msg-02: "not an instruction (65%)".
+        let d = VoiceDecider.decide(verdict("not_a_command", 0.65, kind: "do_in_app"), input: input("text mom I'm at the store and I'll be home soon"))
+        guard case .commit(.task) = d else { Issue.record("got \(d)"); return }
+    }
+
+    @Test func aMessageWhoseTextIsAQuestionIsSentNotAnswered() {
+        // Bench msg-06: classified as an answer.
+        let d = VoiceDecider.decide(verdict("complete", 0.8, kind: "answer"), input: input("text joão are we still on for tonight", people: ["joão"]))
+        guard case .commit(.task(let goal, _, _, _, _)) = d else { Issue.record("got \(d)"); return }
+        #expect(goal == "text joão are we still on for tonight")
+        // A real question is still answered.
+        guard case .commit(.answer) = VoiceDecider.decide(verdict("complete", 0.8, kind: "answer"), input: input("are we still on for tonight")) else {
+            Issue.record("question not answered"); return
+        }
     }
 }

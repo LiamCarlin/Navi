@@ -106,6 +106,8 @@ enum VoiceDecider {
         var amendable: VoiceCommand?
         /// HEAD names one of the user's own documents/projects that has a page (`UserKnowledge.liveStartURL`).
         var namesOwnDocument = false
+        /// First names of the people this user deals with (screen memory), lower-cased.
+        var knownPeople: Set<String> = []
 
         /// What is in front, as the agent's probe reads it.
         var front: FrontmostProbe.Info? {
@@ -333,6 +335,9 @@ enum VoiceDecider {
         var pNoise = b.p(Boundary.notACommand.rawValue)
         // A correction of what Navi is doing or just did is an instruction, never chatter.
         if v.replacesCurrent >= replaceP { pComplete += pNoise; pNoise = 0 }
+        // "text mom I'm at the store and I'll be home soon": a message dictated to someone is an
+        // instruction whatever the text itself sounds like (bench msg-02 was dropped as chatter 1 in 3).
+        if isDictatedMessage(c.head, people: input.context.knownPeople) { pComplete += pNoise; pNoise = 0 }
         let silence = input.silenceMs
         // "and" alone may still be joining the object ("cats and dogs"); "and then" / "then" / "after that" never do.
         let bareConnector = c.hasBoundary && c.following.isEmpty && !c.connector.isEmpty && !Self.isSentenceMark(c.connector)
@@ -369,6 +374,8 @@ enum VoiceDecider {
             // Jev keeps hearing "more to come", but the user has stopped and what they said is a whole
             // instruction (benchmark school-04: given up after 6 s): act on it.
             if silence >= longPauseMs, let w = v.whole, w >= wholeActP, pNoise < 0.5 { return act(v, input: input) }
+            // "to my most recent canvas assignment" is "go to …" with the "go" lost: the destination is the instruction.
+            if silence >= longPauseMs, recoveringDroppedGo(normalizedGoal(c.head)) != nil, pNoise < 0.5 { return act(v, input: input) }
             if silence >= giveUpMs { return .giveUp(reason: "no instruction after \(silence / 1000) s of silence (\(pct(pContinues)) continues)") }
             let retry: Int
             if sentenceEnded { retry = max(100, sentencePauseMs - silence) }
@@ -433,7 +440,8 @@ enum VoiceDecider {
            let prev = input.context.amendable, let amended = prev.appending(input.clause.head) {
             return .amend(amended)
         }
-        if cmd.needsWholeInstruction, let why = incompleteReason(input.clause.head, v: v) {
+        if cmd.needsWholeInstruction, !isDictatedMessage(input.clause.head, people: input.context.knownPeople),
+           let why = incompleteReason(input.clause.head, v: v) {
             if !input.clause.following.isEmpty { return .merge }
             if let prev = input.context.amendable, let amended = prev.appending(input.clause.head) { return .amend(amended) }
             if input.silenceMs < pauseMs { return .wait(reason: "not a whole instruction yet", retryAfterMs: max(100, pauseMs - input.silenceMs)) }
@@ -495,6 +503,48 @@ enum VoiceDecider {
         return nil
     }
 
+    // MARK: Dictated messages
+
+    /// Verbs that send what follows to someone.
+    static let sendVerbs: Set<String> = ["text", "message", "imessage", "whatsapp", "slack", "dm", "ping", "email", "mail", "tell", "msg"]
+    static let unambiguousSendVerbs: Set<String> = ["text", "imessage", "whatsapp", "dm", "email", "msg"]
+    static let nonRecipients: Set<String> = ["size", "box", "field", "message", "messages", "thread", "app", "font", "input", "editor",
+                                             "inbox", "settings", "address", "signature", "draft", "drafts", "format", "color", "style"]
+    /// People named by relation rather than by name.
+    static let relationWords: Set<String> = ["mom", "mum", "mama", "mommy", "ma", "dad", "daddy", "papa", "grandma", "grandpa", "nana",
+                                             "sister", "brother", "sis", "bro", "wife", "husband", "boss", "roommate", "team", "everyone"]
+
+    /// Local evidence that HEAD dictates a message to a person — "<send verb> <person> <text…>",
+    /// "send (a|an) message/text/email to <person> …", "send <person> a message …", "reply to <person> …".
+    /// A person is a relation word, someone the user deals with (`knownPeople`), or a name the
+    /// recognizer capitalised. Jev's verdict on such a head wobbles with what the text says (a
+    /// question in it reads as "answer", a remark as chatter); the structure does not.
+    static func isDictatedMessage(_ head: String, people: Set<String>) -> Bool {
+        let goal = normalizedGoal(head)
+        let raw = goal.split(whereSeparator: { $0.isWhitespace }).map { String($0).trimmingCharacters(in: .punctuationCharacters) }.filter { !$0.isEmpty }
+        let w = raw.map { $0.lowercased() }
+        guard w.count >= 3 else { return false }
+        func isPerson(_ i: Int) -> Bool {
+            guard i < w.count else { return false }
+            if relationWords.contains(w[i]) || people.contains(w[i]) { return true }
+            let token = raw[i]
+            return token != "I" && token.first?.isUppercase == true && token.count >= 2 && !fragmentWords.contains(w[i])
+        }
+        if sendVerbs.contains(w[0]), isPerson(1), w.count >= 3 { return true }
+        // Verbs that only ever send ("text joão are we…"): whoever follows is the recipient, known or not —
+        // unless it is a thing on screen ("text size", "email field").
+        if unambiguousSendVerbs.contains(w[0]), w.count >= 3, !fragmentWords.contains(w[1]) || w[1] == "him" || w[1] == "her" || w[1] == "them",
+           !nonRecipients.contains(w[1]) { return true }
+        if w[0] == "send" {
+            // "send a message to the whole team …", "send mom a text saying …"
+            if let to = w.firstIndex(of: "to"), to <= 4, w[1..<to].contains(where: { ["message", "text", "email", "imessage", "dm", "note"].contains($0) }),
+               to + 1 < w.count { return true }
+            if isPerson(1), w.dropFirst(2).prefix(3).contains(where: { ["message", "text", "email", "imessage", "dm"].contains($0) }) { return true }
+        }
+        if w[0] == "reply", w.count >= 4, w[1] == "to" { return true }
+        return false
+    }
+
     // MARK: Kind → command
 
     static func command(_ v: Verdict, input: Input) -> VoiceCommand {
@@ -512,6 +562,9 @@ enum VoiceDecider {
         // session watches for it locally). Listening, "continue where I left off" / "resume the video"
         // are tasks, not a control (benchmark 2026-10-30: read as control_navi "resume").
         if kind == .control, ctlChoice == .resume, !input.context.isPaused { kind = .doInApp }
+        // A message dictated to someone is sent, never answered or searched — even when its text is a
+        // question ("text joão are we still on for tonight" was answered 1 in 3 on the bench).
+        if kind != .doInApp, kind != .control || ctlChoice == .none, isDictatedMessage(c.head, people: input.context.knownPeople) { kind = .doInApp }
         let risky = v.isRisky >= 0.5
         let place = workChoice(v, input: input)
         let front = input.context.front
@@ -539,8 +592,13 @@ enum VoiceDecider {
         // left off": the user's own past work, found in screen memory (`TaskGrounding`) — a task,
         // never an app named "last assignment did" or a spoken answer about it. Not when Jev says
         // it continues a recent task ("go back to the cart" after an order is that order's tab).
-        if kind != .control, !elsewhere, appChoice(v, input: input) == nil, TaskGrounding.reopensOwnWork(text) {
-            return .task(goal: text, surface: .unsure, useCurrentTab: false, isRisky: risky, place: place == .newPlace || place == .previous ? place : nil)
+        // An app match only counts against it when Jev says the head opens that app.
+        if kind != .control, !elsewhere, kind != .openApp || appChoice(v, input: input) == nil, TaskGrounding.reopensOwnWork(text) {
+            // A web app it names keeps the browser: when screen memory finds nothing, "open up my class canvas"
+            // must still start on Canvas, not on a fresh guess that ends in a search for the sentence.
+            let namesWebApp = AppSkills.mentioned(in: text).map { !$0.hosts.isEmpty && $0.bundleIDs.isEmpty } ?? false
+            let s: TaskSurface.Surface = namesWebApp ? .browser : .unsure
+            return .task(goal: text, surface: s, useCurrentTab: false, isRisky: risky, place: place == .newPlace || place == .previous ? place : nil)
         }
         switch kind {
         case .control:

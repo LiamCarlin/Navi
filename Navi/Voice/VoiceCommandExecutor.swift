@@ -476,6 +476,8 @@ final class VoiceCommandExecutor {
                                compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil,
                                previousSurface: last.flatMap { $0.at >= item.enqueuedAt.addingTimeInterval(-5) ? $0 : nil }, namesPage: Self.namesPage)
         if let s = p.continueOn { Log.voice.info("voice task continues in \(s.placeDescription, privacy: .private)") }
+        // "order … from kfc": find KFC's own page first (≤ 1.5 s), so the run starts there rather than on a redirect.
+        if p.continueOn == nil, !p.useCurrentTab { await TaskPlanner.resolveErrandLanding(for: goal) }
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
         let options = ComputerAgent.RunOptions(background: !foreground, showOverlay: false, maxSteps: maxSteps,

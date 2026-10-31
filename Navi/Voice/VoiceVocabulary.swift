@@ -50,6 +50,9 @@ enum VoiceVocabulary {
         "email", "call", "play", "song", "assignment", "class", "course", "document", "doc", "tab", "window", "app",
     ]
 
+    /// Common verbs that are never one of the user's names.
+    static let verbLike: Set<String> = ["continue", "resume", "finish", "start", "keep", "pick", "bring", "pull", "help", "make", "let", "want", "need"]
+
     // MARK: Proposals
 
     /// Words of `head` (one, or two read as one: "on shape" → Onshape) that sound like one of
@@ -68,6 +71,9 @@ enum VoiceVocabulary {
                 let letters = lower.filter(\.isLetter)
                 guard letters.count >= 4 else { continue }
                 if n == 1, stopWords.contains(lower) { continue }
+                // The instruction's own verb is not a name: "continue where I left off" once became
+                // "content where I left off" (bench school-06). Nor is any verb Navi acts on.
+                if i == 0 || words[i..<(i + n)].contains(where: { VoiceDecider.actionVerbs.contains($0.lowercased()) || verbLike.contains($0.lowercased()) }) { continue }
                 if n == 2, words[i..<(i + n)].contains(where: { stopWords.contains($0.lowercased()) || $0.count < 2 }) { continue }
                 let key = phoneticKey(phrase)
                 guard key.count >= 3 else { continue }

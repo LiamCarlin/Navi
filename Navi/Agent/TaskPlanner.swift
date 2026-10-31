@@ -229,6 +229,77 @@ enum TaskPlanner {
         return "\(name) \(booking ? "reservations" : "order online")"
     }
 
+    /// Where an errand at a named business starts (no brand list anywhere):
+    ///   1. a site this user already visits whose name carries the business's ("dominos" → dominos.com
+    ///      in their browsing; `sites` = `UserHabits` site keys, most used first);
+    ///   2. the business's official page found ahead of time (`resolveErrandLanding`, the voice
+    ///      executor awaits it ≤ 1.5 s before the run);
+    ///   3. a search engine's "first result" redirect: DuckDuckGo `!ducky` answers with a plain
+    ///      meta-refresh to its top hit — no consent page (checked 2026-10-31: kfc → kfc.com, dominos →
+    ///      dominos.com/en, tatte → tattebakery.com, chipotle → chipotle.com).
+    /// nil when the task is no errand at a named business.
+    static func errandStartURL(for task: String, sites: [String]) -> String? {
+        guard let q = errandQuery(for: task), let name = errandName(for: task) else { return nil }
+        let letters = name.filter { $0.isLetter || $0.isNumber }
+        if let site = sites.first(where: { siteCarries($0, name: letters) }) { return "https://" + site }
+        if let landing = cachedLanding(for: q) { return landing }
+        return luckyURL(q)
+    }
+
+    /// The business in an errand ("kfc", "domino's"), as `errandQuery` reads it.
+    static func errandName(for task: String) -> String? {
+        guard let q = errandQuery(for: task) else { return nil }
+        for suffix in [" order online", " reservations"] where q.hasSuffix(suffix) { return String(q.dropLast(suffix.count)) }
+        return q
+    }
+
+    /// "dominos.com" carries "dominos"; "tattebakery.com" carries "tatte" (≥ 4 letters may be a prefix).
+    static func siteCarries(_ site: String, name letters: String) -> Bool {
+        guard !letters.isEmpty, let label = site.lowercased().split(separator: "/").first?.split(separator: ".").first(where: { $0 != "www" && $0 != "order" }) else { return false }
+        let l = String(label).filter { $0.isLetter || $0.isNumber }
+        return l == letters || (letters.count >= 4 && l.hasPrefix(letters))
+    }
+
+    static func luckyURL(_ query: String) -> String {
+        var c = URLComponents(string: "https://duckduckgo.com/")!
+        c.queryItems = [URLQueryItem(name: "q", value: "!ducky " + query)]
+        return c.url!.absoluteString
+    }
+
+    /// The page a `!ducky` redirect lands on: one GET, the `uddg` target of its meta refresh.
+    static func luckyLanding(_ url: String, timeout: TimeInterval = 2) async -> String? {
+        guard let u = URL(string: url) else { return nil }
+        var req = URLRequest(url: u, timeoutInterval: timeout)
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+        guard let (data, _) = try? await URLSession.shared.data(for: req) else { return nil }
+        return landing(inRedirectPage: String(decoding: data, as: UTF8.self))
+    }
+
+    /// `uddg=<encoded url>` out of a DuckDuckGo redirect page.
+    static func landing(inRedirectPage html: String) -> String? {
+        guard let r = html.range(of: #"uddg=([^&'"]+)"#, options: .regularExpression) else { return nil }
+        let enc = String(html[r].dropFirst(5))
+        guard let s = enc.removingPercentEncoding, s.hasPrefix("http") else { return nil }
+        return s
+    }
+
+    private static let landingLock = NSLock()
+    nonisolated(unsafe) private static var landings: [String: (url: String, at: Date)] = [:]
+
+    static func cachedLanding(for query: String) -> String? {
+        landingLock.lock(); defer { landingLock.unlock() }
+        guard let l = landings[query], Date().timeIntervalSince(l.at) < 3600 else { return nil }
+        return l.url
+    }
+
+    /// Finds the errand's official page ahead of the run (≤ `timeoutMs`) so its start is the business's
+    /// own site, not a redirect. Cheap to call for any task: nothing happens unless it is such an errand.
+    static func resolveErrandLanding(for task: String, timeoutMs: Int = 1500) async {
+        guard let q = errandQuery(for: task), cachedLanding(for: q) == nil else { return }
+        guard let l = await luckyLanding(luckyURL(q), timeout: Double(timeoutMs) / 1000) else { return }
+        landingLock.lock(); landings[q] = (l, Date()); landingLock.unlock()
+    }
+
     static let errandNameStops: Set<String> = ["under", "for", "with", "and", "near", "to", "that", "which", "in", "around", "below", "less",
                                                "cheaper", "please", "now", "tonight", "today", "tomorrow", "delivered", "delivery", "pickup",
                                                "asap", "by", "before", "after", "using", "via", "then", "but", "so", "if"]

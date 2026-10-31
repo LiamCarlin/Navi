@@ -205,6 +205,7 @@ import AppKit
         c.amendable = amendable
         c.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: terms)
         c.namesOwnDocument = memoryStartURL(clause.head, memory) != nil
+        c.knownPeople = Set(terms.filter { $0.kind == "people" }.map { $0.text.lowercased() })
         return c
     }
 
@@ -654,6 +655,8 @@ import AppKit
                 var r: Route?
                 if c.kind == "task", let g = c.goal {
                     let surface = TaskSurface.Surface(rawValue: c.surface ?? "") ?? .unsure
+                    // As `VoiceCommandExecutor.runTask`: an errand's business page is looked up before the run.
+                    await TaskPlanner.resolveErrandLanding(for: g)
                     let t0 = Date()
                     r = await Self.route(goal: g, surface: surface, useCurrentTab: c.useCurrentTab, place: c.place,
                                          work: work, previousSurface: previousSurface, ctx: screen, jev: jev, memory: memory)
