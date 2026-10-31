@@ -22,7 +22,8 @@ struct ResultsListView: View {
             ScrollView(.vertical) {
                 VStack(spacing: 1) {
                     ForEach(Array(vm.results.enumerated()), id: \.element.id) { i, r in
-                        ResultRow(result: r, isSelected: i == vm.selectedIndex, namespace: selectionNS)
+                        ResultRow(result: r, isSelected: i == vm.selectedIndex, namespace: selectionNS,
+                                  quickKey: vm.commandHeld && i < 9 ? i + 1 : nil)
                             .id(r.id)
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -58,6 +59,8 @@ struct ResultRow: View {
     let result: SearchResult
     let isSelected: Bool
     let namespace: Namespace.ID
+    /// While ⌘ is held: the row's ⌘1–9 key.
+    var quickKey: Int? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -97,7 +100,10 @@ struct ResultRow: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if isSelected, let hint = result.shortcutHint, !hint.isEmpty {
+        if let quickKey {
+            KeyCap(text: "⌘\(quickKey)")
+                .transition(.opacity)
+        } else if isSelected, let hint = result.shortcutHint, !hint.isEmpty {
             ShortcutHint(text: hint)
                 .transition(.opacity)
         } else {

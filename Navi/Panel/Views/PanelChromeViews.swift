@@ -37,6 +37,7 @@ struct PanelFooterView: View {
         switch vm.mode {
         case .answer:
             if vm.isAnswering { return "Navi · answering" }
+            if vm.isFollowingUp { return "Navi remembers this answer" }
             return vm.statusLine.isEmpty ? "Navi" : vm.statusLine
         case .agent:
             if vm.pendingApproval != nil { return "Navi will ask before anything irreversible" }
@@ -60,22 +61,25 @@ struct PanelFooterView: View {
         HStack(spacing: 12) {
             switch vm.mode {
             case .results:
-                KeyHint(keys: "↑↓", label: "navigate")
-                KeyHint(keys: "⏎", label: "open")
+                if vm.results.count > 1 { KeyHint(keys: "↑↓", label: "navigate") }
+                KeyHint(keys: "⏎", label: PanelWording.primaryVerb(vm.results[safe: vm.selectedIndex]))
                 KeyHint(keys: "⌘⏎", label: "ask")
-                KeyHint(keys: "esc")
+                KeyHint(keys: "esc", label: "clear")
             case .answer:
-                Button(action: { vm.copyAnswer() }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "doc.on.doc").font(.system(size: 10, weight: .semibold))
-                        Text("Copy").font(.system(size: 11, weight: .medium))
-                        KeyCap(text: "⌘C")
+                if vm.isAnswering {
+                    FooterButton(symbol: "stop.fill", title: "Stop", keys: "⌘.", help: "Stop the answer here") { vm.stopAnswer() }
+                } else if vm.isFollowingUp {
+                    KeyHint(keys: "⏎", label: "ask")
+                } else {
+                    FooterButton(symbol: "doc.on.doc", title: "Copy", keys: "⌘C", help: "Copy the answer") { vm.copyAnswer() }
+                        .disabled(vm.answerText.isEmpty)
+                    FooterButton(symbol: "arrow.clockwise", title: "Retry", keys: "⌘R", help: "Ask the same question again") { vm.retryAnswer() }
+                        .disabled(vm.answeredQuery.isEmpty)
+                    if vm.canFollowUp {
+                        FooterButton(symbol: "arrow.turn.down.right", title: "Follow up", keys: "⇥",
+                                     help: "Ask something about this answer") { vm.beginFollowUp() }
                     }
-                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .disabled(vm.answerText.isEmpty)
-                .help("Copy the answer")
                 KeyHint(keys: "esc", label: "back")
             case .agent:
                 if vm.pendingApproval != nil {
@@ -99,6 +103,38 @@ struct PanelFooterView: View {
                 KeyHint(keys: "esc", label: "results")
             }
         }
+    }
+}
+
+/// A footer action: symbol, verb and its key cap; brightens on hover.
+struct FooterButton: View {
+    let symbol: String
+    let title: String
+    let keys: String
+    var help: String? = nil
+    let action: () -> Void
+    @State private var hover = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 9.5, weight: .semibold))
+                Text(title).font(.system(size: 11, weight: .medium))
+                KeyCap(text: keys)
+            }
+            .foregroundStyle(hover && isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .padding(.leading, 6)
+            .padding(.trailing, 2)
+            .frame(height: 22)
+            .background(Capsule().fill(Color.primary.opacity(hover && isEnabled ? 0.07 : 0)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.45)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.12), value: hover)
+        .help(help ?? title)
     }
 }
 

@@ -33,6 +33,22 @@ enum PanelWording {
         return userFacing(subtitle)
     }
 
+    /// The footer's verb for ⏎: what the selected row does ("⏎ Switch to" →
+    /// "switch to"); "ask" with no row (⏎ then asks Navi), "open" for a row without a hint.
+    static func primaryVerb(_ row: SearchResult?) -> String {
+        guard let row else { return "ask" }
+        guard let hint = row.shortcutHint, hint.hasPrefix("⏎"),
+              case let verb = hint.dropFirst().trimmingCharacters(in: .whitespaces), !verb.isEmpty else {
+            switch row.kind {
+            case .answer, .memory: return "ask"
+            case .task, .systemCommand: return "run"
+            case .webSearch: return "search"
+            default: return "open"
+            }
+        }
+        return verb.lowercased()
+    }
+
     /// True when `text` names a vendor, model or transport.
     static func mentionsVendor(_ text: String) -> Bool {
         let lower = text.lowercased()
