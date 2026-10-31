@@ -312,9 +312,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     (`AgentRun.ask`, ≤ 15 min, ≤ 3 per run), answered by `respond(.answer(id, reply))` (nil = stop).
     The reply joins `user_said` (`CURunState.afterReply`: stalls reset) and the writer reads again.
     A takeover's "Stopped: sign in…" pauses too, with one answer ("I did it — keep going"), then Jev
-    resumes on that screen. Panel: the card drops down under the bar (`QuestionCard`; the panel
-    shows itself via `onAttentionNeeded`), ↑↓ ⏎ / ⌘1–4 / click, and while it is up the bar is the
-    reply box — typing never switches to results. Island: the question + answer chips; a spoken
+    resumes on that screen. Notch first: with the panel closed a ⌘Space task asks from the
+    notch (`NotchQuestionController`: the island's shape with the question, answer chips, a field
+    for own words, Stop task, "open in Navi"); never the panel over the user's work — unless the voice
+    island has the notch. Open the panel and its card asks instead (`QuestionCard`; the notch hides,
+    and comes back if the panel closes unanswered), ↑↓ ⏎ / ⌘1–4 / click, and while it is up the bar
+    is the reply box — typing never switches to results. Island: the question + answer chips; a spoken
     reply answers without Jev (`VoiceDecider.questionReply`: a named choice at once, own words after
     the pause), the voice idle watchdog ignores a run waiting on the user. Chrome CDP runner (adaptation
     37): the judge's needs_user verdict carries `question` + `question_kind` (choice: 2–4

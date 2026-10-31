@@ -400,7 +400,7 @@ struct WaveformBars: View {
 
 
 /// Lays out answer chips in rows that wrap at the island's width.
-private struct FlowChips: Layout {
+struct FlowChips: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

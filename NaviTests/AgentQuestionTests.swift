@@ -125,4 +125,17 @@ struct AgentQuestionTests {
         #expect(id == Self.size.id && reply == "Medium")
         #expect(vm.pendingQuestion == nil)
     }
+
+    @Test func aClosedPanelAsksFromTheNotchAndAnAnswerPutsItAway() {
+        let vm = PanelViewModel.preview(mode: .agent, agentTask: "order a big mac", pendingQuestion: Self.size)
+        let handle = AgentRunHandle(task: "order a big mac", cancel: {}, respond: { _ in })
+        vm.replaceRunForTesting(handle)
+        let notch = NotchQuestionController(viewModel: vm)
+        notch.show()
+        #expect(notch.isVisible)
+        vm.answerQuestion("Large")
+        #expect(!notch.isVisible)                      // answered (here or in the panel): the island goes away
+        notch.show()
+        #expect(!notch.isVisible)                      // nothing pending: nothing to ask
+    }
 }
