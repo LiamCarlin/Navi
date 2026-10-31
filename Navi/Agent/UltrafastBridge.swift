@@ -542,6 +542,10 @@ enum UltrafastBridge {
                 guard let data = line.data(using: .utf8),
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let event = json["event"] as? String else { continue }
+                // WorkingSurface hook: the page the runner is working on (steps and the end carry its URL).
+                if event == "step" || event == "done", let u = json["url"] as? String {
+                    WorkingSurface.noteBrowserPage(task: task, url: u, title: json["title"] as? String)
+                }
                 switch event {
                 case "status":
                     handle.emit(.status(json["message"] as? String ?? ""))
