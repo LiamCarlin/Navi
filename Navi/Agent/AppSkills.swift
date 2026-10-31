@@ -208,8 +208,11 @@ enum AppSkills {
     /// words that go with it: "play lofi beats on youtube" → YouTube results
     /// for "lofi beats"; "open gmail" → the inbox; "google drive shared with me"
     /// → that deep link. nil when no web app is named.
-    static func startURL(for task: String) -> String? {
+    static func startURL(for task: String, sites: [String]? = nil) -> String? {
         guard let s = mentioned(in: task), !s.hosts.isEmpty else { return nil }
+        // One skill, several sites and no links of its own (Food delivery: DoorDash, Uber Eats, …): the site the task names.
+        let site = s.hosts.count > 1 && s.deepLinks.isEmpty
+            ? self.site(of: s, for: task, sites: sites ?? UserHabits.current?.cachedProfile()?.sites.map(\.key) ?? []) : nil
         let names = ([s.name] + s.aliases).map { $0.lowercased() }.sorted { $0.count > $1.count }
         var q = UltrafastBridge.searchQuery(for: task).lowercased()
             .replacingOccurrences(of: #"[^a-z0-9.+'$%&/ -]"#, with: " ", options: .regularExpression)
@@ -231,19 +234,57 @@ enum AppSkills {
         }
         while let last = words.last, ["please", "now", "thanks", "thank you"].contains(last) { words.removeLast() }
         let query = words.joined(separator: " ").trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
-        let stop: Set<String> = ["", "it", "that", "this", "there", "here", "page", "site", "tab", "up"]
+        let stop: Set<String> = ["", "it", "that", "this", "there", "here", "page", "site", "tab", "up", "do it", "do that", "do this", "try it", "try that"]
         if let link = s.deepLinks.first(where: { $0.key.lowercased() == query })?.value { return link }
         // "the cheapest one": a site that can sort by price starts sorted, with the price words left out of the query.
         let cheapest = #"\s*[-,]?\s*\b(the )?(cheapest|lowest[- ]priced?|least expensive)( one| option)?( possible| available)?\b"#
         let wantsCheapest = query.range(of: cheapest, options: .regularExpression) != nil
         let terms = wantsCheapest ? query.replacingOccurrences(of: cheapest, with: " ", options: .regularExpression)
             .split(separator: " ").joined(separator: " ") : query
-        if !stop.contains(terms), let search = (wantsCheapest ? s.deepLinks["search cheapest"] : nil) ?? s.deepLinks["search"],
-           search.hasSuffix("=") || search.hasSuffix("/") {
+        let searchLink = site.flatMap { siteSearch[$0] } ?? (wantsCheapest ? s.deepLinks["search cheapest"] : nil) ?? s.deepLinks["search"]
+        if !stop.contains(terms), let search = searchLink, search.hasSuffix("=") || search.hasSuffix("/") {
             let encoded = terms.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26") ?? terms
             return search + encoded
         }
+        if let site { return "https://www." + site }
         return s.deepLinks["home"] ?? s.hosts.first.map { "https://" + $0 }
+    }
+
+    /// Search pages of the sites that share one skill, by host (a query is appended).
+    static let siteSearch: [String: String] = [
+        "ubereats.com": "https://www.ubereats.com/search?q=",
+        "doordash.com": "https://www.doordash.com/search/store/",
+    ]
+
+    /// Which of a multi-site skill's sites a task means: the one it names ("through ubereats" →
+    /// ubereats.com — the first host, doordash.com, once opened instead and the run fell back to a
+    /// search for the sentence), else the one this user visits most (`sites`: `UserHabits` site keys,
+    /// most used first), else the skill's first.
+    static func site(of s: AppSkill, for task: String, sites: [String]) -> String? {
+        let said = " " + task.lowercased().replacingOccurrences(of: #"[^a-z0-9.' ]"#, with: " ", options: .regularExpression)
+            .split(separator: " ").joined(separator: " ") + " "
+        func label(_ host: String) -> String { host.split(separator: ".").first.map(String.init) ?? host }
+        for alias in ([s.name] + s.aliases).map({ $0.lowercased() }).sorted(by: { $0.count > $1.count }) where said.contains(" \(alias) ") {
+            let letters = alias.filter { $0.isLetter || $0.isNumber }
+            if let h = s.hosts.first(where: { label($0) == letters }) { return h }
+        }
+        for key in sites {
+            let host = String(key.split(separator: "/").first ?? Substring(key)).replacingOccurrences(of: "www.", with: "")
+            if let h = s.hosts.first(where: { host == $0 || host.hasSuffix("." + $0) }) { return h }
+        }
+        return s.hosts.first
+    }
+
+    /// "Order me a burger": food from no business the task names — the delivery site this user visits most
+    /// (else the skill's first), searched for the food, not a Google search for the sentence (2026-10-31).
+    static func foodErrandStartURL(for task: String, sites: [String]) -> String? {
+        guard mentioned(in: task) == nil, TaskPlanner.unnamedErrandQuery(for: task) != nil,
+              let food = web.first(where: { $0.name == "Food delivery" }) else { return nil }
+        let words = Set(task.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+        let generic: Set<String> = ["order", "add", "cart", "delivery"]
+        guard food.recipes.flatMap(\.keywords).contains(where: { !generic.contains($0) && words.contains($0) }),
+              let host = site(of: food, for: "", sites: sites), let name = host.split(separator: ".").first else { return nil }
+        return startURL(for: "\(task) on \(name)", sites: sites)
     }
 
     /// The name to show for a bundle id ("com.apple.MobileSMS" → "Messages").

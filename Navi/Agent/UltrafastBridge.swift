@@ -804,7 +804,8 @@ enum UltrafastBridge {
         ("google docs", "https://docs.google.com"), ("notion", "https://www.notion.so"), ("chatgpt", "https://chatgpt.com"),
         ("ticketmaster", "https://www.ticketmaster.com"), ("stubhub", "https://www.stubhub.com"), ("seatgeek", "https://seatgeek.com"),
         ("eventbrite", "https://www.eventbrite.com"), ("expedia", "https://www.expedia.com"), ("kayak", "https://www.kayak.com"),
-        ("yelp", "https://www.yelp.com"), ("doordash", "https://www.doordash.com"), ("uber eats", "https://www.ubereats.com"),
+        ("yelp", "https://www.yelp.com"), ("doordash", "https://www.doordash.com"), ("door dash", "https://www.doordash.com"),
+        ("uber eats", "https://www.ubereats.com"), ("ubereats", "https://www.ubereats.com"),
         ("netflix", "https://www.netflix.com"), ("spotify", "https://open.spotify.com"), ("ebay", "https://www.ebay.com"),
         ("craigslist", "https://www.craigslist.org"), ("zillow", "https://www.zillow.com"), ("instagram", "https://www.instagram.com"),
     ]
