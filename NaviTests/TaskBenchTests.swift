@@ -34,6 +34,36 @@ import AppKit
         var title: String?
         var recent: [String]?
         var last_was_browser: Bool?
+        /// Where the earlier tasks of this context worked (`WorkingSurface`), most recent first.
+        var recent_work: [RecentWork]?
+    }
+
+    struct RecentWork: Decodable {
+        var task: String
+        var url: String?
+        var bundle: String?
+        var app: String?
+        var title: String?
+        var minutes_ago: Double?
+        var outcome: String?
+    }
+
+    /// The working-surface store the live app would hold for this context.
+    static func seedWork(_ ctx: Context, now: Date = Date()) -> [WorkingSurface] {
+        (ctx.recent_work ?? []).map { w in
+            let at = now.addingTimeInterval(-(w.minutes_ago ?? 0) * 60)
+            if let u = w.url {
+                return WorkingSurface(kind: .browserTab, task: w.task, outcome: .completed, summary: w.outcome, bundleID: "com.google.Chrome",
+                                      appName: "Google Chrome", url: u, title: w.title, viaRunner: true, at: at)
+            }
+            return WorkingSurface(kind: .app, task: w.task, outcome: .completed, summary: w.outcome, bundleID: w.bundle, appName: w.app, title: w.title, at: at)
+        }
+    }
+
+    /// `WorkingSurface.Store.record`: newest first, one per place.
+    static func record(_ s: WorkingSurface, into work: inout [WorkingSurface]) {
+        work.removeAll { $0.placeKey == s.placeKey }
+        work.insert(s, at: 0)
     }
 
     struct MemoryExpect: Decodable {
@@ -88,6 +118,9 @@ import AppKit
         var app: String?
         var verdict: VoiceDecider.Verdict?
         var silenceAtCommitMs = 0
+        /// Jev's `work_where`, as the decider applied it.
+        var place: WorkingSurface.Choice?
+        var cmd: VoiceCommand?
     }
 
     struct Route {
@@ -100,6 +133,8 @@ import AppKit
         var routine: String?
         var notes: [String] = []
         var jevMs = 0
+        /// Started in an earlier task's place (`RunOptions.continueOn`).
+        var continued: String?
     }
 
     struct Outcome {
@@ -150,7 +185,8 @@ import AppKit
     // MARK: Voice loop (UtteranceSegmenter + VoiceDecider, as VoiceSession runs it)
 
     static func voiceContext(_ ctx: Context, clause: UtteranceSegmenter.Clause, index: AppIndex, recent: [String],
-                             busy: String?, memory: Memory?) -> VoiceDecider.Context {
+                             busy: String?, memory: Memory?, work: [WorkingSurface] = [], previous: String? = nil,
+                             amendable: VoiceCommand? = nil, terms: [VoiceVocabulary.Term] = []) -> VoiceDecider.Context {
         var c = VoiceDecider.Context()
         c.frontmostApp = ctx.front_app
         c.frontmostBundle = ctx.front_bundle
@@ -162,14 +198,31 @@ import AppKit
         c.runningApps = [ctx.front_app].compactMap { $0 }
         if let m = memory { c.userUsuallyUses = UserHabits.surfaceHint(task: clause.head, profile: m.profile) }
         c.headMayContinueAppName = !clause.hasBoundary && VoiceAppMatcher.mayContinueAppName(clause.head, index: index)
+        // As `VoiceSession.context(for:)`: where recent tasks worked, what is still running/queued,
+        // the user's own words the head may have misheard.
+        c.recentWork = Array(work.prefix(WorkingSurface.maxOffered))
+        c.previousInstruction = previous
+        c.amendable = amendable
+        c.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: terms)
+        c.namesOwnDocument = memoryStartURL(clause.head, memory) != nil
         return c
+    }
+
+    /// `VoiceVocabulary.liveTerms` on the memory copy (the live one reads the installed store).
+    static func vocabulary(index: AppIndex, memory: Memory?) -> [VoiceVocabulary.Term] {
+        VoiceVocabulary.terms(skills: AppSkills.all, appNames: index.entries.prefix(300).map(\.name),
+                              things: memory.map { Array($0.knowledge.things().prefix(150)) } ?? [])
     }
 
     /// The whole utterance is heard at once; decisions on a clause with words after it happen
     /// while the user talks (silence 0), the last clause waits through real silence: each
     /// `.wait` advances the clock by its retry, as the session's scheduler would.
     static func simulateVoice(_ task: BenchTask, ctx: Context, index: AppIndex, jev: JevClient, memory: Memory?,
-                              into out: inout Outcome) async {
+                              terms: [VoiceVocabulary.Term] = [], into out: inout Outcome) async {
+        // Every clause is decided while the ones before it still run (the executor is serial): the
+        // working-surface store holds only what happened before the utterance, and the command just
+        // committed is the "previous instruction" (queued, so a sentence tail may still join it).
+        let work = seedWork(ctx)
         var seg = UtteranceSegmenter()
         seg.update(finalized: task.utterance)
         var recent = ctx.recent ?? []
@@ -181,8 +234,12 @@ import AppKit
             var settled: VoiceDecider.Verdict?
             var resolved = false
             for _ in 0..<12 {
+                let previous = out.commands.last?.spoken
+                // The first command starts at once; later ones wait in the queue and can still be amended.
+                let amendable = out.commands.count >= 2 ? out.commands.last?.cmd : nil
                 let input = VoiceDecider.Input(clause: clause, silenceMs: silence,
-                                               context: voiceContext(ctx, clause: clause, index: index, recent: recent, busy: busy, memory: memory))
+                                               context: voiceContext(ctx, clause: clause, index: index, recent: recent, busy: busy, memory: memory,
+                                                                     work: work, previous: previous, amendable: amendable, terms: terms))
                 var verdict: VoiceDecider.Verdict?
                 let decision: VoiceDecider.Decision
                 if let instant = VoiceDecider.instantDecision(input) {
@@ -225,6 +282,15 @@ import AppKit
                     out.dropped.append("“\(clause.head)”: gave up (\(why))")
                     seg.drop(clause)
                     resolved = true
+                case .amend(let cmd):
+                    // The tail joins the instruction still waiting in the queue.
+                    var c = describe(cmd)
+                    c.verdict = out.commands.last?.verdict
+                    c.silenceAtCommitMs = silence
+                    if !out.commands.isEmpty { out.commands[out.commands.count - 1] = c } else { out.commands.append(c) }
+                    out.dropped.append("“\(clause.head)”: joined the queued instruction")
+                    seg.commit(clause)
+                    resolved = true
                 case .wait(_, let retry):
                     silence += max(100, retry ?? VoiceDecider.pauseMs)
                 }
@@ -238,6 +304,13 @@ import AppKit
     }
 
     static func describe(_ cmd: VoiceCommand) -> Command {
+        var c = describeKind(cmd)
+        c.cmd = cmd
+        if case .task(_, _, _, _, let place) = cmd { c.place = place }
+        return c
+    }
+
+    static func describeKind(_ cmd: VoiceCommand) -> Command {
         switch cmd {
         case .openApp(let e, let t): return Command(kind: "open_app", spoken: t, app: e.bundleID)
         case .openAppNamed(let n, let t): return Command(kind: "open_app", spoken: t, app: "name:" + n)
@@ -256,23 +329,43 @@ import AppKit
 
     static func isInstalled(_ b: String) -> Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: b) != nil }
 
-    static func route(goal: String, surface hint: TaskSurface.Surface, useCurrentTab cur0: Bool, continues: Bool,
+    /// `previousSurface`: where the command before this one (in the same utterance) worked.
+    static func route(goal: String, surface hint: TaskSurface.Surface, useCurrentTab cur0: Bool, place: WorkingSurface.Choice?,
+                      work: [WorkingSurface], previousSurface: WorkingSurface?,
                       ctx: Context, jev: JevClient, memory: Memory?) async -> Route {
         var r = Route()
-        var surface = hint
-        var useCurrentTab = cur0
         var front = FrontmostProbe.Info(bundleID: ctx.front_bundle, appName: ctx.front_app, windowTitle: ctx.title, url: ctx.url)
-        r.planner = VoiceCommandExecutor.isCompound(goal)
-        if !r.planner, !useCurrentTab {
-            let v = VoiceCommandExecutor.voiceSurface(goal: goal, surface: surface, frontmostBundle: ctx.front_bundle,
-                                                      namesPage: { g in VoiceCommandExecutor.namesPage(g) || memoryStartURL(g, memory) != nil })
-            surface = v.surface
-            useCurrentTab = v.currentTab
-        }
-        useCurrentTab = useCurrentTab || VoiceCommandExecutor.continuesOnCurrentTab(goal: goal, surface: surface, frontmostApp: ctx.front_bundle,
-                                                                                  continues: continues, lastWasBrowser: ctx.last_was_browser ?? false)
+        if !(ctx.front_bundle.map(AXSnapshotter.isBrowser) ?? false) { front.url = nil }
+        // `VoiceCommandExecutor.runTask`: Jev's place first, the local rules when it had none.
+        let compound = VoiceCommandExecutor.isCompound(goal)
+        let last = work.first
+        let lastWorkedHere = last?.isShown(by: front) ?? (ctx.last_was_browser ?? false)
+        let p = VoiceCommandExecutor.placement(goal: goal, surface: hint, useCurrentTab: cur0, place: place, frontmostBundle: ctx.front_bundle,
+                                               compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil,
+                                               previousSurface: previousSurface,
+                                               namesPage: { g in VoiceCommandExecutor.namesPage(g) || memoryStartURL(g, memory) != nil })
+        var surface = p.surface
+        let useCurrentTab = p.useCurrentTab
+        r.planner = compound && p.continueOn == nil
         r.currentTab = useCurrentTab
         if r.planner { r.notes.append("compound goal → TaskPlanner on the live path") }
+
+        // `resolvePlanWithoutPlanner`: an earlier task's place is continued before grounding,
+        // routines or the screen in front get a say (and grounding is not run at all).
+        if let s = p.continueOn {
+            r.continued = s.placeDescription
+            switch WorkingSurface.start(for: s, front: front) {
+            case .page(let url, _) where !url.isEmpty:
+                r.surface = "browser"; r.start = url; r.currentTab = url == ctx.url
+                r.notes.append("continues where “\(s.task)” worked")
+                return r
+            case .app(let bundle, let name) where bundle != nil || name != nil:
+                r.surface = "native_app"; r.app = bundle != nil && front.bundleID == bundle ? nil : (bundle ?? name)
+                r.notes.append("continues in \(name ?? bundle ?? "?")")
+                return r
+            default: break
+            }
+        }
 
         // Screen memory: what the task points at, and the user's own routine for it.
         if let m = memory {
@@ -427,6 +520,30 @@ import AppKit
         }
     }
 
+    /// What the live app would record as the command's working surface (the agent's hook for tasks,
+    /// the executor's `recordPlace` for opened pages and apps).
+    static func surface(after c: Command, route r: Route?, screen: Context) -> WorkingSurface? {
+        let now = Date()
+        switch c.kind {
+        case "open_url", "web_search":
+            guard let u = c.url else { return nil }
+            return WorkingSurface(kind: .browserTab, task: c.spoken, outcome: .completed, bundleID: "com.google.Chrome", appName: "Google Chrome", url: u, at: now)
+        case "open_app":
+            guard let a = c.app, !a.hasPrefix("name:") else { return nil }
+            return WorkingSurface(kind: .app, task: c.spoken, outcome: .completed, bundleID: a, appName: AppSkills.skill(bundleID: a)?.name ?? a, at: now)
+        case "task":
+            guard let r else { return nil }
+            if r.surface == "browser", let u = r.start {
+                return WorkingSurface(kind: .browserTab, task: c.spoken, outcome: .completed, bundleID: "com.google.Chrome", appName: "Google Chrome", url: u, at: now)
+            }
+            let bundle = r.app ?? screen.front_bundle
+            guard let b = bundle, !b.hasPrefix("name:") else { return nil }
+            return WorkingSurface(kind: .app, task: c.spoken, outcome: .completed, bundleID: b, appName: AppSkills.skill(bundleID: b)?.name ?? screen.front_app, at: now)
+        default:
+            return nil
+        }
+    }
+
     /// The screen after a command: the page it opened or the app it brought forward.
     static func advance(_ s: inout Context, after c: Command, route r: Route?) {
         var url: String?
@@ -478,8 +595,22 @@ import AppKit
         placeCheck("start", hosts: e.start_hosts, apps: e.app)
         if let cur = e.current_tab { o.checks.append(("current_tab", p.currentTab == cur, p.currentTab ? "current tab" : "new start")) }
         if let cont = e.continues {
-            let v = first?.verdict?.continuesPrevious
-            o.checks.append(("continues", v.map { ($0 >= 0.5) == cont }, v.map { "continues_previous \(Int($0 * 100))%" } ?? "no Jev verdict"))
+            // Continuing = Jev put the work in a recent place or the previous command's place, or the
+            // run starts in an earlier task's place (`continueOn`, also for "here" when the last task worked there).
+            let place: String = {
+                switch first?.place {
+                case .last(let s)?: return "work_where last (\(s.site ?? s.appName ?? "?"))"
+                case .previous?: return "work_where previous"
+                case .here?: return "work_where here"
+                case .newPlace?: return "work_where new_place"
+                case nil: return "no work_where"
+                }
+            }()
+            let continued: Bool = {
+                switch first?.place { case .last?, .previous?: return true; default: return o.route?.continued != nil }
+            }()
+            let detail = place + (o.route?.continued.map { " → continues in \($0)" } ?? "")
+            o.checks.append(("continues", first == nil ? false : continued == cont, detail))
         }
         if let m = e.memory {
             guard hasMemory else { o.checks.append(("memory", nil, "skipped: no NAVI_BENCH_DB")); return }
@@ -500,6 +631,7 @@ import AppKit
         let memory = try Self.openMemory()
         let index = AppIndex(entries: AppIndex.scanFilesystem())
         let planner = Self.env["NAVI_BENCH_PLANNER"] == "1" ? ClaudeClient() : nil
+        let terms = Self.vocabulary(index: index, memory: memory)
         jev.warm()
 
         // Jev's voice heads are sampled fresh every time (not cached): repeats show how stable each decision is.
@@ -510,20 +642,25 @@ import AppKit
             let ctx = t.context.flatMap { file.contexts[$0] } ?? Context()
             var o = Outcome(id: t.id, family: t.family, utterance: t.utterance)
             o.rep = rep
-            await Self.simulateVoice(t, ctx: ctx, index: index, jev: jev, memory: memory, into: &o)
+            await Self.simulateVoice(t, ctx: ctx, index: index, jev: jev, memory: memory, terms: terms, into: &o)
             // Commands run one after another; each starts on the screen the previous one left
             // ("go to mcdonalds" → that page, then "order me a burger" may continue there).
             var screen = ctx
+            // The working-surface store, as the live app holds it: the context's earlier tasks, then
+            // each command of this utterance records where it worked before the next one starts.
+            var work = Self.seedWork(ctx)
+            var previousSurface: WorkingSurface?
             for (i, c) in o.commands.enumerated() {
                 var r: Route?
                 if c.kind == "task", let g = c.goal {
                     let surface = TaskSurface.Surface(rawValue: c.surface ?? "") ?? .unsure
                     let t0 = Date()
-                    r = await Self.route(goal: g, surface: surface, useCurrentTab: c.useCurrentTab,
-                                         continues: (c.verdict?.continuesPrevious ?? 0) >= 0.5, ctx: screen, jev: jev, memory: memory)
+                    r = await Self.route(goal: g, surface: surface, useCurrentTab: c.useCurrentTab, place: c.place,
+                                         work: work, previousSurface: previousSurface, ctx: screen, jev: jev, memory: memory)
                     r?.jevMs = Int(Date().timeIntervalSince(t0) * 1000)   // wall time of the whole route decision
                 }
                 if i == o.commands.count - 1 { o.route = r }
+                if let s = Self.surface(after: c, route: r, screen: screen) { Self.record(s, into: &work); previousSurface = s }
                 Self.advance(&screen, after: c, route: r)
             }
             if let claude = planner, claude.isConfigured {
@@ -620,13 +757,14 @@ import AppKit
                 if let a = c.app { x["app"] = a }
                 if let v = c.verdict {
                     x["boundary"] = v.boundary?.choice ?? ""; x["kind_head"] = v.kind?.choice ?? ""
-                    x["continues_previous"] = v.continuesPrevious; x["surface_head"] = v.surface?.choice ?? ""
+                    x["work_where"] = v.workWhere?.choice ?? ""; x["whole_instruction"] = v.whole ?? -1; x["surface_head"] = v.surface?.choice ?? ""
                 }
                 return x
             }
             if let r = o.route {
                 d["route"] = ["surface": r.surface, "start": r.start ?? NSNull(), "app": r.app ?? NSNull(), "current_tab": r.currentTab,
-                              "planner": r.planner, "grounded": r.grounded ?? NSNull(), "routine": r.routine ?? NSNull(), "notes": r.notes, "jev_ms": r.jevMs] as [String: Any]
+                              "planner": r.planner, "grounded": r.grounded ?? NSNull(), "routine": r.routine ?? NSNull(), "notes": r.notes, "jev_ms": r.jevMs,
+                              "continued": r.continued ?? NSNull()] as [String: Any]
             }
             if let ps = o.plannerStart { d["planner_start"] = ps }
             if let ok = o.plannerOK { d["planner_ok"] = ok }

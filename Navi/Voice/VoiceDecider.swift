@@ -104,6 +104,8 @@ enum VoiceDecider {
         var soundAlikes: [VoiceVocabulary.SoundAlike] = []
         /// The instruction said just before, still queued (not started): a tail may still join it.
         var amendable: VoiceCommand?
+        /// HEAD names one of the user's own documents/projects that has a page (`UserKnowledge.liveStartURL`).
+        var namesOwnDocument = false
 
         /// What is in front, as the agent's probe reads it.
         var front: FrontmostProbe.Info? {
@@ -426,6 +428,11 @@ enum VoiceDecider {
         // "to my cart", "a burger", "updated it", "open up when you do tab": never an agent run.
         // Joined to the words after it if there are any; otherwise the user gets a moment to finish
         // the sentence, then hears that Navi didn't catch it (each of these used to be a failed run).
+        // "add a big mac" (still queued) + "to my cart": the tail belongs to it before it is read as "go to my cart".
+        if cmd.needsWholeInstruction, input.clause.following.isEmpty, recoveringDroppedGo(normalizedGoal(input.clause.head)) != nil,
+           let prev = input.context.amendable, let amended = prev.appending(input.clause.head) {
+            return .amend(amended)
+        }
         if cmd.needsWholeInstruction, let why = incompleteReason(input.clause.head, v: v) {
             if !input.clause.following.isEmpty { return .merge }
             if let prev = input.context.amendable, let amended = prev.appending(input.clause.head) { return .amend(amended) }
@@ -453,8 +460,8 @@ enum VoiceDecider {
 
     static let wholeInstructionText = "HEAD, as transcribed, is a whole instruction or question on its own: it says what to do (its own action verb, or it is a question) and what to do it to — leaning on recent_instructions_already_carried_out for what 'it'/'that'/'the second one' mean is fine, and a correction ('I meant in DoorDash', 'no, the other one') is whole. It is NOT whole when it is only the tail end of a sentence whose beginning was cut off or already handled ('to my cart', 'a burger', 'with Google', 'to my most recent assignment'), a remark rather than a request ('updated it', 'that was quick'), or speech recognition garbled it so it makes no sense as said ('open up when you do tab')."
     /// Below this P(whole_instruction) a head is not carried out. Live (2026-10-30): the logged
-    /// fragments scored 0.05–0.15, real instructions 0.72–0.98, a correction 0.32.
-    static let wholeP = 0.25
+    /// fragments scored 0.05–0.15, real instructions 0.72–0.98, a correction 0.32, "a big Mac, and add it to my car" 0.24–0.6 (bench).
+    static let wholeP = 0.2
     /// After a long pause, a head this surely whole is acted on even while `boundary` says "continues".
     static let wholeActP = 0.6
     /// A head that starts with one of these and has no verb is the tail of a sentence.
@@ -472,6 +479,9 @@ enum VoiceDecider {
     /// `whole_instruction` ("a burger", "updated it", a garbled transcript).
     static func incompleteReason(_ head: String, v: Verdict) -> String? {
         if head.contains("?") { return nil }
+        // "to my most recent canvas assignment": a destination whose "go" the recognizer swallowed —
+        // recovered (`recoveringDroppedGo`), not a fragment. Jev judged the words without the verb.
+        if recoveringDroppedGo(normalizedGoal(head)) != nil { return nil }
         let words = normalizedGoal(head).lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
         guard let first = words.first else { return nil }
         // A verb counts only as a verb: "with Google" / "to the search" name things, they don't ask for them.
@@ -538,7 +548,20 @@ enum VoiceDecider {
             if ctl != .none { return .control(ctl, text: text) }
             return .control(Self.heuristicControl(text) ?? .stop, text: text)
         case .openApp:
-            if let app = appChoice(v, input: input) { return .openApp(app.entry, text: text) }
+            if let app = appChoice(v, input: input) {
+                // "Open up a Google Doc" matched Chrome (from "google"): the user named the web app, not the browser.
+                if let b = app.entry.bundleID, AXSnapshotter.isBrowser(b), let skill = AppSkills.mentioned(in: text),
+                   !skill.hosts.isEmpty, skill.bundleIDs.isEmpty,
+                   !["chrome", "safari", "firefox", "arc", "brave", "edge", "browser"].contains(where: { text.lowercased().contains($0) }) {
+                    if let url = Self.knownSiteToOpen(text) { return .openURL(url, text: text) }
+                    return taskCommand(text, surface: .browser, risky: risky, place: place, front: front)
+                }
+                // "open the hci notes": one of the user's own documents, not the Notes app.
+                if input.context.namesOwnDocument, !Self.isJustTheApp(text, app: app) {
+                    return taskCommand(text, surface: .browser, risky: risky, place: place, front: front)
+                }
+                return .openApp(app.entry, text: text)
+            }
             // "I meant in DoorDash where we just were": no such app — the place of an earlier task.
             if elsewhere { return taskCommand(text, surface: .unsure, risky: risky, place: place, front: front) }
             // "Go to YouTube" reads as open_app to Jev; with no such app it is a site.
@@ -575,9 +598,19 @@ enum VoiceDecider {
         case .doInApp, .none:
             // A bare app name with an opening verb still counts as open_app even if `kind` wobbled.
             if kind == .none, let app = appChoice(v, input: input), Self.looksLikeOpen(text) { return .openApp(app.entry, text: text) }
-            let surface = v.surface.flatMap { TaskSurface.Surface(rawValue: $0.choice) } ?? .unsure
+            var surface = v.surface.flatMap { TaskSurface.Surface(rawValue: $0.choice) } ?? .unsure
+            // One of the user's own documents with a page ("open the hci notes"): that page, whatever app a word suggests.
+            if input.context.namesOwnDocument, !TaskGrounding.isCommunication(text) { surface = .browser }
             return taskCommand(text, surface: surface, risky: risky, place: place, front: front)
         }
+    }
+
+    /// "open notes", "open the notes app": nothing named besides the app.
+    static func isJustTheApp(_ text: String, app: VoiceAppMatcher.Candidate) -> Bool {
+        var rest = " " + text.lowercased() + " "
+        for w in [app.entry.name.lowercased(), app.phrase.lowercased()] { rest = rest.replacingOccurrences(of: " " + w + " ", with: " ") }
+        let filler: Set<String> = ["open", "up", "the", "app", "application", "launch", "start", "switch", "to", "go", "bring", "show", "me", "my", "please", "pull"]
+        return rest.split(separator: " ").allSatisfy { filler.contains(String($0)) }
     }
 
     /// Jev's `work_where` answer, when it is sure enough to act on.
@@ -611,7 +644,19 @@ enum VoiceDecider {
         for (i, a) in input.context.soundAlikes.prefix(VoiceVocabulary.maxAsked).enumerated() where i < v.misheard.count && v.misheard[i] >= VoiceVocabulary.acceptP {
             fixes.append(a)
         }
-        return normalizedGoal(VoiceVocabulary.apply(fixes, to: head))
+        let goal = normalizedGoal(VoiceVocabulary.apply(fixes, to: head))
+        return recoveringDroppedGo(goal) ?? goal
+    }
+
+    /// "to my cart" / "to the assignments page" → "go to my cart": the short, unstressed "go" in front
+    /// of a destination is the word the recognizer loses most (live: "to my most recent cannabis
+    /// assignment" for "go to my most recent Canvas assignment"). Only "to" + a determiner with no verb
+    /// after it; "to order a burger", "with Google", "a burger" are not recovered.
+    static func recoveringDroppedGo(_ goal: String) -> String? {
+        let words = goal.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
+        guard words.count >= 3, words[0] == "to", ["my", "the", "our", "your", "that", "this"].contains(words[1]),
+              !words.dropFirst(2).contains(where: actionVerbs.contains) else { return nil }
+        return "go " + goal
     }
 
     /// Arithmetic, a unit / time-zone conversion or date math `Calculator` can do locally, unless the
