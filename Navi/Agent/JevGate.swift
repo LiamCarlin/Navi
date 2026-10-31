@@ -79,6 +79,14 @@ struct JevGate: Sendable {
         return nil
     }
 
+    /// The label of a control that spends the user's money ("Place order", "Buy now", "Pay $12"),
+    /// as the browser runner's adaptation 27 spells it: Navi never presses these, in any driver.
+    static func paysKeyword(in label: String) -> String? {
+        let pattern = #"(?i)\b(buy now|buy it now|place (your |my )?order|pay now|pay \$|complete (your |my )?(purchase|order)|confirm (and pay|purchase|order|payment)|submit (order|payment)|place bid|purchase now|book now and pay)\b"#
+        guard let r = label.range(of: pattern, options: .regularExpression) else { return nil }
+        return String(label[r]).lowercased()
+    }
+
     // MARK: Evaluate
 
     /// One Jev call (or the heuristic fallback). Never throws — gating must not

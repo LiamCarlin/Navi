@@ -117,6 +117,73 @@ struct CURunState: Sendable {
         idle = 0
         repeats = 0
     }
+
+    /// After Claude drove for a while and the screen moved on: what it did joins the history Jev
+    /// reads, and the stall counters start over (Jev is on new ground, not on the old loop).
+    mutating func afterTakeover(_ what: String) {
+        history.append(what)
+        idle = 0
+        repeats = 0
+        stalls = 0
+        last = nil
+    }
+}
+
+/// What a stop of the native loop leads to, once the writer has judged the screen (pure;
+/// unit-tested). Liam's policy (2026-10-30): when Jev is stuck, Claude's computer-use loop may
+/// drive the next steps and hand back; the run's end comes from the writer's typed verdict, never
+/// from which code path stopped.
+enum CUEscalation {
+    enum Next: Equatable {
+        /// The screen shows the goal reached.
+        case complete
+        /// Only the user can say (a choice, a fact): ask, and end the run as needs-user.
+        case askUser
+        /// Jev goes back to work with this focus.
+        case resumeJev(String)
+        /// Claude drives a few steps on the same target, then hands back.
+        case takeover
+        /// Nothing more to try (impossible here, the user's step, or the budget is spent).
+        case end
+    }
+
+    /// Claude turns per takeover (each may hold several actions) and takeovers per native step.
+    static let takeoverTurns = 6
+    static let maxTakeovers = 2
+
+    /// - mayResume: Jev may take another focus (steps and hand-offs left, not stuck).
+    /// - focusWasTried: the last focus led to no action at all (asking Jev again would only repeat it).
+    static func next(_ answer: CUWriter.Answer, outcome: CURunState.Outcome, mayResume: Bool,
+                     takeoverAvailable: Bool, focusWasTried: Bool = false) -> Next {
+        if answer.verdict == .achieved { return .complete }
+        if answer.verdict == .impossible { return .end }
+        if !answer.question.isEmpty, mayResume { return .askUser }
+        if answer.verdict == .needsUser { return .end }
+        // Circling, stuck after focuses, or a focus Jev could not act on: Jev has shown it cannot
+        // do this from the tree — Claude's eyes go first.
+        if takeoverAvailable, outcome == .stuck || focusWasTried { return .takeover }
+        if mayResume, !answer.focus.isEmpty { return .resumeJev(answer.focus) }
+        if takeoverAvailable { return .takeover }
+        return .end
+    }
+
+    /// What a bounded Claude takeover's last word means for the run.
+    enum Handback: Equatable {
+        /// Claude says the whole task is done: the writer checks it on a fresh read.
+        case verify
+        /// Only the user can go on (Claude's "Stopped: …").
+        case needsUser(String)
+        /// Claude moved the screen on: Jev resumes from there.
+        case resume
+        /// Nothing changed (or the call failed): the writer's last answer stands.
+        case stop
+    }
+
+    static func handback(saidDone: Bool, stoppedFor: String?, screenMoved: Bool, acted: Bool) -> Handback {
+        if let s = stoppedFor { return .needsUser(s) }
+        if saidDone { return .verify }
+        return screenMoved && acted ? .resume : .stop
+    }
 }
 
 /// Requests to each model over a run (calls.py): the classifier's share is the number the
