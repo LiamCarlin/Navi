@@ -433,17 +433,15 @@ final class AgentRun: @unchecked Sendable {
         }
         // Something this user has done before their own way (`UserRoutines`): it starts where they
         // start it — their app, or their page on the site — unless the task names another app.
-        if let m = routeMatch, m.confidence >= 0.6, !config.useCurrentTab, let start = Self.routineStart(m, task: originalTask) {
+        // UserPaths hook: `routineStartPlace` decides (shared with the task bench).
+        if let m = routeMatch, !config.useCurrentTab, let start = Self.routineStartPlace(m, task: originalTask, surface: surface) {
             switch start {
-            // UserPaths hook: the page of a thing the task names in their own work ("open the hci notes") wins
-            // over an app guessed from a common word ("notes"), unless the task names that app.
-            case .page(let url) where (surface != .nativeApp || (m.path?.source == "thing" && AppSkills.mentioned(in: originalTask) == nil))
-                && ComputerAgent.browserRunner != nil:
+            case .page(let url) where ComputerAgent.browserRunner != nil:
                 Log.agent.info("UserRoutines: starting on the user's page for this routine")
                 var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
                 plan.steps[0].url = url
                 return (front, plan)
-            case .app(let bundle) where surface != .browser:
+            case .app(let bundle):
                 Log.agent.info("UserRoutines: \(bundle, privacy: .public) is where the user does this")
                 return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: front.bundleID == bundle ? nil : bundle))
             default: break
@@ -492,6 +490,18 @@ final class AgentRun: @unchecked Sendable {
     }
 
     enum RoutineStart: Equatable { case app(String), page(String) }
+
+    /// UserPaths hook: where a matched routine or path starts a run Jev gave `surface` — its page unless
+    /// the run is in an app (but the page of a thing the task names in their own work, "open the hci
+    /// notes", wins over an app guessed from a common word, unless the task names that app); its app
+    /// unless the run is in the browser. nil below 0.6 or when the task names another app.
+    static func routineStartPlace(_ m: UserRoutines.Match, task: String, surface: TaskSurface.Surface) -> RoutineStart? {
+        guard m.confidence >= 0.6, let start = routineStart(m, task: task) else { return nil }
+        switch start {
+        case .page: return surface != .nativeApp || (m.path?.source == "thing" && AppSkills.mentioned(in: task) == nil) ? start : nil
+        case .app: return surface != .browser ? start : nil
+        }
+    }
 
     /// Where a matched routine starts: its first page (a clean URL that names none of the
     /// last run's slot words, else the site), or its app when it is installed. nil when the
