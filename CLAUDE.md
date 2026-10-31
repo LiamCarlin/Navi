@@ -328,6 +328,13 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `NAVI_ATTACH_URL`) with the answers as `NAVI_USER_SAID_JSON` → `user_said` in Jev's state, the
     judge's and the takeover's. No reply ⇒ the needs-user ending as before. Navi's purchase hand-off
     ("Ready for you to place the order", a payment step) is never a question.
+    **A failed Jev call is judged, not fatal** (runner adaptation 38): Jev's input cap is ≈ 32.5k tokens —
+    over it `/v1/systemone` answers HTTP 400 `max_tokens_exceeded` (schema errors are 422); that killed the
+    Uber Eats runs right after "Add 1 to order". `guarded_jev` (innermost `post_json` layer) cuts long strings
+    over `JEV_TOKEN_BUDGET` (ids and goal/rules untouched), logs a failure as a `model_error` event (status +
+    redacted body + request sizes, run log only), retries once shorter, then `fewer_actions` (the ~120 controls
+    likeliest for the goal); still failing, `tick` returns `model_error` and the run goes to judge → takeover.
+    `scripts/ultrafast/test_model_errors.py`.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
