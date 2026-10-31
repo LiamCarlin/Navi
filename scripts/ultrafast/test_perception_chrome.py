@@ -144,7 +144,7 @@ PAGES = {
       'position:absolute;width:20px;height:20px;left:'+(40+i*60)+'px;top:'+(100+i*20)+'px';document.getElementById('map').appendChild(b);}</script></body>""",
     # A click whose effect is only pixels (a canvas too flat to be offered as one).
     "/pixels": """<body style="margin:0;background:#fff"><button onclick="const c=document.querySelector('canvas').getContext('2d');
-      c.fillStyle='#000';c.fillRect(0,0,1100,119)">Paint</button><canvas width=1100 height=119 style="display:block"></canvas></body>""",
+      c.fillStyle=(window.k=!window.k)?'#000':'#fff';c.fillRect(0,0,1100,119)">Paint</button><canvas width=1100 height=119 style="display:block"></canvas></body>""",
 }
 
 
@@ -297,9 +297,14 @@ try:
     fb.session, fb.target, fb.screenshots = s, target, False
     page = fb.observe(screenshot=False)
     assert "perception_gap" not in page
+    # An ordinary click takes no picture first (~140 ms each); one that changed nothing Navi reads
+    # makes the next click on this page take one, and that click's pixel-only change is reported.
     fb.act(find(page, "Paint"), page)
     after = fb.observe(screenshot=False)
-    assert after["fingerprint"] == page["fingerprint"] and after["perception_gap"]["reason"] == "unseen_change", after.get("perception_gap")
+    assert after["fingerprint"] == page["fingerprint"] and "perception_gap" not in after and fb.last_unchanged
+    fb.act(find(after, "Paint"), after)
+    again = fb.observe(screenshot=False)
+    assert again["fingerprint"] == page["fingerprint"] and again["perception_gap"]["reason"] == "unseen_change", again.get("perception_gap")
     chrome.cdp("Target.closeTarget", targetId=target)
     print("unseen change ok")
 finally:

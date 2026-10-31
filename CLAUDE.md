@@ -360,7 +360,8 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     empty_dialog | unseen_change | captcha, detail, …}` and one `{"event":"perception_gap",…}`
     line per page, after up to 4 re-looks 0.25 s apart (frames load after their dialog);
     `unseen_change` = a click whose DOM fingerprint stayed the same while a 32×20 thumbnail of
-    the tab changed ≥ 12 %. The run controller decides (vision takeover; captcha → the user).
+    the tab changed ≥ 12 % (the picture before a click is taken only on a page with frames, or once a click
+    there changed nothing Navi reads — each capture costs ~140 ms, so ordinary clicks skip it). The run controller decides (vision takeover; captcha → the user).
     Fixtures run in a private headless Chrome: `scripts/ultrafast/test_perception_chrome.py`.
     Live replay: "open DoorDash's sign in window and switch it to the Sign Up tab" → Sign up or
     Login → Sign Up (inside the iframe) → done, 2 steps, no coach.

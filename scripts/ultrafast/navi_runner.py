@@ -543,6 +543,8 @@ class FastBrowser(Browser):
 
     # Adaptation 36: thumbnails around a click, and the perception gap after an observation.
     def thumbnail(self, page):
+        if page.get("screenshot"):
+            return thumbnail_cells(page["screenshot"])
         try:
             w, h = page.get("w"), page.get("h")
             if not w or not h:
@@ -553,9 +555,19 @@ class FastBrowser(Browser):
         except Exception:  # noqa: BLE001 — no evidence either way
             return None
 
+    def wants_thumbnail(self, page, action):
+        """A capture costs ~140 ms a click, so only where a change could hide from the DOM: a
+        canvas, a page with frames, or a page whose last action changed nothing Navi reads."""
+        if action.get("kind") not in {"click", "select"}:
+            return False
+        if page.get("screenshot"):
+            return True      # free: decoded from the observation's own screenshot
+        return bool(action.get("canvas") or action.get("frame") or page.get("frames") or page.get("unread_frames")
+                    or getattr(self, "last_unchanged", False))
+
     def act(self, action, page, text=None):
         self.acted_on = (page, action)
-        self.before_thumb = self.thumbnail(page) if action.get("kind") in {"click", "select"} else None
+        self.before_thumb = self.thumbnail(page) if self.wants_thumbnail(page, action) else None
         return super().act(action, page, text=text)
 
     def observe(self, screenshot=True):
@@ -564,7 +576,8 @@ class FastBrowser(Browser):
         page = super().observe(screenshot=screenshot)
         before, action = acted if acted else (None, None)
         changed = None
-        if before is not None and before.get("fingerprint") == page.get("fingerprint") and getattr(self, "before_thumb", None):
+        self.last_unchanged = before is not None and before.get("fingerprint") == page.get("fingerprint")
+        if self.last_unchanged and getattr(self, "before_thumb", None):
             changed = visual_change(self.before_thumb, self.thumbnail(page))
         gap = perception_gap(page, before, action, changed)
         retries = 0
