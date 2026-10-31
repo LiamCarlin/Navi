@@ -46,7 +46,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserPaths` (their own path from where a run starts to the task's target, from every click: the primary plan), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
@@ -232,6 +232,40 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     a sensible routine in ~150 ms for 12 of 13 tasks that were instances (missed "open my canvas
     assignments for generative ai", 0.47) and said none for weather / a web search; `UserMoves` marks are now per page pattern ("canvas.olin.edu/courses/#")
     once the user has ≥ 6 actions there, else per site.
+  - **User paths — the user's way to the target, primary** (`Agent/UserPaths`, built with `UserRoutines`): routines
+    match a task by its phrasing (few repeat; "sign into DoorDash with Google" once followed the Atlassian
+    Google sign-in), so the plan now starts from the task's *target*. `PathGraph.build` (local, at launch and
+    after each digest, ~1.3 s Debug for 43k actions; labels and paths only, never typed text) turns every
+    journal action into an abstract step — place (a site in a browser, else the app; Slack/Claude stay apps),
+    page pattern, kind, role, stable container, label when it is the same every time or a *slot* for the item
+    that changes (digits, > 4 words, or one day only; a `PathIntent` label never) — with edges between
+    consecutive steps of a visit (≤ 2 min), visit entries, each item's last chain and the page it opened, and
+    each page's URLs with their majority title (a title naming another site's app is another tab's).
+    `UserPaths.plan` (index lookups, ≤ ~10 ms): scope = the place the task names (`UserRoutines.namedPlaces`:
+    an AppSkill and the user's own instance of it — "canvas" → canvas.olin.edu —, or a site by its own name,
+    never an ordinary word like "start") or the app the person is reached in, else the grounded thing's place,
+    else what it implies (then anywhere of theirs); targets, best first: the grounded / named thing's page
+    (`source` "thing"), a page whose title+URL carries the task's names ("assignment 3" pairs a number with
+    its kind word; a bare number names nothing), an item whose label does (a chat row by its name, the
+    person's full name from `UserKnowledge`; assistants never), a page kind ("my last canvas assignment"),
+    a `PathIntent` control they use there (⌘N New Note, New Mail, Add to cart — never a field). Errands for
+    "the cheapest / a random …" and mail tasks skip pages/items. Path = Dijkstra on −log P(next|step) from the
+    run's start (the site's entry page, or the app's visit entries) within one app — never through the
+    field the task's text goes into, never starting with a send — kept only if every edge was taken ≥ 2×,
+    else the page changes of the chain that reached that item (in an app: its search, typing + Return);
+    then what they do next (type in ‘Message’, Return). A web path starts on the target's own URL when
+    known. It reaches the drivers as a `Routine` (`UserRoutines.Match` source "path", key `path:…`,
+    confidence 0.6–0.9 by support), so `UserRoute` follows it — navigation pressed by code, a path step only
+    on its own page and an item only with all its words ("assignment 3" ≠ "Lab 3"); Jev gets
+    `this_users_way` + `their_path`; the runner the same JSON (`source`, `# UserPaths hook`). `choose`: a
+    routine done ≥ 2× in the same place wins, else the path. A `PathIntent` the user never used *there*
+    becomes a **pattern** (their labels elsewhere, matched by what a control does, marked, never pressed,
+    never a start). Place guard for routines: a routine is dropped when the task names (or reaches the
+    person in) another place. Never pressed by any route: sign in, add to cart, checkout. Grounding
+    (`TaskGrounding`): errands (order/buy/cart) never ground to own work ("random chipotle bowl" ≠ the
+    Onshape "Yarn Bowl"); "conversation/chat with X" is communication and reaches X's chat app. Probe on a
+    `.backup` copy (temporary test, `TEST_RUNNER_NAVI_PROBE_DIR`): 142 places with ≥ 10 steps, 97 with a
+    repeated two-step chain; 13/13 unrelated tasks → no routine.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's

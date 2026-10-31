@@ -455,6 +455,24 @@ os.environ.pop("NAVI_USER_ROUTE_JSON")
 assert nr.UserRoute().annotate(body) is body
 print("user route OK")
 
+# --- UserPaths: the user's path to the target (items need all their words) and patterns (any site) ---
+path = {"template": "your usual way to \u2018Assignment 03\u2019", "times": 3, "fills": [], "source": "path",
+        "steps": [{"kind": "click", "role": "link", "label": "Assignment 03", "fixed": "", "slot": "assignment 3", "site": "canvas.olin.edu",
+                   "human": "click link \u2018Assignment 03\u2019"}]}
+pr = nr.UserRoute(route=path)
+listing = [{"index": "1", "label": "Assignment 02", "operations": ["CLICK"]}, {"index": "2", "label": "Assignment 03", "operations": ["CLICK"]},
+           {"index": "3", "label": "Lab 3 Report", "operations": ["CLICK"]}]
+assert [e["index"] for e in pr.targets(0, "canvas.olin.edu", listing)] == ["2"]            # "03" is "3"; a number with its kind word
+assert not pr.label_matches(path["steps"][0], "Lab 3 Report")
+pattern = {"template": "signInWithGoogle", "times": 4, "fills": [], "source": "pattern",
+           "steps": [{"kind": "click", "role": "button", "label": "Sign in with Google", "fixed": "sign in with google", "site": "",
+                      "intent": "signInWithGoogle", "human": "click button \u2018Sign in with Google\u2019"}]}
+pt = nr.UserRoute(route=pattern)
+dd = [{"index": "1", "label": "Continue with Google", "operations": ["CLICK"]}, {"index": "2", "label": "Continue with Apple", "operations": ["CLICK"]}]
+assert [e["index"] for e in pt.targets(0, "doordash.com", dd)] == ["1"]
+assert nr.path_intent("Add to cart") == "addToCart" and nr.path_intent("Go to Cart") == "openCart" and nr.path_intent("Inbox") is None
+print("user paths OK")
+
 # --- the tab is the deliverable (adaptation 13) ---
 for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
     os.environ.pop(var, None)
