@@ -47,16 +47,19 @@ struct AXElement: @unchecked Sendable {
     /// Inside a native list/outline row (Notes' folder names, Finder's file names): a text
     /// field there renames the row, so it is never a typing target unless it has the focus.
     var inRow: Bool = false
+    /// A text input's placeholder ("Search", "iMessage"): what it shows when empty — never its value.
+    var placeholder: String = ""
     /// Live reference; nil in tests.
     var ref: AXUIElement?
 
     init(id: String = "", role: String, subrole: String? = nil, label: String, value: String? = nil,
          frame: CGRect, isFocused: Bool = false, path: String = "", actions: [String] = [],
          pid: pid_t = 0, options: [String] = [], isWebContent: Bool = false, isSelected: Bool = false, inRow: Bool = false,
-         ref: AXUIElement? = nil) {
+         placeholder: String = "", ref: AXUIElement? = nil) {
         self.id = id; self.role = role; self.subrole = subrole; self.label = label; self.value = value
         self.frame = frame; self.isFocused = isFocused; self.path = path; self.actions = actions
-        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.isSelected = isSelected; self.inRow = inRow; self.ref = ref
+        self.pid = pid; self.options = options; self.isWebContent = isWebContent; self.isSelected = isSelected; self.inRow = inRow
+        self.placeholder = placeholder; self.ref = ref
     }
 
     /// Numeric index Jev sees ("e12" → 12).
@@ -138,6 +141,9 @@ struct AXSnapshot: @unchecked Sendable {
     /// window): `AXPress` needs no pixel, so Jev may still pick one (`press_offscreen`).
     /// Ids are "o1", "o2", ….
     var offscreen: [AXElement] = []
+    /// The sheet, popover or modal dialog in front, when one limits what can be clicked: only its
+    /// controls are offered, like a browser modal (its name, or its role when it has none).
+    var modalScope: String?
 
     static let cap = 120
     static let textLineCap = 400
@@ -145,8 +151,16 @@ struct AXSnapshot: @unchecked Sendable {
     static let visibleTextCap = 1500
     static let maxDepth = 25
     static let nodeBudget = 4000
-    /// Hard time box for one walk. Jev itself costs 220–500 ms, so observation must stay near zero.
+    /// Time box for one walk. Jev itself costs 220–500 ms, so observation must stay near zero.
     static let walkBudgetSeconds = 0.15
+    /// A walk that found almost nothing in its box keeps going up to this long: Catalyst apps
+    /// (Messages) answer each AX call in ~6 ms, so 0.15 s saw one field and nothing else.
+    static let thinWalkBudgetSeconds = 0.45
+    static let thinWalkControls = 12
+    /// A container with more children than this is walked a page at a time: its first children
+    /// now, the rest after every other region (a 600-note sidebar no longer eats the time box
+    /// before the editor next to it).
+    static let wideContainer = 12
 
     /// Cheap fingerprint (focused app, window title, focused element role/value)
     /// used to detect that an action had an effect without a full walk.
@@ -283,11 +297,51 @@ struct AXSnapshot: @unchecked Sendable {
     /// per-element `AXFocused` flags, which some apps set on whole lists (Notes flags every
     /// folder and note-list cell). `focusedIndex`: the walked element that holds focus;
     /// `extra`: the focused text field when the walk never reached it. Neither: the flags stand.
-    static func withAppFocus(_ raw: [AXElement], focusedIndex: Int?, extra: AXElement?) -> [AXElement] {
+    static func withAppFocus(_ raw: [AXElement], focusedIndex: Int?, extra: AXElement?, elsewhere: Bool = false) -> [AXElement] {
+        // `elsewhere`: the app put focus on something that is no item (its window, a list it did
+        // not let the walk reach) — Music flags all 18 sidebar cells focused while it does.
+        if elsewhere, focusedIndex == nil, extra == nil { return raw.map { var e = $0; e.isFocused = false; return e } }
         guard focusedIndex != nil || extra != nil else { return raw }
         var out = raw.enumerated().map { i, e in var e = e; e.isFocused = i == focusedIndex; return e }
         if var extra { extra.isFocused = true; out.append(extra) }
         return out
+    }
+
+    // MARK: Fields and layers (pure, testable)
+
+    /// What a text input holds: nothing when its value only repeats its placeholder.
+    static func fieldValue(_ value: String?, placeholder: String) -> String? {
+        guard let value else { return nil }
+        let p = placeholder.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !p.isEmpty && value.trimmingCharacters(in: .whitespacesAndNewlines) == p ? "" : value
+    }
+
+    /// Whether this node is a layer in front of the window that takes every click: a popover, or a
+    /// group/sheet the app flags `AXModal` (Chromium does for an aria-modal dialog) that is big
+    /// enough to be one (a flagged 1-pt node is no dialog).
+    static func opensLayer(role: String, modalFlag: Bool, frame: CGRect?, window: CGRect?) -> Bool {
+        if role == "AXPopover" || role == "AXSheet" { return true }
+        guard modalFlag, ["AXGroup", "AXSheet", "AXDialog", "AXWindow"].contains(role), let frame else { return false }
+        let area = frame.width * frame.height
+        guard let window, window.width * window.height > 0 else { return area > 0 }
+        return area >= 0.06 * window.width * window.height
+    }
+
+    /// Only what is inside the layer in front (`top`, an index into `parents`): its controls, the
+    /// menu bar, and — when the layer is a web page's dialog — the browser's own controls, which
+    /// a web dialog does not block. `scopes[i]` is the innermost layer around `raw[i]`.
+    static func limitToModal(_ raw: [AXElement], scopes: [Int?], parents: [Int?], top: Int, webModal: Bool, isBrowser: Bool) -> [AXElement] {
+        func inside(_ scope: Int?) -> Bool {
+            var s = scope, hops = 0
+            while let c = s, hops < 32 { if c == top { return true }; s = parents.indices.contains(c) ? parents[c] : nil; hops += 1 }
+            return false
+        }
+        let within = raw.indices.map { inside(scopes.indices.contains($0) ? scopes[$0] : nil) }
+        // A layer that came out empty (its controls not walked yet) hides nothing.
+        guard within.contains(true) else { return raw }
+        return raw.indices.filter { i in
+            within[i] || raw[i].isMenuBarItem || (webModal && isBrowser && !raw[i].isWebContent)
+        }.map { raw[$0] }
     }
 
     // MARK: Ranking (pure, testable)
@@ -509,6 +563,8 @@ final class AXSnapshotter: @unchecked Sendable {
         var inWebArea: Bool = false
         /// Under a list/outline row or cell: a text field there is a row's name edited in place.
         var inRow: Bool = false
+        /// The innermost sheet / popover / modal group this node is inside (`limitToModal`).
+        var modal: Int? = nil
     }
 
     /// Chromium/Electron apps: `AXPress` on web content returns success without
@@ -516,7 +572,9 @@ final class AXSnapshotter: @unchecked Sendable {
     static func pressIsUnreliable(bundleID: String?) -> Bool { needsEnhancedUI(bundleID: bundleID) }
 
     static func walk(pid: pid_t, near: CGRect?, includeMenuBar: Bool, isBrowser: Bool = false) -> AXSnapshot {
-        let deadline = Date().addingTimeInterval(AXSnapshot.walkBudgetSeconds)
+        let started = Date()
+        let deadline = started.addingTimeInterval(AXSnapshot.walkBudgetSeconds)
+        let thinDeadline = started.addingTimeInterval(AXSnapshot.thinWalkBudgetSeconds)
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)   // a hung app must not blow the time box
 
@@ -546,12 +604,27 @@ final class AXSnapshotter: @unchecked Sendable {
         let windowFrame = frame(of: window)
         snap.windowFrame = windowFrame
 
-        var stack: [Node] = [Node(element: window, depth: 0, ancestors: [])]
+        // A sheet on the window (Save, Print, an app's own dialog) takes every click until it is
+        // dismissed: the walk starts at the sheet, so only its controls are offered. The sheet is
+        // the window's last child — a depth-first walk used to run out of time before reaching it.
+        var root = window
+        for child in elements(attr(window, kAXChildrenAttribute)) ?? [] where (attr(child, kAXRoleAttribute) as? String) == "AXSheet" {
+            root = child
+            let name = firstNonEmpty([attr(child, kAXTitleAttribute) as? String ?? "", attr(child, kAXDescriptionAttribute) as? String ?? ""])
+            snap.modalScope = name.isEmpty ? "sheet" : name
+        }
+
+        var stack: [Node] = [Node(element: root, depth: 0, ancestors: [])]
+        var deferred: [Node] = []        // later pages of wide containers (`AXSnapshot.wideContainer`)
+        var deferredAt = 0
         var visited = 0
         let attributes = [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
                           kAXEnabledAttribute, kAXFocusedAttribute, "AXFrame", kAXChildrenAttribute, kAXHiddenAttribute,
                           kAXPlaceholderValueAttribute, kAXHelpAttribute, kAXTitleUIElementAttribute,
-                          kAXIdentifierAttribute, kAXRoleDescriptionAttribute, kAXSelectedAttribute] as [String]
+                          kAXIdentifierAttribute, kAXRoleDescriptionAttribute, kAXSelectedAttribute, "AXModal"] as [String]
+        /// Popovers and modal groups met on the way (sheets are handled above): id → (parent, name, in web content).
+        var modals: [(parent: Int?, name: String, web: Bool)] = []
+        var scopes: [Int?] = []          // per raw element: the innermost modal it is inside
         /// Every static text with its frame, so an unlabelled cell/row/button can be
         /// named after the text drawn inside it ("the cell" → "Mikey Ku · 9:12 PM").
         var texts: [(String, CGRect)] = []
@@ -561,8 +634,17 @@ final class AXSnapshotter: @unchecked Sendable {
         var lines: [AXTextLine] = []
         var offscreen: [AXElement] = []
 
-        while let node = stack.popLast() {
-            if visited >= AXSnapshot.nodeBudget || Date() > deadline { break }
+        func next() -> Node? {
+            if let n = stack.popLast() { return n }
+            guard deferredAt < deferred.count else { return nil }
+            deferredAt += 1
+            return deferred[deferredAt - 1]
+        }
+        while let node = next() {
+            if visited >= AXSnapshot.nodeBudget { break }
+            // The time box, stretched for a walk that has found almost nothing yet.
+            let now = Date()
+            if now > thinDeadline || (now > deadline && raw.count >= AXSnapshot.thinWalkControls) { break }
             visited += 1
             let el = node.element
             let vals = multiple(el, attributes)
@@ -585,12 +667,29 @@ final class AXSnapshotter: @unchecked Sendable {
             let desc = (vals[3] as? String) ?? ""
             let help = (vals[11] as? String) ?? ""
             let placeholder = (vals[10] as? String) ?? ""
-            let value = stringValue(vals[4])
+            var isText = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXSecureTextField"].contains(role)
+            // A placeholder is not a value: an empty field that reports its placeholder as its value
+            // read as "has ‘Search’ typed into it" (Music), and Jev skipped typing.
+            let value = isText ? AXSnapshot.fieldValue(stringValue(vals[4]), placeholder: placeholder) : stringValue(vals[4])
             var label = firstNonEmpty([title, desc, help])
             if label.isEmpty, let tue = vals[12], CFGetTypeID(tue as CFTypeRef) == AXUIElementGetTypeID() {
                 label = (attr(tue as! AXUIElement, kAXValueAttribute) as? String) ?? (attr(tue as! AXUIElement, kAXTitleAttribute) as? String) ?? ""
             }
-            let isText = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXSecureTextField"].contains(role)
+            // A text area that only shows text (a Messages bubble: no name, no placeholder, a value
+            // that cannot be set) is text to read, not a field to type into.
+            if isText, role != "AXSecureTextField", label.isEmpty, placeholder.isEmpty, !(value ?? "").isEmpty,
+               (vals[6] as? Bool) != true, !node.inWebArea, !valueIsSettable(el) {
+                isText = false
+                if let f, let v = value, lines.count < AXSnapshot.textLineCap, windowFrame.map({ $0.intersects(f) }) ?? true {
+                    let t = v.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+                    if !t.isEmpty {
+                        lines.append(AXTextLine(text: String(t.prefix(200)), frame: f))
+                        if textLength < AXSnapshot.visibleTextCap { text.append(t); textLength += t.count + 1 }
+                        if !f.isEmpty, texts.count < 600 { texts.append((String(t.prefix(60)), f)) }
+                    }
+                }
+                continue
+            }
             if label.isEmpty, isText { label = placeholder.isEmpty ? String((value ?? "").prefix(60)) : placeholder }
             if label.isEmpty, role == "AXStaticText", let v = value { label = String(v.prefix(60)) }
 
@@ -629,10 +728,28 @@ final class AXSnapshotter: @unchecked Sendable {
                 raw.append(AXElement(role: role, subrole: vals[1] as? String, label: label,
                                      value: role == "AXSecureTextField" ? "••••" : shownValue.map { String($0.prefix(60)) },
                                      frame: f, isFocused: focused, path: path, actions: actions, pid: pid, options: options,
-                                     isWebContent: node.inWebArea || role == "AXWebArea", isSelected: selected, inRow: node.inRow, ref: el))
+                                     isWebContent: node.inWebArea || role == "AXWebArea", isSelected: selected, inRow: node.inRow,
+                                     placeholder: isText ? placeholder : "", ref: el))
+                scopes.append(node.modal)
             }
 
-            guard node.depth < AXSnapshot.maxDepth, let children = elements(vals[8]) else { continue }
+            guard node.depth < AXSnapshot.maxDepth, var children = elements(vals[8]) else { continue }
+            // A popover, or a group the app marks modal (a web page's aria-modal dialog), opens a layer.
+            var modal = node.modal
+            if AXSnapshot.opensLayer(role: role, modalFlag: (vals[16] as? Bool) == true, frame: f, window: windowFrame) {
+                modals.append((node.modal, label.isEmpty ? (role == "AXPopover" ? "popover" : "dialog") : label, node.inWebArea))
+                modal = modals.count - 1
+            }
+            if children.count > AXSnapshot.wideContainer {
+                let later = children[AXSnapshot.wideContainer...]
+                children = Array(children.prefix(AXSnapshot.wideContainer))
+                let inWeb = node.inWebArea || role == "AXWebArea"
+                let rowish = !inWeb && (role == "AXRow" || role == "AXCell")
+                var anc = node.ancestors
+                if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" { anc.append(String(label.prefix(30))) }
+                deferred.append(contentsOf: later.map { Node(element: $0, depth: node.depth + 1, ancestors: anc, inWebArea: inWeb,
+                                                             inRow: node.inRow || rowish, modal: modal) })
+            }
             var ancestors = node.ancestors
             // The window's and the web area's titles are the page title twice over —
             // no help telling elements apart; real containers (forms, sections, toolbars) are.
@@ -640,7 +757,16 @@ final class AXSnapshotter: @unchecked Sendable {
             let inWebArea = node.inWebArea || role == "AXWebArea"
             // Push in reverse so the DFS visits children in their natural (reading) order.
             let inRow = node.inRow || (!inWebArea && (role == "AXRow" || role == "AXCell"))
-            for child in children.reversed() { stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea, inRow: inRow)) }
+            for child in children.reversed() {
+                stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea, inRow: inRow, modal: modal))
+            }
+        }
+
+        // A popover or modal dialog in front: only what is inside it can be clicked.
+        if !modals.isEmpty {
+            raw = AXSnapshot.limitToModal(raw, scopes: scopes, parents: modals.map(\.parent), top: modals.count - 1,
+                                          webModal: modals[modals.count - 1].web, isBrowser: isBrowser)
+            snap.modalScope = modals[modals.count - 1].name
         }
 
         // Name what has no name: the text inside it, else its identifier, else its role description.
@@ -654,8 +780,8 @@ final class AXSnapshotter: @unchecked Sendable {
         // Notes marks its cells focused: the note body ⌘N had just focused was never an item.
         if let f = attr(app, kAXFocusedUIElementAttribute) as! AXUIElement? {
             let i = raw.firstIndex { $0.ref.map { CFEqual($0, f) } ?? false }
-            raw = AXSnapshot.withAppFocus(raw, focusedIndex: i,
-                                          extra: i == nil ? focusedTextInput(f, pid: pid, windowFrame: windowFrame) : nil)
+            let extra = i == nil && snap.modalScope == nil ? focusedTextInput(f, pid: pid, windowFrame: windowFrame) : nil
+            raw = AXSnapshot.withAppFocus(raw, focusedIndex: i, extra: extra, elsewhere: true)
         }
 
         if isBrowser { raw = AXSnapshot.tidyBrowserChrome(raw) }
@@ -682,11 +808,12 @@ final class AXSnapshotter: @unchecked Sendable {
               (vals[1] as? String) != "AXSecureTextField", (vals[7] as? Bool) ?? true,
               let f = rect(vals[6]) ?? frame(of: el), f.width >= 1, f.height >= 1,
               windowFrame.map({ $0.intersects(f) }) ?? true else { return nil }
-        let value = stringValue(vals[5])
-        let label = firstNonEmpty([vals[2] as? String ?? "", vals[3] as? String ?? "", vals[4] as? String ?? "",
+        let placeholder = vals[4] as? String ?? ""
+        let value = AXSnapshot.fieldValue(stringValue(vals[5]), placeholder: placeholder)
+        let label = firstNonEmpty([vals[2] as? String ?? "", vals[3] as? String ?? "", placeholder,
                                    String((value ?? "").prefix(60))])
         return AXElement(role: role, subrole: vals[1] as? String, label: label, value: value.map { String($0.prefix(60)) },
-                         frame: f, isFocused: true, actions: actionNames(el), pid: pid, ref: el)
+                         frame: f, isFocused: true, actions: actionNames(el), pid: pid, placeholder: placeholder, ref: el)
     }
 
     static let offscreenRoles: Set<String> = ["AXButton", "AXLink", "AXRow", "AXCell", "AXMenuButton", "AXPopUpButton",
@@ -789,6 +916,12 @@ final class AXSnapshotter: @unchecked Sendable {
             }
         }
         return out
+    }
+
+    /// Whether the element's AXValue can be set: what tells a field from text drawn in a text view.
+    static func valueIsSettable(_ el: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
     }
 
     static func actionNames(_ el: AXUIElement) -> [String] {
