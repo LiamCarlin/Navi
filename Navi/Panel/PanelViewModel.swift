@@ -304,7 +304,7 @@ final class PanelViewModel: ObservableObject {
             let d = await self.services.router.route(query: q, context: self.context)
             guard !Task.isCancelled, self.query.trimmingCharacters(in: .whitespacesAndNewlines) == q else { return }
             self.decision = d
-            self.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.isEnabled)
+            self.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.showsEngineDetails)
             let full = await self.services.router.results(for: q, decision: d, context: self.context)
             guard !Task.isCancelled, self.query.trimmingCharacters(in: .whitespacesAndNewlines) == q else { return }
             self.results = Self.merge(instant: self.services.router.instantResults(for: q, context: self.context), routed: full, decision: d)
@@ -769,7 +769,7 @@ extension PanelViewModel {
         if let statusLine {
             vm.statusLine = statusLine
         } else if let d = decision {
-            vm.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.isEnabled)
+            vm.statusLine = PanelWording.routingStatus(d, developer: DeveloperMode.showsEngineDetails)
         }
         return vm
     }

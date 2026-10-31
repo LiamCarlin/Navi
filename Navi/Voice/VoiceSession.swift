@@ -705,12 +705,11 @@ final class VoiceSession: ObservableObject {
             lastOutcome = nil
         case .progress(_, let text):
             // Engine diagnostics (model names, confidences, latencies) stay out of the island.
-            if DeveloperMode.isEnabled { activity?.detail = text }
-            else if !PanelWording.isDiagnostic(text) { activity?.detail = PanelWording.userFacing(text) }
+            activity?.detail = DeveloperMode.showsEngineDetails ? text : PanelWording.stepText(text, live: true)
         case .answer(_, let delta):
             answerText += delta
         case .needsApproval(_, let d, let r):
-            approval = DeveloperMode.isEnabled ? (d, r) : (PanelWording.userFacing(d), PanelWording.userFacing(r))
+            approval = DeveloperMode.showsEngineDetails ? (d, r) : (PanelWording.userFacing(d), PanelWording.userFacing(r))
             VoiceSounds.play(.attention)
         case .approvalResolved:
             approval = nil
@@ -729,13 +728,14 @@ final class VoiceSession: ObservableObject {
             #endif
             switch outcome {
             case .done(let s):
-                if case .answer = item.command { showOutcome("", ok: true) } else { showOutcome(s, ok: true) }
+                if case .answer = item.command { showOutcome("", ok: true) }
+                else { showOutcome(DeveloperMode.showsEngineDetails ? s : PanelWording.doneText(s), ok: true) }
                 VoiceSounds.play(.done)
             case .failed(let m):
-                showOutcome(DeveloperMode.isEnabled ? m : PanelWording.userFacing(m), ok: false)
+                showOutcome(DeveloperMode.showsEngineDetails ? m : PanelWording.outcomeText(m), ok: false)
                 VoiceSounds.play(.failed)
             case .needsYou(let m):
-                showOutcome(DeveloperMode.isEnabled ? m : PanelWording.userFacing(m), ok: true)
+                showOutcome(DeveloperMode.showsEngineDetails ? m : PanelWording.outcomeText(m), ok: true)
                 VoiceSounds.play(.attention)
             case .cancelled:
                 showOutcome("Stopped", ok: true)

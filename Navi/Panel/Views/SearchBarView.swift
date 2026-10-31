@@ -86,8 +86,8 @@ struct SearchBarView: View {
                 ToastPill(text: toast)
                     .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
             } else if let d = vm.decision, !vm.query.isEmpty,
-                      let text = PanelWording.pillText(d, developer: DeveloperMode.isEnabled) {
-                IntentPill(decision: d, text: text, developer: DeveloperMode.isEnabled)
+                      let text = PanelWording.pillText(d, developer: DeveloperMode.showsEngineDetails) {
+                IntentPill(decision: d, text: text, developer: DeveloperMode.showsEngineDetails)
                     .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
             }
         }

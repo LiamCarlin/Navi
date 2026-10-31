@@ -23,7 +23,7 @@ struct QuestionCard: View {
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                     if !question.detail.isEmpty {
-                        Text(DeveloperMode.isEnabled ? question.detail : PanelWording.userFacing(question.detail))
+                        Text(DeveloperMode.showsEngineDetails ? question.detail : PanelWording.userFacing(question.detail))
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .lineSpacing(2)

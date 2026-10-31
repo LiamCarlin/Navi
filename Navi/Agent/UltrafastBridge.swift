@@ -529,11 +529,12 @@ enum UltrafastBridge {
                         allowEarlyBlockRetry: Bool, background: Bool = false, openedIsDone: Bool = false,
                         attachURL: String? = nil, attachTarget: String? = nil, stepBase: Int = 0,
                         userSaid: [UserReply] = [], mayAsk: Bool = false) async -> (outcome: RunOutcome, text: String?) {
-        let developer = DeveloperMode.isEnabled
+        // Engine chatter (guidance, per-decision probabilities) only with engine details on.
+        let developer = DeveloperMode.showsEngineDetails
         guard let rt = runtime, FileManager.default.isExecutableFile(atPath: rt.python.path) else {
             // "runtime not installed" is what `NativeBrowser.isRunnerUnavailable` matches: the
             // native driver then takes the step in the user's browser instead.
-            handle.emit(.failed(developer ? "Browser runtime not installed. Navi → Developer → Browser runtime → Install."
+            handle.emit(.failed(DeveloperMode.isEnabled ? "Browser runtime not installed. Navi → Developer → Browser runtime → Install."
                                           : "Browser runtime not installed — reinstall Navi to use Chrome for web tasks."))
             return (.failed, nil)
         }
@@ -589,7 +590,7 @@ enum UltrafastBridge {
         proc.standardOutput = out
         proc.standardError = err
 
-        if developer {
+        if DeveloperMode.showsEngineDetails {
             let via: String
             if case .cloud = credentials { via = "Navi Cloud" } else { via = "own keys" }
             handle.emit(.planned("Jev Ultrafast · Browser Use × TypeSafe · \(via) · \(url)" + (attachURL != nil ? " (current tab)" : "")))

@@ -524,7 +524,8 @@ final class VoiceCommandExecutor {
             lastRunEventAt = Date()
             switch ev {
             case .step(_, let d): onEvent?(.progress(item, d))
-            case .status(let s): onEvent?(.progress(item, s))
+            // The island says what Navi is doing (the step), not how the driver is getting on.
+            case .status(let s): if DeveloperMode.showsEngineDetails { onEvent?(.progress(item, s)) }
             case .planned: break
             case .screenshot: break
             case .needsApproval(let id, let d, let r):

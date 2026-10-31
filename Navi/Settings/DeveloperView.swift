@@ -370,8 +370,15 @@ struct TokenUsageSection: View {
 // MARK: - Diagnostics
 
 struct DiagnosticsSection: View {
+    @State private var engineDetails = DeveloperMode.showsEngineDetails
+
     var body: some View {
         Section("Diagnostics") {
+            Toggle(isOn: $engineDetails) {
+                Text("Show engine details while Navi works")
+                Text("Model names, confidences, latencies and the driver’s status lines in the ⌘Space panel, the voice island and the run pill. Off, they show only what Navi did.")
+            }
+            .onChange(of: engineDetails) { _, on in DeveloperMode.showsEngineDetails = on }
             LabeledContent("Bundle") { Text(Bundle.main.bundleIdentifier ?? "—").textSelection(.enabled) }
             LabeledContent("Data") { Text(NaviSettings.dataDirectory.path).textSelection(.enabled).lineLimit(1).truncationMode(.middle) }
             LabeledContent("Logs") {
