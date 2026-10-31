@@ -60,6 +60,7 @@ enum TaskPlanner {
     {{result}} always receives the findings of the most recent step marked "needs_result": mark exactly the step that gathers what a later step uses (e.g. the step that reads the event details, not a search for the site).
     The state's "reference" lists the macOS apps Navi knows well ("known_apps": use these exact names for "app" steps when they fit — by default a calendar task goes to "Calendar" and a text to "Messages", unless the user names another app or "user_habits" shows they use another one) and "deep_links": pages of web apps that can be opened directly (e.g. "Google Drive: shared with me", "Google Docs: new document"). When a browser step is about one of them, set that step's "url" to the deep link (append the query for links ending in "=" or "/") instead of inventing a URL or starting from a search. Dictated tasks arrive with speech-recognition slips ("dock" for "Doc", "calculatorcul" for "Calculator"): plan the obvious intent.
     The state's "user_habits" (when present) comes from this user's own screen history: plan the task the way THEY do it, not the generic way. "apps_for_this_kind_of_task" lists the apps and sites that could do this kind of work, most used first: use the user's most used one (an "app" step when it is a mac app — e.g. Outlook for email when they read mail in the Outlook app, never a web mail site they have not used; a "browser" step on their own site when it is a website, with "url" on that host — e.g. their school's Canvas host instead of canvas.instructure.com). A web app with "user_sites" is reached on those hosts: change a deep link's host to the user's. "seen_for_this_task" lists where the task's own words (a person, a document, a course) appeared: when one of them is clearly the thing the task means, go there — its "url" as the step's "url", or its "app" as the step's app (a person the user texts in WhatsApp is messaged in WhatsApp). "most_used_apps"/"most_used_sites" break any remaining tie. An app or site the task names outright always wins over habits; never let habits add steps. "things_in_this_task" lists the people, projects and documents the task names as this user knows them: use a person's full "name" in goals ("text Bella Chen …") and reach them in the app "reach_them_by" names for that kind of contact (texting, email, video calls) — else the first of "talks_with_them_in" — unless the task names another app; when emailing someone who has an "email", put the address in the goal ("Email Meera Baswan <mb128@wellesley.edu> saying …"). An entry with "the_task_refers_to_this" is what the task's own words point at ("the last assignment I did", "the doc I was working on", "that video from yesterday"), read from what the user really had open: name it in goals and open it at its "url" (a browser step with that "url") or in its app ("where") instead of searching or asking; when the task sends or shares it, it is the content, and the step goes to the person's app. Open a document or project at its "url" (a browser step with that "url") instead of searching for it; "people_involved" says who "my team"/"the group" is; "usual_workflow" is the order the user moves through the apps and sites for it — follow it when the task spans several of them.
+    The state's "recent_work" (when present) lists where Navi's last tasks worked, most recent first — the browser tab ("url") or app ("app") each one used, and how it went. When the task continues one of them or refers back to it ("open my cart" right after ordering food there, "where we just were", "now add fries", "go back", "the second one", a correction like "I meant in DoorDash"), plan ONE step in that place: a browser step whose "url" is exactly that entry's "url", or an app step in that entry's "app" — never a search, and never a different site that merely has the same kind of page (a cart, an inbox) or the screen-memory guess in "the_task_refers_to_this". A task that names or implies a different place ignores recent_work, and an unrelated task never goes onto a recent page or the open tab.
     Never ask for clarification, refuse, or explain: if the task is incomplete, typo-ridden or ambiguous, plan its most likely reading with what was given. Output is only the JSON object.
     """
 
@@ -68,7 +69,8 @@ enum TaskPlanner {
     static let assistantPrefill = "{\"steps\":["
 
     /// `habits`: `UserHabits.plannerSection` for this task (nil ⇒ no screen memory, or turned off).
-    static func stateJSON(task: String, frontmost: FrontmostProbe.Info, habits: [String: Any]? = nil) -> [String: Any] {
+    static func stateJSON(task: String, frontmost: FrontmostProbe.Info, habits: [String: Any]? = nil,
+                          recentWork: [WorkingSurface] = [], now: Date = Date()) -> [String: Any] {
         var s: [String: Any] = ["task": task,
                                 "frontmost_app": frontmost.appName ?? frontmost.bundleID ?? "unknown"]
         if let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") {
@@ -76,7 +78,19 @@ enum TaskPlanner {
         }
         s["reference"] = AppSkills.plannerReference()
         if let habits { s["user_habits"] = habits }
+        if let recent = recentWorkSection(recentWork, now: now) { s["recent_work"] = recent }
         return s
+    }
+
+    /// Where Navi's last tasks worked (`WorkingSurface`), with the exact page or app to continue in.
+    static func recentWorkSection(_ recent: [WorkingSurface], now: Date) -> [[String: Any]]? {
+        guard !recent.isEmpty else { return nil }
+        return recent.enumerated().map { i, w in
+            var e = w.stateEntry(id: "last_\(i + 1)", now: now)
+            e.removeValue(forKey: "id")
+            if w.kind == .browserTab, let u = w.url { e["url"] = u } else if let a = w.appName { e["app"] = a }
+            return e
+        }
     }
 
     // MARK: Parse
@@ -186,7 +200,8 @@ enum TaskPlanner {
             // app-only page): that site's own start page is where the task happens.
             if isWebSearch(u), let deep = AppSkills.startURL(for: step.goal), !isWebSearch(deep) { return UserHabits.personalized(deep) }
             let typed = UserHabits.host(of: u).map { step.goal.lowercased().contains($0) } ?? false   // a URL the user spelled out stays
-            return u == frontmost.url || typed ? u : UserHabits.personalized(u)
+            // The page an earlier run worked on (`recent_work`) is that run's tab: never moved to another host.
+            return u == frontmost.url || typed || WorkingSurface.Store.shared.isRecentPage(u) ? u : UserHabits.personalized(u)
         }
         if step.useCurrentTab, let b = frontmost.bundleID, AXSnapshotter.isBrowser(b), let u = frontmost.url, u.hasPrefix("http") { return u }
         if let mine = UserKnowledge.liveStartURL(for: step.goal) { return mine }                          // "open the HCI notes" → that doc
@@ -225,7 +240,8 @@ enum TaskPlanner {
         if let routines = UserRoutines.plannerContext(for: task) {
             habits = (habits ?? ["source": "this user's own screen history — how they actually do things"]).merging(["their_routines_for_tasks_like_this": routines]) { $1 }
         }
-        let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost, habits: habits), options: [.sortedKeys])
+        let recent = WorkingSurface.Store.shared.recent()
+        let data = try JSONSerialization.data(withJSONObject: stateJSON(task: task, frontmost: frontmost, habits: habits, recentWork: recent), options: [.sortedKeys])
         let start = Date()
         // Assistant prefill: Haiku continues `{"steps":[` instead of answering in
         // prose ("I need to clarify…"), which used to throw the whole plan away.

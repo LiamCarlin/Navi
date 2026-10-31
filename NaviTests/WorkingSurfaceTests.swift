@@ -224,8 +224,15 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
     @Test func theScreenInFrontIsTheOpenTabOrTheAppInFront() {
         let d = VoiceDecider.decide(verdict(surface: "unsure", work: ("here", 0.9)),
                                     input: input("click on checkout", front: chromeFront(doordashURL), recent: [doordash()]))
-        guard case .commit(.task(_, let surface, let tab, _, .here?)) = d else { Issue.record("got \(d)"); return }
+        guard case .commit(.task(let goal, let surface, let tab, _, .here?)) = d else { Issue.record("got \(d)"); return }
         #expect(surface == .browser && tab)
+        // In front *and* where the last task worked: that task's place is continued (no screen-memory detour).
+        let p = VoiceCommandExecutor.placement(goal: goal, surface: surface, useCurrentTab: tab, place: .here, frontmostBundle: "com.google.Chrome",
+                                               compound: false, lastWorkedHere: true, hereSurface: doordash(), namesPage: { _ in false })
+        #expect(p.continueOn?.site == "doordash.com")
+        let plain = VoiceCommandExecutor.placement(goal: goal, surface: surface, useCurrentTab: tab, place: .here, frontmostBundle: "com.google.Chrome",
+                                                   compound: false, lastWorkedHere: false, namesPage: { _ in false })
+        #expect(plain.continueOn == nil && plain.useCurrentTab)
         let notes = FrontmostProbe.Info(bundleID: "com.apple.Notes", appName: "Notes", windowTitle: "New Note")
         let n = VoiceDecider.decide(verdict(surface: "browser", work: ("here", 0.9)), input: input("make the title hello", front: notes, recent: [notesApp()]))
         guard case .commit(.task(_, let s2, let t2, _, _)) = n else { Issue.record("got \(n)"); return }
@@ -471,5 +478,38 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         let (d, v) = try await ask("go to my most recent cannabis assignment", front: chromeFront("https://www.google.com/"), recent: [], terms: terms)
         guard case .commit(.task(let goal, _, _, _, _)) = d else { Issue.record("→ \(d)"); return }
         #expect(goal.contains("Canvas"), Comment(rawValue: "\(goal) misheard=\(v.misheard)"))
+    }
+}
+
+// MARK: - ⌘Space: the planner continues where the last task worked
+
+@Suite(.serialized) struct PlannerWorkingSurfaceTests {
+    @Test func plannerStateCarriesTheExactPageToContinueOn() {
+        let state = TaskPlanner.stateJSON(task: "now add fries", frontmost: FrontmostProbe.Info(bundleID: "com.tinyspeck.slackmacgap", appName: "Slack"),
+                                          recentWork: [doordash(), notesApp()])
+        let recent = state["recent_work"] as? [[String: Any]]
+        #expect(recent?.first?["url"] as? String == doordashURL)
+        #expect(recent?.last?["app"] as? String == "Notes")
+        #expect(TaskPlanner.stateJSON(task: "x", frontmost: FrontmostProbe.Info())["recent_work"] == nil)
+        #expect(JSONSerialization.isValidJSONObject(state))
+    }
+
+    /// Haiku, live: "open my cart" after a DoorDash order plans the DoorDash tab, not a search or Amazon.
+    @Test(.needsNetwork) func openMyCartAfterTheOrderPlansThatTab() async throws {
+        let claude = ClaudeClient()
+        try #require(claude.isConfigured, "set ANTHROPIC_API_KEY")
+        WorkingSurface.Store.shared.reset()
+        WorkingSurface.Store.shared.record(doordash())
+        defer { WorkingSurface.Store.shared.reset() }
+        let slack = FrontmostProbe.Info(bundleID: "com.tinyspeck.slackmacgap", appName: "Slack", windowTitle: "general")
+        for task in ["open my cart to see where I'm gonna pay", "now add a large fries"] {
+            let (plan, _, raw) = try await TaskPlanner.planRaw(task: task, frontmost: slack, claude: claude)
+            let step = try #require(plan?.steps.first, Comment(rawValue: raw))
+            #expect(step.surface == .browser, Comment(rawValue: raw))
+            #expect(TaskPlanner.startURL(for: step, frontmost: slack).contains("doordash.com"), Comment(rawValue: raw))
+        }
+        // Something else entirely does not go to DoorDash.
+        let (other, _, raw) = try await TaskPlanner.planRaw(task: "text mom I'm running late", frontmost: slack, claude: claude)
+        #expect(other?.steps.first?.surface == .app, Comment(rawValue: raw))
     }
 }

@@ -333,11 +333,14 @@ final class VoiceCommandExecutor {
     /// `continuesOnCurrentTab`).
     nonisolated static func placement(goal: String, surface: TaskSurface.Surface, useCurrentTab: Bool, place: WorkingSurface.Choice?,
                                       frontmostBundle: String?, compound: Bool, lastWorkedHere: Bool,
-                                      namesPage: (String) -> Bool) -> Placement {
+                                      hereSurface: WorkingSurface? = nil, namesPage: (String) -> Bool) -> Placement {
         switch place {
         case .last(let s)?:
             return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s)
         case .here?:
+            // The screen in front is where the last task worked: continuing that task, so screen
+            // memory's guess at what the words mean ("my cart" → an old Amazon cart) stays out of it.
+            if let s = hereSurface { return Placement(surface: s.kind == .browserTab ? .browser : .nativeApp, useCurrentTab: false, continueOn: s) }
             return Placement(surface: surface, useCurrentTab: useCurrentTab, continueOn: nil)
         case .newPlace?:
             return Placement(surface: surface, useCurrentTab: false, continueOn: nil)
@@ -424,9 +427,10 @@ final class VoiceCommandExecutor {
         // Did the last task work on what is in front now (the same tab's site / the same app)?
         var front = FrontmostProbe.Info(bundleID: context.frontmostApp, appName: context.frontmostAppName, windowTitle: context.frontmostWindowTitle)
         if let b = front.bundleID, AXSnapshotter.isBrowser(b) { front.url = await Task.detached { FrontmostProbe.browserURL(bundleID: b) }.value }
-        let lastWorkedHere = WorkingSurface.Store.shared.recent(limit: 1).first?.isShown(by: front) ?? lastWasBrowser
+        let last = WorkingSurface.Store.shared.recent(limit: 1).first
+        let lastWorkedHere = last?.isShown(by: front) ?? lastWasBrowser
         let p = Self.placement(goal: goal, surface: surface, useCurrentTab: useCurrentTab, place: place, frontmostBundle: context.frontmostApp,
-                               compound: compound, lastWorkedHere: lastWorkedHere, namesPage: Self.namesPage)
+                               compound: compound, lastWorkedHere: lastWorkedHere, hereSurface: lastWorkedHere ? last : nil, namesPage: Self.namesPage)
         if let s = p.continueOn { Log.voice.info("voice task continues in \(s.placeDescription, privacy: .private)") }
         // The full step budget from Settings: a spoken task can be as long as a typed one.
         let maxSteps = max(NaviSettings.shared.agentMaxSteps, 4)
