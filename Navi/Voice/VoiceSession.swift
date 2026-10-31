@@ -744,6 +744,7 @@ final class VoiceSession: ObservableObject {
         ctx.amendable = executor.amendableCommand()
         ctx.previousInstruction = executor.previousInstruction
         ctx.namesOwnDocument = UserKnowledge.liveStartURL(for: clause.head) != nil
+        ctx.knownPeople = Set(VoiceVocabulary.liveTerms().filter { $0.kind == "people" }.map { $0.text.lowercased() })
         ctx.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: VoiceVocabulary.liveTerms())
         return ctx
     }

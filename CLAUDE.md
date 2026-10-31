@@ -548,7 +548,12 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     (the recognizer drops the "go"; a still-queued instruction takes the tail first); a web app named
     while Jev picked the browser ("open up a Google Doc" → Chrome) is the web app; a head naming one of
     the user's own documents with a page (`namesOwnDocument`) runs on that page, not in an app a word
-    suggests; an earlier "open Chrome" continues on Chrome's tab. Offline bench after the port: 85 %
+    suggests; an earlier "open Chrome" continues on Chrome's tab. Errands at a named business start on
+    its own site (`TaskPlanner.errandStartURL`): a site in the user's history carrying its name, else the
+    page DuckDuckGo `!ducky` redirects to (resolved ahead by the voice executor, ≤ 1.5 s; no consent
+    page), else that redirect URL. A dictated message to someone (`isDictatedMessage`: send verb +
+    relation / known person / capitalised name + text, "send a message to …", "reply to …") is never
+    dropped as chatter or answered as a question. The instruction's own verb is never "misheard". Offline bench after the port: 85 %
     (errand 70, school 83, messaging 90, native 100; baseline 73). Live tests: `VoiceWorkingSurfaceLiveTests`,
     `PlannerWorkingSurfaceTests` (`.needsNetwork`). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
