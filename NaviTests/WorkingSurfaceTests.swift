@@ -182,6 +182,17 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         #expect(p.surface == .browser && !p.useCurrentTab)
     }
 
+    @Test func aCorrectionThatJevReadsAsStopIsStillTheInstruction() {
+        let now = Date()
+        let inp = input("I meant in DoorDash where we just were", front: chromeFront("https://www.amazon.com/cart?ref_=ox"),
+                        recent: [amazonCart(now: now), doordash(now: now)])
+        var v = verdict(kind: "control_navi", surface: "unsure", work: ("last_1", 1.0), whole: 0.32)
+        v.control = .init(choice: "stop", probabilities: ["stop": 0.6], confidence: 0.6)
+        guard case .commit(.task(_, _, _, _, .last?)) = VoiceDecider.decide(v, input: inp) else { Issue.record("not continued"); return }
+        // A real "stop" / "never mind" stays a control.
+        guard case .commit(.control(.stop, _)) = VoiceDecider.decide(v, input: input("never mind", front: nil, recent: [])) else { Issue.record("never mind"); return }
+    }
+
     @Test func openMyCartRightAfterTheOrderIsThatOrdersCart() {
         let inp = input("open my cart to see where I'm gonna pay", front: chromeFront("https://www.google.com/"), recent: [doordash()])
         let d = VoiceDecider.decide(verdict(work: ("last_1", 0.86)), input: inp)
@@ -378,5 +389,87 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         #expect(VoiceVocabulary.soundAlikes(in: "open my canvas assignment", terms: terms).isEmpty)
         #expect(VoiceVocabulary.soundAlikes(in: "order me a burger", terms: terms).isEmpty)
         #expect(VoiceVocabulary.soundAlikes(in: "open notes and make the title hello", terms: terms).isEmpty)
+    }
+}
+
+// MARK: - Live: the logged phrases through the real voice decision call
+
+/// `NAVI_TEST_NETWORK=1 TYPESAFE_API_KEY=… scripts/test.sh`: every head of the voice decision
+/// call (boundary, kind, surface, work_where, whole_instruction, misheard_i …) asked of Jev for the
+/// phrases that failed on 2026-10-29/30, and the decision code run on the answers.
+@Suite struct VoiceWorkingSurfaceLiveTests {
+    private func ask(_ head: String, front: FrontmostProbe.Info?, recent: [WorkingSurface], recentDone: [String] = [],
+                     terms: [VoiceVocabulary.Term] = []) async throws -> (VoiceDecider.Decision, VoiceDecider.Verdict) {
+        let jev = JevClient()
+        try #require(jev.isConfigured, "set TYPESAFE_API_KEY or AI_GATEWAY_API_KEY")
+        var ctx = VoiceDecider.Context()
+        ctx.frontmostApp = front?.appName
+        ctx.frontmostBundle = front?.bundleID
+        ctx.windowTitle = front?.windowTitle
+        ctx.browserURL = front?.url
+        ctx.recentWork = recent
+        ctx.recentDone = recentDone
+        ctx.soundAlikes = VoiceVocabulary.soundAlikes(in: head, terms: terms)
+        let inp = VoiceDecider.Input(clause: .init(head: head, following: "", connector: "", start: 0, end: 3, resume: 3), silenceMs: 2500, context: ctx)
+        let r = try await jev.ask(state: JevClient.JSONValue(any: VoiceDecider.stateJSON(inp)), questions: VoiceDecider.questions(inp), cacheable: false)
+        let v = VoiceDecider.verdict(from: r)
+        return (VoiceDecider.decide(v, input: inp), v)
+    }
+
+    private func isRun(_ d: VoiceDecider.Decision) -> Bool {
+        if case .commit(let c) = d { return c.needsWholeInstruction }
+        return false
+    }
+
+    @Test(.needsNetwork) func followUpsContinueWhereTheLastTaskWorked() async throws {
+        let now = Date()
+        let amazonFront = chromeFront("https://www.amazon.com/cart?ref_=ox", title: "Amazon.com Shopping Cart")
+        let (d1, v1) = try await ask("I meant in DoorDash where we just were", front: amazonFront, recent: [amazonCart(now: now), doordash(now: now)],
+                                     recentDone: ["“order me a burger” → completed", "“open my cart to see where I'm gonna pay” → completed: click Go to Cart"])
+        if case .commit(.task(_, _, _, _, .last(let s)?)) = d1 { #expect(s.site == "doordash.com") } else {
+            Issue.record("I meant in DoorDash → \(d1) \(String(describing: v1.workWhere))")
+        }
+
+        let slack = FrontmostProbe.Info(bundleID: "com.tinyspeck.slackmacgap", appName: "Slack", windowTitle: "general")
+        let (d2, v2) = try await ask("open my cart to see where I'm gonna pay", front: slack, recent: [doordash(now: now)],
+                                     recentDone: ["“order me a burger” → completed: Ready for you to place the order"])
+        if case .commit(.task(_, _, _, _, .last(let s2)?)) = d2 { #expect(s2.site == "doordash.com") } else {
+            Issue.record("open my cart → \(d2) \(String(describing: v2.workWhere))")
+        }
+
+        let (d3, _) = try await ask("Wait, close this tab", front: amazonFront, recent: [amazonCart(now: now), doordash(now: now)])
+        if case .commit(.browser(let b, _)) = d3 { #expect(b.key == "cmd+w") } else { Issue.record("close this tab → \(d3)") }
+    }
+
+    @Test(.needsNetwork) func anErrandDoesNotRunOnTheCanvasTab() async throws {
+        let canvas = chromeFront("https://canvas.olin.edu/courses/1079", title: "Applied Mathematics for Engineers")
+        let opened = WorkingSurface(kind: .browserTab, task: "Open up my class canvas", outcome: .completed, summary: "click Applied Mathematics for Engineers",
+                                    bundleID: "com.google.Chrome", appName: "Google Chrome", url: "https://canvas.olin.edu/courses/1079", at: Date())
+        for head in ["order me a burger", "go to McDonald's"] {
+            let (d, v) = try await ask(head, front: canvas, recent: [opened], recentDone: ["“Open up my class canvas” → completed"])
+            switch d {
+            case .commit(.task(_, _, let tab, _, let place)):
+                #expect(!tab, Comment(rawValue: head))
+                #expect(place == .newPlace, Comment(rawValue: "\(head): \(String(describing: v.workWhere))"))
+            case .commit(.openURL), .commit(.webSearch): break
+            default: Issue.record("\(head) → \(d)")
+            }
+        }
+    }
+
+    @Test(.needsNetwork) func loggedFragmentsDoNotRun() async throws {
+        let canvas = chromeFront("https://canvas.olin.edu/courses/1079", title: "Applied Mathematics for Engineers")
+        for head in ["a burger", "to my cart", "updated it", "open up when you do tab", "to my most recent cannabis assignment"] {
+            let (d, v) = try await ask(head, front: canvas, recent: [], recentDone: ["“Open up my class canvas” → completed"])
+            #expect(!isRun(d), Comment(rawValue: "\(head) → \(d) whole=\(v.whole ?? -1)"))
+        }
+    }
+
+    @Test(.needsNetwork) func aMisheardCanvasIsPutRight() async throws {
+        let terms = [VoiceVocabulary.Term("Canvas", kind: "apps and sites"), VoiceVocabulary.Term("Onshape", kind: "apps and sites"),
+                     VoiceVocabulary.Term("Notion", kind: "apps and sites")]
+        let (d, v) = try await ask("go to my most recent cannabis assignment", front: chromeFront("https://www.google.com/"), recent: [], terms: terms)
+        guard case .commit(.task(let goal, _, _, _, _)) = d else { Issue.record("→ \(d)"); return }
+        #expect(goal.contains("Canvas"), Comment(rawValue: "\(goal) misheard=\(v.misheard)"))
     }
 }

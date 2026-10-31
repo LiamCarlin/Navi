@@ -147,6 +147,11 @@ enum VoiceDecider {
         ]
         if let h = ctx.userUsuallyUses { state["user_usually_uses"] = h }
         if let w = ctx.workQuestion, !w.state.isEmpty { state["recent_work"] = w.state }
+        // Live (2026-10-30): without this section Jev gave "cannabis" → Canvas 0.46; with it 0.78
+        // ("order cannabis gummies online" stays 0.25).
+        if !ctx.soundAlikes.isEmpty {
+            state["users_own_words"] = ctx.soundAlikes.prefix(VoiceVocabulary.maxAsked).map { ["heard": $0.heard, "sounds_like": $0.meant, "what": $0.kind] }
+        }
         if !ctx.appCandidates.isEmpty {
             state["installed_apps_possibly_named_in_HEAD"] = ctx.appCandidates.map { ["id": $0.id, "app": $0.entry.name] }
         }
@@ -463,7 +468,14 @@ enum VoiceDecider {
     static func command(_ v: Verdict, input: Input) -> VoiceCommand {
         let c = input.clause
         let text = correctedGoal(c.head, v: v, input: input)
-        let kind = v.kind.flatMap { Kind(rawValue: $0.choice) } ?? .doInApp
+        var kind = v.kind.flatMap { Kind(rawValue: $0.choice) } ?? .doInApp
+        // "I meant in DoorDash where we just were" sometimes reads as control_navi ("stop") to Jev: a
+        // whole sentence that is no control phrase is an instruction (live 2026-10-30, 1 of 2 calls).
+        let ctlChoice = v.control.flatMap { Control(rawValue: $0.choice) } ?? .none
+        if kind == .control, ctlChoice == .stop || ctlChoice == .none, heuristicControl(text) == nil,
+           text.split(separator: " ").count > 4 {
+            kind = .doInApp
+        }
         let risky = v.isRisky >= 0.5
         let place = workChoice(v, input: input)
         let front = input.context.front
