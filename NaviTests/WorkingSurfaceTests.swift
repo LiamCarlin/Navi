@@ -330,6 +330,17 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         #expect(VoiceDecider.incompleteReason("to order a burger go to doordash", v: verdict(whole: nil)) == nil)
     }
 
+    @Test func aTailJoinsTheInstructionStillWaitingInTheQueue() {
+        var inp = input("to my cart", silence: 500)
+        inp.context.amendable = .task(goal: "add a big mac", surface: .browser, useCurrentTab: false, isRisky: false, place: nil)
+        #expect(VoiceDecider.decide(verdict(whole: 0.06), input: inp)
+                == .amend(.task(goal: "add a big mac to my cart", surface: .browser, useCurrentTab: false, isRisky: false, place: nil)))
+        // An app launch takes no tail: the user hears that Navi didn't catch it.
+        inp.context.amendable = .openApp(AppEntry(name: "Notes", path: "/System/Applications/Notes.app", bundleID: "com.apple.Notes"), text: "open notes")
+        inp.silenceMs = 2500
+        if case .giveUp = VoiceDecider.decide(verdict(whole: 0.06), input: inp) {} else { Issue.record("expected give up") }
+    }
+
     @Test func aFragmentWithWordsAfterItJoinsThem() {
         let d = VoiceDecider.decide(verdict(whole: 0.06), input: input("to my cart", following: "and check out", connector: "and", silence: 200))
         #expect(d == .merge)

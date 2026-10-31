@@ -102,6 +102,8 @@ enum VoiceDecider {
         var recentWork: [WorkingSurface] = []
         /// Sound-alikes of the user's own words in HEAD ("cannabis" → "Canvas"), for Jev to confirm.
         var soundAlikes: [VoiceVocabulary.SoundAlike] = []
+        /// The instruction said just before, still queued (not started): a tail may still join it.
+        var amendable: VoiceCommand?
 
         /// What is in front, as the agent's probe reads it.
         var front: FrontmostProbe.Info? {
@@ -261,6 +263,9 @@ enum VoiceDecider {
         /// The user stopped talking long ago and the head still isn't an
         /// instruction: clear it and say so, instead of waiting for good.
         case giveUp(reason: String)
+        /// The head is the tail of the instruction still waiting in the queue ("add a big mac" |
+        /// "to my cart"): that instruction, with the tail added, replaces it.
+        case amend(VoiceCommand)
     }
 
     // Thresholds. Complete below `commitP` still commits once the user has
@@ -409,6 +414,7 @@ enum VoiceDecider {
         // the sentence, then hears that Navi didn't catch it (each of these used to be a failed run).
         if cmd.needsWholeInstruction, let why = incompleteReason(input.clause.head, v: v) {
             if !input.clause.following.isEmpty { return .merge }
+            if let prev = input.context.amendable, let amended = prev.appending(input.clause.head) { return .amend(amended) }
             if input.silenceMs < pauseMs { return .wait(reason: "not a whole instruction yet", retryAfterMs: max(100, pauseMs - input.silenceMs)) }
             return .giveUp(reason: why)
         }
@@ -786,6 +792,23 @@ enum VoiceCommand: Equatable, Sendable {
     }
 
     var isControl: Bool { if case .control = self { return true }; return false }
+
+    /// This instruction with the rest of its sentence added ("order me" + "a burger"); nil when
+    /// words can't be added to it (an app launch, a control).
+    func appending(_ tail: String) -> VoiceCommand? {
+        let t = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        switch self {
+        case .task(let g, let surface, let tab, let risky, let place):
+            return .task(goal: g + " " + t, surface: surface, useCurrentTab: tab, isRisky: risky, place: place)
+        case .webSearch(let q, let text):
+            return .webSearch(q + " " + t, text: text + " " + t)
+        case .openAppNamed(_, let text):
+            return .task(goal: text + " " + t, surface: .unsure, useCurrentTab: false, isRisky: false, place: nil)
+        default:
+            return nil
+        }
+    }
 
     /// Commands that only make sense for a whole instruction: an agent run, or an app guessed from the words.
     var needsWholeInstruction: Bool {

@@ -113,6 +113,23 @@ final class VoiceCommandExecutor {
         if current != nil { stopCurrent() } else { pump() }
     }
 
+    /// The last queued command, when it was queued less than `amendWindow` ago and hasn't started.
+    func amendableCommand(now: Date = Date()) -> VoiceCommand? {
+        guard let last = queue.last, now.timeIntervalSince(last.enqueuedAt) < Self.amendWindow else { return nil }
+        return last.command
+    }
+
+    static let amendWindow: TimeInterval = 8
+
+    /// Replaces the last queued command (still not started) with its amended version.
+    @discardableResult
+    func amendLastQueued(with command: VoiceCommand) -> Bool {
+        guard let last = queue.last else { return false }
+        queue[queue.count - 1] = Item(id: last.id, command: command, enqueuedAt: last.enqueuedAt)
+        onEvent?(.queueChanged)
+        return true
+    }
+
     func respondToApproval(_ approve: Bool) {
         guard let p = pendingApproval else { return }
         pendingApproval = nil
