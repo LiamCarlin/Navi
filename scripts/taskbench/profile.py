@@ -442,7 +442,8 @@ def report(rows, logs: Path) -> str:
                               f"sees it; Page ready → first step done median {fmt(pct(rf, .5))}, p90 {fmt(pct(rf, .9))}",
         "chrome_connect": f"`Connecting to Chrome…` → `Page ready` median {fmt(pct(cc, .5))}, p90 {fmt(pct(cc, .9))}, "
                           f"max {fmt(max(cc) if cc else None)} (every browser run pays it; includes the start page's settle)",
-        "coach": f"{len(per_run('coach'))} runs stopped to ask Claude, median {fmt(pct(per_run('coach'), .5))} per run",
+        "coach": f"{len(per_run('coach'))} runs stopped to ask Claude, median {fmt(pct(per_run('coach'), .5))} per run; "
+                 f"{sum(1 for r in rows if r['times'].get('coach', 0) > 0 and r['outcome'] == 'success')} of them then succeeded",
         "jev": f"{len(jl)} calls, median {fmt(pct(jl, .5))}, p90 {fmt(pct(jl, .9))} — fast; it adds up only through step count",
         "writer": f"median {fmt(pct(per_run('writer'), .5))} of Claude per native run (reading the screen to stop / answer / write field text)",
         "native_open": f"`Opening <app>` → first AX snapshot median {fmt(pct(no, .5))}, max {fmt(max(no) if no else None)}",

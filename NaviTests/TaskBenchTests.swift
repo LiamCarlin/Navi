@@ -110,6 +110,7 @@ import AppKit
         var dropped: [String] = []
         var route: Route?
         var plannerStart: String?
+        var plannerOK: Bool?
         var checks: [(name: String, ok: Bool?, detail: String)] = []
         var voiceJevCalls = 0
         var voiceJevMs = 0
@@ -532,6 +533,15 @@ import AppKit
                 }
             }
             Self.check(t, &o, hasMemory: memory != nil)
+            if let ps = o.plannerStart, t.expect.start_hosts != nil || t.expect.app != nil {
+                // The typed (⌘Space) path: does Claude's plan start where the task belongs? Reported apart from the voice pass.
+                if ps.hasPrefix("app: ") {
+                    let bundles = AppSkills.skill(appName: String(ps.dropFirst(5)))?.bundleIDs ?? []
+                    o.plannerOK = (t.expect.app ?? []).contains { w in w.map(bundles.contains) ?? (ps == "app: front app") }
+                } else {
+                    o.plannerOK = Self.hostMatch(ps, t.expect.start_hosts ?? [])
+                }
+            }
             results.append(o)
         }
         }
@@ -565,6 +575,11 @@ import AppKit
         }
         let p = rs.filter(\.passed).count
         L.append("| **all** | \(rs.count) | \(p) | **\(rs.isEmpty ? 0 : 100 * p / rs.count)%** |")
+        let planned = rs.compactMap(\.plannerOK)
+        if !planned.isEmpty {
+            L.append("")
+            L.append("Typed path (TaskPlanner, Claude): \(planned.filter { $0 }.count)/\(planned.count) runs start in the expected place (no screen memory in the planner under the test host).")
+        }
         L.append("")
         L.append("| id | passed | heard as | starts | failed checks (first failing run) |")
         L.append("|---|---|---|---|---|")
@@ -574,9 +589,10 @@ import AppKit
             let k = runs.filter(\.passed).count
             let heard = o.commands.map { c in c.kind + (c.surface.map { "/\($0)" } ?? "") + (c.kind == "task" ? "" : " ‘\(c.goal ?? c.app ?? c.url ?? "")’") }.joined(separator: " + ")
             let pl = place(o)
-            let starts = pl.surface == "browser" ? (pl.url ?? "?") : pl.surface == "native_app" ? (pl.app ?? "front app") : "—"
+            var starts = String((pl.surface == "browser" ? (pl.url ?? "?") : pl.surface == "native_app" ? (pl.app ?? "front app") : "—").prefix(70))
+            if let ps = o.plannerStart { starts += " · planner \(o.plannerOK.map { $0 ? "✓" : "✗" } ?? "") \(ps.prefix(60))" }
             let failed = o.checks.filter { $0.ok == false }.map { "\($0.name): \($0.detail)" }.joined(separator: "; ")
-            L.append("| \(o.id) | \(k == runs.count ? "PASS" : "FAIL") \(k)/\(runs.count) | \(heard.isEmpty ? "nothing" : heard) | \(starts.prefix(70)) | \(failed.replacingOccurrences(of: "|", with: "/")) |")
+            L.append("| \(o.id) | \(k == runs.count ? "PASS" : "FAIL") \(k)/\(runs.count) | \(heard.isEmpty ? "nothing" : heard) | \(starts) | \(failed.replacingOccurrences(of: "|", with: "/")) |")
         }
         let waits = rs.flatMap { $0.commands.filter { $0.verdict != nil }.map(\.silenceAtCommitMs) }.sorted()
         let jevMs = rs.filter { $0.voiceJevCalls > 0 }.map { $0.voiceJevMs / $0.voiceJevCalls }.sorted()
@@ -613,6 +629,7 @@ import AppKit
                               "planner": r.planner, "grounded": r.grounded ?? NSNull(), "routine": r.routine ?? NSNull(), "notes": r.notes, "jev_ms": r.jevMs] as [String: Any]
             }
             if let ps = o.plannerStart { d["planner_start"] = ps }
+            if let ok = o.plannerOK { d["planner_ok"] = ok }
             d["checks"] = o.checks.map { ["name": $0.name, "ok": $0.ok.map { $0 as Any } ?? NSNull(), "detail": $0.detail] as [String: Any] }
             return d
         }
