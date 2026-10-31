@@ -30,6 +30,8 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var isAnswering = false
     @Published private(set) var agentRun: AgentRunHandle?
     @Published private(set) var agentEvents: [AgentEvent] = []
+    /// The finished run's typed outcome (`AgentRunHandle.verdict`); `.needsUser` shows as a question, not a failure.
+    @Published private(set) var agentVerdict: RunVerdict?
     /// The task of the current or most recent run (survives `agentRun` ending).
     @Published private(set) var agentTaskTitle: String = ""
     /// True once the user has moved on from a finished run (typed a new query,
@@ -439,6 +441,7 @@ final class PanelViewModel: ObservableObject {
         agentTask?.cancel()
         agentRun = handle
         agentEvents = []
+        agentVerdict = nil
         agentTaskTitle = handle.task
         agentDismissed = false
         pendingApproval = nil
@@ -462,6 +465,7 @@ final class PanelViewModel: ObservableObject {
                 case .screenshot(let img): self.agentScreenshot = img
                 case .needsApproval(let id, let d, let r): self.pendingApproval = (id, d, r)
                 case .completed, .failed, .cancelled:
+                    self.agentVerdict = handle.verdict
                     self.agentEvents.append(ev)
                     self.agentRun = nil
                     self.pendingApproval = nil

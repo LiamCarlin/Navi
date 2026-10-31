@@ -23,6 +23,8 @@ final class VoiceCommandExecutor {
     enum Outcome: Equatable, Sendable {
         case done(String)
         case failed(String)
+        /// The run stopped on something only the user can do or answer (verdict `.needsUser`).
+        case needsYou(String)
         case cancelled
     }
 
@@ -190,6 +192,7 @@ final class VoiceCommandExecutor {
         switch outcome {
         case .done(let s): result = s.isEmpty ? "done" : s
         case .failed(let m): result = "failed: \(m)"
+        case .needsYou(let m): result = "waiting for the user: \(m)"
         case .cancelled: result = "stopped by the user"
         }
         recent.append("“\(item.command.spoken)” → \(Self.oneLine(result, max: 220))")
@@ -499,7 +502,7 @@ final class VoiceCommandExecutor {
                 pendingApproval = (d, r, { approve in handle.respond(approve ? .approve(id) : .deny(id)) })
                 onEvent?(.needsApproval(item, description: d, risk: r))
             case .completed(let s): outcome = .done(s)
-            case .failed(let m): outcome = .failed(m)
+            case .failed(let m): outcome = handle.verdict == .needsUser ? .needsYou(m) : .failed(m)
             case .cancelled: outcome = timedOutRun == handle.id ? .failed("Stalled with no progress for \(Self.taskIdleMs / 1000) s and was stopped") : .cancelled
             }
         }

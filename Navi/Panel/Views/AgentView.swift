@@ -65,7 +65,8 @@ struct AgentView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            AgentStatusChip(isRunning: isRunning, outcome: outcome, awaitingApproval: vm.pendingApproval != nil)
+            AgentStatusChip(isRunning: isRunning, outcome: outcome, awaitingApproval: vm.pendingApproval != nil,
+                            needsUser: vm.agentVerdict == .needsUser)
             Text(taskTitle)
                 .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(.primary)
@@ -107,7 +108,8 @@ struct AgentView: View {
                         AgentEventRow(event: ev,
                                       isLatest: idx == lastStepIndex && outcome == nil,
                                       isRunning: isRunning,
-                                      isLast: idx == vm.agentEvents.count - 1)
+                                      isLast: idx == vm.agentEvents.count - 1,
+                                      needsUser: vm.agentVerdict == .needsUser)
                     }
                     if vm.agentEvents.isEmpty {
                         HStack(spacing: 8) {
@@ -137,9 +139,10 @@ struct AgentStatusChip: View {
     let isRunning: Bool
     let outcome: AgentEvent?
     let awaitingApproval: Bool
+    var needsUser = false
 
     private var color: Color {
-        if awaitingApproval { return .orange }
+        if awaitingApproval || needsUser { return .orange }
         switch outcome {
         case .completed: return .green
         case .failed: return .red
@@ -150,6 +153,7 @@ struct AgentStatusChip: View {
 
     private var symbol: String {
         if awaitingApproval { return "hand.raised.fill" }
+        if needsUser { return "questionmark" }
         switch outcome {
         case .completed: return "checkmark"
         case .failed: return "xmark"
@@ -178,6 +182,7 @@ struct AgentEventRow: View {
     let isLatest: Bool
     let isRunning: Bool
     let isLast: Bool
+    var needsUser = false
 
     var body: some View {
         switch event {
@@ -226,6 +231,14 @@ struct AgentEventRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Done").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.green)
                     Text(summary).font(.system(size: 13)).lineSpacing(2.5)
+                }
+            }
+        case .failed(let message) where needsUser:
+            card(tint: .orange, icon: "questionmark.circle.fill") {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Needs you").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.orange)
+                    Text(DeveloperMode.isEnabled ? message : PanelWording.userFacing(message))
+                        .font(.system(size: 13)).lineSpacing(2.5)
                 }
             }
         case .failed(let message):

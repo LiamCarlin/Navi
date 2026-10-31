@@ -695,6 +695,9 @@ final class VoiceSession: ObservableObject {
             case .failed(let m):
                 showOutcome(DeveloperMode.isEnabled ? m : PanelWording.userFacing(m), ok: false)
                 VoiceSounds.play(.failed)
+            case .needsYou(let m):
+                showOutcome(DeveloperMode.isEnabled ? m : PanelWording.userFacing(m), ok: true)
+                VoiceSounds.play(.attention)
             case .cancelled:
                 showOutcome("Stopped", ok: true)
             }
