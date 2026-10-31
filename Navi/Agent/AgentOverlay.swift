@@ -21,14 +21,16 @@ final class AgentOverlay {
     }
 
     private let model = Model()
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private let background: Bool
+    private let linger: Double
     private var hideTask: Task<Void, Never>?
     static let lingerSeconds: Double = 6
 
-    init(onStop: @escaping () -> Void, background: Bool = false) {
+    init(onStop: @escaping () -> Void, background: Bool = false, linger: Double = AgentOverlay.lingerSeconds) {
         model.onStop = onStop
         self.background = background
+        self.linger = linger
     }
 
     private var working: String { background ? "Navi is working in the background…" : "Navi is working…" }
@@ -63,7 +65,9 @@ final class AgentOverlay {
 
     /// Shows how the run ended and hides itself after `lingerSeconds`. The
     /// user may have been looking elsewhere the whole time; this is their
-    /// cue to press "Show" for the details.
+    /// cue to press "Show" for the details. The timer keeps the overlay alive:
+    /// the run lets go of it right after this call, and a weak timer then never
+    /// hid the pill (it stayed up for good).
     func finish(_ outcome: Outcome, text: String) {
         guard panel != nil else { return }
         model.waitingForApproval = false
@@ -74,10 +78,10 @@ final class AgentOverlay {
         }
         model.text = one.count > 90 ? String(one.prefix(90)) + "…" : one
         hideTask?.cancel()
-        hideTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.lingerSeconds))
+        hideTask = Task { [self] in
+            try? await Task.sleep(for: .seconds(linger))
             guard !Task.isCancelled else { return }
-            self?.hide()
+            hide()
         }
     }
 

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import AppKit
 @testable import Navi
 
 /// Background mode: the agent addresses one app's window instead of the
@@ -86,5 +87,37 @@ struct BackgroundAgentTests {
         #expect(InputController.Route.process(pid: 1, window: nil).isBackground)
         #expect(!InputController.Route.hid.isBackground)
         #expect(InputController.Route.process(pid: 1, window: 7) == .process(pid: 1, window: 7))
+    }
+}
+
+/// The outcome pill lingers after a background run, then hides itself — even though the
+/// run lets go of the overlay right after `finish` (it once stayed on screen for good).
+@MainActor
+struct AgentOverlayLingerTests {
+    /// The test host has no window of its own, and SwiftUI quits an app whose last window
+    /// goes away: an invisible one stays up so hiding the pill doesn't end the test run.
+    private static let keepAlive: NSWindow = {
+        let w = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 1, height: 1),
+                         styleMask: [.borderless], backing: .buffered, defer: false)
+        w.alphaValue = 0
+        w.isReleasedWhenClosed = false
+        w.orderFrontRegardless()
+        return w
+    }()
+
+    /// Like `AgentRun.main`'s ending: show, finish, let go. Returns the pill's window.
+    private func runAndLetGo() -> NSPanel? {
+        let overlay = AgentOverlay(onStop: {}, background: true, linger: 0.1)
+        overlay.show(step: 1, maxSteps: 10)
+        overlay.finish(.completed, text: "I found several Wingstop items under $20")
+        return overlay.panel
+    }
+
+    @Test func outcomePillHidesAfterTheRunLetsGo() async throws {
+        _ = Self.keepAlive
+        let panel = try #require(runAndLetGo())
+        #expect(panel.isVisible)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!panel.isVisible)
     }
 }
