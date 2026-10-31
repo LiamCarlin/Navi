@@ -52,10 +52,10 @@ else
 fi
 [[ -d "$SRC" ]] || { echo "Build product missing: $SRC"; exit 1; }
 
-if pgrep -x Navi >/dev/null; then
+# Only the installed copy: other checkouts' Debug builds and test hosts are "Navi" too.
+if [[ -n "$(installed_app_pids "$DEST")" ]]; then
   echo "▸ Quitting running Navi…"
-  osascript -e 'tell application "Navi" to quit' >/dev/null 2>&1 || pkill -x Navi || true
-  sleep 0.5
+  installed_app_quit "$DEST" || true
 fi
 
 echo "▸ Installing to $DEST…"
@@ -73,7 +73,9 @@ echo "✓ Installed Navi $VERSION at $DEST · browser runtime: $RUNTIME · $(_na
 
 if (( LAUNCH )); then
   echo "▸ Launching…"
-  open "$DEST"
+  # -n: launch this bundle even while another checkout's Navi (same bundle id) runs — plain `open`
+  # would just bring that one forward. Not when the old copy refused to quit (no second instance).
+  if [[ -z "$(installed_app_pids "$DEST")" ]]; then open -n "$DEST"; else open "$DEST"; fi
 fi
 
 cat <<'EOF'

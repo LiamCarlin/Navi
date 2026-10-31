@@ -50,5 +50,17 @@ check "same commit is fine" '[[ $? -eq 0 ]]'
 check "newer checkout is fine" '[[ $? -eq 0 ]]'
 git worktree remove --force "$OLDTREE"
 
+# 5. Quitting the installed app touches only that copy, never another "Navi" (a worktree's Debug build).
+# (`sleep` running under each app's executable path: what pgrep -f sees for a real launch)
+( exec -a "$STATE/apps-a/Navi.app/Contents/MacOS/Navi" sleep 60 ) & pi=$!
+( exec -a "$STATE/apps-b/Navi.app/Contents/MacOS/Navi" sleep 60 ) & po=$!
+sleep 0.3
+pids=$(source scripts/install-guard.sh && installed_app_pids "$STATE/apps-a/Navi.app")
+check "the installed copy is found by its path" '[[ "$pids" == "$pi" ]]'
+( source scripts/install-guard.sh && installed_app_quit "$STATE/apps-a/Navi.app" )
+check "quitting it stops that copy" '! kill -0 $pi 2>/dev/null'
+check "another Navi keeps running" 'kill -0 $po 2>/dev/null'
+kill $po 2>/dev/null; wait $pi $po 2>/dev/null
+
 rm -rf "$STATE"
 exit $fail

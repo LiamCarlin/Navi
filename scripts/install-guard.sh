@@ -95,3 +95,32 @@ install_record() {
   mkdir -p "$NAVI_INSTALL_STATE"
   { echo "$head"; echo "$(pwd) @ $(_navi_head_desc) · $(date '+%Y-%m-%d %H:%M:%S')"; } > "$NAVI_INSTALL_RECORD"
 }
+
+# The running copies of the app installed at $1, matched by executable path — never by name: another
+# checkout's Debug build or a test host is also "Navi" with the same bundle id, and quitting "Navi"
+# by name once hit that instead, leaving the old installed build running.
+installed_app_pids() {
+  local exe="$1/Contents/MacOS/Navi"
+  pgrep -f -- "^${exe//./\\.}( |\$)" 2>/dev/null || true
+}
+
+# Quits those copies: a quit to each pid (so Navi shuts down cleanly), up to 5 s, then SIGTERM.
+installed_app_quit() {
+  local app="$1" pid i
+  local -a pids; pids=($(installed_app_pids "$app"))
+  (( ${#pids} )) || return 0
+  for pid in $pids; do
+    osascript -l JavaScript -e "ObjC.import('AppKit'); var a = \$.NSRunningApplication.runningApplicationWithProcessIdentifier($pid); if (a) a.terminate;" >/dev/null 2>&1 || true
+  done
+  for i in {1..20}; do
+    [[ -z "$(installed_app_pids "$app")" ]] && return 0
+    sleep 0.25
+  done
+  for pid in $(installed_app_pids "$app"); do kill -TERM "$pid" 2>/dev/null || true; done
+  for i in {1..8}; do
+    [[ -z "$(installed_app_pids "$app")" ]] && return 0
+    sleep 0.25
+  done
+  echo "⚠︎ $app is still running (pid $(installed_app_pids "$app" | tr '\n' ' '))" >&2
+  return 1
+}
