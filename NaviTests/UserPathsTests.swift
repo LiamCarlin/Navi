@@ -290,6 +290,72 @@ import Testing
         #expect((obj["steps"] as? [[String: Any]])?.first?["intent"] as? String == "signInWithGoogle")
     }
 
+    // MARK: Bench failures (2026-10-31), as rules
+
+    /// "order me a randome chipotle bowl" opened his Onshape "Yarn Bowl"; "open the hci notes" opened Apple
+    /// Notes although the HCI doc is known: what a task names must explain the thing it opens.
+    @Test func aThingOpensOnlyWhenItExplainsTheTask() {
+        func thing(_ name: String, _ type: String, _ place: UserKnowledge.Place) -> UserKnowledge.Thing {
+            UserKnowledge.Thing(name: name, type: type, sessions: 6, days: 4, lastSeen: Self.now, places: [place], related: [], workflow: [],
+                                tokens: UserKnowledge.tokens(name))
+        }
+        let things = [
+            thing("Yarn Bowl", "document", .init(key: "cad.onshape.com", app: "Google Chrome", isWeb: true, url: "https://cad.onshape.com/documents/yarn/w/1", sessions: 6)),
+            thing("HCI", "project", .init(key: Self.messages, app: "Messages", isWeb: false, url: nil, sessions: 6)),
+            thing("HCI Concept Testing Engagements", "document",
+                  .init(key: "docs.google.com/document", app: "Google Chrome", isWeb: true, url: "https://docs.google.com/document/d/HCI1/edit", sessions: 6)),
+        ]
+        func start(_ t: String) -> String? { UserKnowledge.startURL(task: t, matches: UserKnowledge.matches(task: t, in: things), things: things) }
+        #expect(start("order me a randome chipotle bowl") == nil)              // an errand
+        #expect(start("show me the chipotle bowl") == nil)                     // "chipotle" is not the Yarn Bowl's
+        #expect(start("open the yarn bowl") == "https://cad.onshape.com/documents/yarn/w/1")
+        #expect(start("open the hci notes") == "https://docs.google.com/document/d/HCI1/edit")   // the project's own doc
+        #expect(PathWords.wantsAnyOne("order me a randome chipotle bowl"))
+    }
+
+    /// "open my canvas assignments for generative ai" grounded to a Babson course: when something carries
+    /// every name the task says, what carries none of them is no contender.
+    @Test func groundingKeepsWhatCarriesTheTasksNames() {
+        let now = TaskGroundingTests.now
+        func s(_ url: String, _ title: String, hoursAgo: Double) -> SessionRecord {
+            TaskGroundingTests.session(Self.chrome, "Google Chrome", url: url, title: title, hoursAgo: hoursAgo, minutes: 20)
+        }
+        let sessions = [s("https://babson.instructure.com/courses/9/assignments", "Assignments: Enterprise 2.0", hoursAgo: 1),
+                        s("https://babson.instructure.com/courses/9/assignments", "Assignments: Enterprise 2.0", hoursAgo: 2),
+                        s("https://canvas.olin.edu/courses/1083/assignments", "Assignments: Generative AI", hoursAgo: 30)]
+        let task = "open my canvas assignments for generative ai"
+        let cs = TaskGrounding.candidates(task: task, scope: TaskGrounding.scope(of: task, now: now), sessions: sessions,
+                                          pageTitles: [:], things: [], now: now)
+        #expect(!cs.isEmpty && cs.allSatisfy { $0.url?.contains("olin") == true })
+    }
+
+    /// The start a routine or path gives a run, shared by the agent and the task bench.
+    @Test func whereAMatchStartsARun() throws {
+        let p = try #require(UserPaths.plan(task: "open assignment 3 for applied math on canvas", graph: Self.graph, named: ["canvas.olin.edu"]))
+        var thing = p; thing.source = "thing"
+        let m = UserRoutines.Match(routine: p.routine(task: "x"), fills: [], confidence: 0.8, source: "path", path: p)
+        let t = UserRoutines.Match(routine: thing.routine(task: "x"), fills: [], confidence: 0.8, source: "path", path: thing)
+        #expect(AgentRun.routineStartPlace(m, task: "open the hci notes", surface: .browser) == .page(p.startURL!))
+        #expect(AgentRun.routineStartPlace(m, task: "open the hci notes", surface: .nativeApp) == nil)
+        #expect(AgentRun.routineStartPlace(t, task: "open the hci notes", surface: .nativeApp) == .page(p.startURL!))   // the named thing wins
+        var low = m; low.confidence = 0.5
+        #expect(AgentRun.routineStartPlace(low, task: "x", surface: .browser) == nil)
+    }
+
+    /// Bench regressions: "email dhvan the hci notes" started on the doc, "email the registrar…" on a registrar
+    /// page, "play my focus playlist" in System Settings' Focus.
+    @Test func reachingSomeoneNeverStartsOnTheThingItSends() {
+        let g = PathGraph.build(actions: Self.history + [
+            Self.act(.click, "New Mail", role: "button", bundle: "com.microsoft.Outlook", app: "Microsoft Outlook", at: 20 * Self.day),
+            Self.act(.click, "Read", role: "link", url: "https://docs.google.com/document/d/HCI1/edit", title: "HCI Notes - Google Docs", at: 21 * Self.day),
+            Self.act(.click, "Focus", role: "row", bundle: "com.apple.systempreferences", app: "System Settings", path: "Sidebar", at: 22 * Self.day),
+            Self.act(.click, "Focus", role: "row", bundle: "com.apple.systempreferences", app: "System Settings", path: "Sidebar", at: 23 * Self.day)])
+        let mail = UserPaths.plan(task: "email dhvan the hci notes", graph: g, grounded: ("https://docs.google.com/document/d/HCI1/edit", nil, "HCI Notes"),
+                                  named: ["com.microsoft.Outlook"])
+        #expect(mail?.source == "intent" && mail?.bundleID == "com.microsoft.Outlook" && mail?.startURL == nil)
+        #expect(UserPaths.plan(task: "play my focus playlist", graph: g, places: ["com.apple.Music", "com.spotify.client"]) == nil)
+    }
+
     @Test func coverageCountsPlacesWithUsablePaths() {
         let c = UserPaths.coverage(Self.graph, minActions: 5)
         #expect(c.places >= 2 && c.withChains >= 2 && c.withChains <= c.withRepeats)
