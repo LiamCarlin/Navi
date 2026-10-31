@@ -1122,6 +1122,37 @@ USER_ROUTE_NOTE = ("How this user does this kind of task themselves, step by ste
                    "goal, do it their way. Never type this text.")
 
 
+def path_intent(label):
+    """Mirror of Navi's `PathIntent.of(label:)`: the kind of control a label names (UserPaths hook)."""
+    import re
+    w = set(re.findall(r"[^\W_]+", str(label or "").lower()))
+    if len(w) > 8:
+        return None
+    signs = bool(w & {"sign", "signin", "log", "login", "continue"})
+    if "google" in w and signs:
+        return "signInWithGoogle"
+    if "checkout" in w or {"check", "out"} <= w:
+        return "checkout"
+    cart = bool(w & {"cart", "bag", "basket"})
+    if cart and "add" in w:
+        return "addToCart"
+    if cart:
+        return "openCart"
+    if {"sign", "in"} <= w or "signin" in w or {"log", "in"} <= w or "login" in w:
+        return "signIn"
+    if "blank" in w or ("new" in w and w & {"document", "doc", "spreadsheet", "presentation"}):
+        return "newDocument"
+    if "compose" in w or ("new" in w and w & {"message", "email", "mail", "chat"}):
+        return "compose"
+    if {"new", "note"} <= w:
+        return "newNote"
+    if ("new" in w or "create" in w) and "event" in w:
+        return "newEvent"
+    if "search" in w and len(w) <= 4:
+        return "search"
+    return None
+
+
 class UserRoute:
     """The user's routine for this task (NAVI_USER_ROUTE_JSON: {"template", "times", "fills",
     "steps": [{kind, role, label, fixed, slot, site, shortcut, human}]}). Mirrors Navi's
@@ -1168,6 +1199,15 @@ class UserRoute:
         return fills or self.tokens(step["slot"])
 
     def label_matches(self, step, label):
+        # UserPaths hook: a pattern step (a kind of control the user uses on other sites) matches what a
+        # control does, on any page; a path's item needs every one of its words (numbers without leading zeros).
+        source = (self.route or {}).get("source")
+        if source == "pattern" and step.get("intent"):
+            return path_intent(label) == step["intent"]
+        if source == "path" and step.get("slot") is not None:
+            want = [t.lstrip("0") or t for t in self.tokens(step["slot"])]
+            have = {t.lstrip("0") or t for t in self.tokens(label)}
+            return bool(want) and all(w in have for w in want)
         if not step.get("slot"):
             key = lambda t: "".join(ch for ch in str(t or "").lower() if ch.isalnum())
             if key(label) and key(label) == key(step.get("label")):
@@ -1181,7 +1221,8 @@ class UserRoute:
 
     def targets(self, i, site, elements):
         step = self.steps[i]
-        if step.get("kind") not in ("click", "type") or step.get("site") != site:
+        anywhere = (self.route or {}).get("source") == "pattern"   # UserPaths hook
+        if step.get("kind") not in ("click", "type") or (step.get("site") != site and not anywhere):
             return []
         op = "TYPE_TEXT" if step["kind"] == "type" else "CLICK"
         pool = [e for e in elements if op in (e.get("operations") or [op]) and self.label_matches(step, e.get("label", ""))]

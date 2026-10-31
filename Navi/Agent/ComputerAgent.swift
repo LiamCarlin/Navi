@@ -325,7 +325,13 @@ final class AgentRun: @unchecked Sendable {
             }
             if let m = await routine {
                 routeMatch = m
-                handle.emit(.status("You've done this before (\(m.routine.count)×): \(m.routine.template) — following your steps"))
+                // UserPaths hook: a path is the user's usual way to the task's target, not a task they did.
+                if let p = m.path {
+                    handle.emit(.status(p.pattern ? "New here — looking for what you use elsewhere: \(p.theirPath.joined(separator: ", "))"
+                                                  : "Your usual way to \(p.target) (\(p.support)×): \(p.theirPath.joined(separator: " → "))"))
+                } else {
+                    handle.emit(.status("You've done this before (\(m.routine.count)×): \(m.routine.template) — following your steps"))
+                }
             }
             try checkCancelled()
             // Step 0 — the plan. Usually already answered by `prepare` while the user was typing.
@@ -399,7 +405,10 @@ final class AgentRun: @unchecked Sendable {
         // start it — their app, or their page on the site — unless the task names another app.
         if let m = routeMatch, m.confidence >= 0.6, !config.useCurrentTab, let start = Self.routineStart(m, task: originalTask) {
             switch start {
-            case .page(let url) where surface != .nativeApp && ComputerAgent.browserRunner != nil:
+            // UserPaths hook: the page of a thing the task names in their own work ("open the hci notes") wins
+            // over an app guessed from a common word ("notes"), unless the task names that app.
+            case .page(let url) where (surface != .nativeApp || (m.path?.source == "thing" && AppSkills.mentioned(in: originalTask) == nil))
+                && ComputerAgent.browserRunner != nil:
                 Log.agent.info("UserRoutines: starting on the user's page for this routine")
                 var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
                 plan.steps[0].url = url
