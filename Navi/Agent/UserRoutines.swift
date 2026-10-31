@@ -43,6 +43,8 @@ final class UserRoutines: @unchecked Sendable {
         lock.unlock()
         // Mined at launch from what is already stored: routines exist before the next digest.
         if fresh, let r { Task.detached(priority: .utility) { r.rebuild() } }
+        // …and the user's paths through each app and site (`UserPaths`), from the same store.
+        UserPaths.install(store: store)
     }
 
     /// Integration hook (`ComputerAgent.init`): the Jev client the match asks.
@@ -88,13 +90,16 @@ final class UserRoutines: @unchecked Sendable {
         }
         invalidate()
         Self.clearMatches()
+        // New actions since launch → the path graph again (local, ~0.2 s).
+        UserPaths.installedRebuild(now: now)
         Log.memory.info("Routines: \(mined.count) from \(procedures.count) procedures (\(mined.filter { $0.count > 1 }.count) done more than once)")
         return mined.count
     }
 
     /// The agent followed `key`: remember whether the run worked.
     static func noteOutcome(key: String, worked: Bool) {
-        guard let r = current else { return }
+        // A path (`UserPaths`) is no stored routine: its record is the actions themselves.
+        guard !key.hasPrefix("path:"), let r = current else { return }
         try? r.store.noteRoutineOutcome(key: key, worked: worked)
         r.invalidate()
     }
@@ -201,12 +206,17 @@ final class UserRoutines: @unchecked Sendable {
 
     /// Routines the task could be another instance of, best first. `places`: bundle ids or
     /// site keys the task implies (its app, the app the person is reached in, the frontmost).
-    static func candidates(task: String, routines: [Routine], places: Set<String> = [], limit: Int = maxCandidates) -> [Candidate] {
+    static func candidates(task: String, routines: [Routine], places: Set<String> = [], named: Set<String> = [],
+                           limit: Int = maxCandidates) -> [Candidate] {
         let words = taskWords(task).subtracting(functionWords)
         guard !words.isEmpty else { return [] }
         let taskVerb = verb(TaskGrounding.withoutDictation(task))
         var out: [Candidate] = []
         for r in routines where !r.isDiscredited {
+            // Place first: a routine done in another app or site than the one the task names is
+            // another task, however its words match ("sign into DoorDash with Google" is not the
+            // Atlassian Google sign-in). Such kinds of control reach the run as `UserPaths` patterns.
+            guard isInPlace(r, named: named) else { continue }
             let slots = r.slotWords
             let place = Set(RoutineMiner.tokens(r.appName + " " + (r.site ?? "")))
             let fits = (r.goals + [r.template]).compactMap { fit(words: words, phrasing: $0, slots: slots, place: place, taskVerb: taskVerb) }.filter(accepts)
@@ -230,8 +240,76 @@ final class UserRoutines: @unchecked Sendable {
         var routine: Routine
         var fills: [String]
         var confidence: Double
+        /// "jev", "local" (a routine); "path" (`UserPaths`: the user's way to the task's target).
         var source: String
-        var route: UserRoute { UserRoute(routine: routine, fills: fills, confidence: confidence) }
+        /// The path behind a "path" match.
+        var path: PathPlan? = nil
+        var isPath: Bool { path != nil }
+        var route: UserRoute {
+            var r = UserRoute(routine: routine, fills: fills, confidence: confidence)
+            if let p = path { r.fromPath = true; r.pattern = p.pattern; r.theirPath = p.theirPath }
+            return r
+        }
+    }
+
+    // MARK: Place
+
+    /// Labels of a host that are no brand ("docs" of docs.google.com, "app" of app.slack.com).
+    static let hostNoise: Set<String> = ["www", "app", "my", "web", "m", "en", "us", "docs", "mail", "drive", "calendar", "sites", "maps",
+                                         "photos", "meet", "chat", "news", "play", "store", "shop", "order", "online", "accounts", "login",
+                                         "auth", "support", "help", "home", "api", "cdn", "com", "org", "net", "edu", "io", "ai", "co", "uk",
+                                         "gov", "dev", "cloud", "the", "new", "go", "book", "secure", "portal", "google", "apple", "microsoft"]
+
+    /// A site's own name ("doordash" of doordash.com, "mcmaster" of mcmaster.com): a label of its
+    /// host that is no ordinary word ("start.godaddy.com" is not named by "start"). Apps and web
+    /// apps with a playbook are named through `AppSkills` instead ("canvas", "slack").
+    static func brand(of site: String) -> String? {
+        let host = site.split(separator: "/").first.map(String.init) ?? site
+        return host.split(separator: ".").map(String.init).first(where: isBrand)
+    }
+
+    /// Host labels that are ordinary words: a task saying them names no site.
+    static let ordinaryWords: Set<String> = ["start", "account", "about", "info", "blog", "learn", "community", "forum", "status", "console",
+                                             "admin", "dashboard", "studio", "platform", "labs", "share", "read", "watch", "live", "today",
+                                             "time", "food", "world", "help", "photo", "music", "video", "games", "game", "school", "class",
+                                             "student", "students", "pay", "money", "health", "news", "mobile", "cloud", "data", "code",
+                                             "design", "free", "open", "best", "sale", "deal", "deals", "online", "store", "golf", "course"]
+
+    /// The places a task names outright: an app or web app by name ("in slack", "on doordash"),
+    /// or a site of the user's by its own name (`sites`). A browser named is no place for a site.
+    static func namedPlaces(for task: String, sites: [String] = []) -> Set<String> {
+        var out = Set<String>()
+        let words = Set(RoutineMiner.tokens(TaskGrounding.withoutDictation(task)))
+        var skillWords = Set<String>()
+        if let s = AppSkills.mentioned(in: task), !s.bundleIDs.contains(where: AXSnapshotter.isBrowser) {
+            out.formUnion(s.bundleIDs)
+            out.formUnion(s.hosts)
+            skillWords = Set(([s.name] + s.aliases).flatMap(RoutineMiner.tokens).filter { $0.count >= 4 && !hostNoise.contains($0) })
+        }
+        for site in sites {
+            let labels = (site.split(separator: "/").first.map(String.init) ?? site).split(separator: ".").map(String.init)
+            // The user's own instance of a named web app ("canvas" → canvas.olin.edu), or a site by its own name.
+            if !skillWords.isEmpty, labels.contains(where: skillWords.contains) { out.insert(site); continue }
+            if labels.contains(where: { words.contains($0) && isBrand($0) }) { out.insert(site) }
+        }
+        return out
+    }
+
+    static func isBrand(_ label: String) -> Bool {
+        label.count >= 4 && !hostNoise.contains(label) && !ordinaryWords.contains(label)
+            && (!PathWords.kindWords.contains(label) || appNames.contains(label))
+    }
+
+    /// App names among the generic task words: a site carrying one is named by it ("canvas.olin.edu").
+    static let appNames: Set<String> = ["slack", "outlook", "gmail", "canvas", "github", "discord", "whatsapp", "claude", "notion", "linkedin",
+                                        "zoom", "teams", "onshape"]
+
+    /// May routine `r` be followed for a task that names `named`? Yes when it names nothing, or
+    /// when the routine's own site or app is one of them.
+    static func isInPlace(_ r: Routine, named: Set<String>) -> Bool {
+        guard !named.isEmpty else { return true }
+        if let site = r.site { return named.contains { PathGraph.Scope.samePlace(site, $0) } }
+        return named.contains(r.bundleID)
     }
 
     static let note = "Tasks this user has done before on this computer, each with the steps they took (their own clicks). "
@@ -294,7 +372,12 @@ final class UserRoutines: @unchecked Sendable {
     }
 
     /// The routine `task` is another instance of, settled once, ≤ `timeout` s.
-    static func match(task: String, timeout: Double = 1.5) async -> Match? {
+    /// `memory`/`jev`: a memory of the caller's (the task bench's copy) instead of the installed one —
+    /// the same code, uncached.
+    static func match(task: String, timeout: Double = 1.5, memory: ScreenMemory? = nil, jev: JevClient? = nil) async -> Match? {
+        if let memory {
+            return await resolve(task: task, routines: memory.routines?.routines() ?? [], jev: jev, memory: memory, cached: false)
+        }
         guard let r = current else { return nil }
         let key = cacheKey(task)
         guard !key.isEmpty else { return nil }
@@ -303,7 +386,7 @@ final class UserRoutines: @unchecked Sendable {
         if let c = cache[key], Date().timeIntervalSince(c.at) < cacheTTL { lock.unlock(); return c.m }
         if let running = inflight[key] { t = running } else {
             let jev = jevClient
-            t = Task(priority: .userInitiated) { await resolve(task: task, routines: r.routines(), jev: jev) }
+            t = Task(priority: .userInitiated) { await resolve(task: task, routines: r.routines(), jev: jev, memory: ScreenMemory.live) }
             inflight[key] = t
         }
         lock.unlock()
@@ -321,16 +404,27 @@ final class UserRoutines: @unchecked Sendable {
 
     /// The places a task implies: the app it names or implies, the app the person it names is
     /// reached in, a site it names.
-    static func places(for task: String) -> Set<String> {
+    static func places(for task: String, memory: ScreenMemory? = ScreenMemory.live) -> Set<String> {
         var out = Set<String>()
         if let s = AppSkills.mentioned(in: task) { out.formUnion(s.bundleIDs); if let h = s.hosts.first { out.insert(h) } }
         for s in AppSkills.inferApps(for: task, frontmostBundleID: nil).prefix(2) { out.formUnion(s.bundleIDs) }
-        if let chat = UserKnowledge.liveChannelApp(for: task) { out.insert(chat) }
+        if let chat = memory?.channelApp(for: task) { out.insert(chat) }
         return out
     }
 
-    private static func resolve(task: String, routines: [Routine], jev: JevClient?) async -> Match? {
-        let cs = candidates(task: task, routines: routines, places: places(for: task))
+    private static func resolve(task: String, routines: [Routine], jev: JevClient?, memory: ScreenMemory?, cached: Bool = true) async -> Match? {
+        let paths = memory?.paths
+        let sites = (paths?.graph?.sites ?? []) + routines.compactMap(\.site)
+        let named = namedPlaces(for: task, sites: sites)
+        let implied = places(for: task, memory: memory)
+        // The app the person is reached in ("text joão" → WhatsApp) is as good as named, for the path.
+        let reach = named.isEmpty ? memory?.channelApp(for: task) : nil
+        // Routines too: "message X" is followed in the app they reach X in, never in Slack on the web
+        // because a Slack-web routine shares the words.
+        let routinePlaces = reach.map { named.union([$0]) } ?? named
+        // What the task points at in the user's own work (usually settled while typing), in parallel.
+        async let grounding = cached ? TaskGrounding.ground(task: task, timeout: 1.0) : TaskGrounding.ground(task: task, memory: memory, jev: jev)
+        let cs = candidates(task: task, routines: routines, places: implied, named: routinePlaces)
         var result: Match?
         if !cs.isEmpty {
             if let jev, jev.isConfigured {
@@ -347,16 +441,55 @@ final class UserRoutines: @unchecked Sendable {
                 result = Match(routine: c.routine, fills: c.fills, confidence: 0.6, source: "local")
             }
         }
-        store(result, for: task)
+        // The user's own path to what the task points at (`UserPaths`): the primary plan unless a
+        // routine of theirs for this very task, in the same place, was done more than once.
+        var g: UserPaths.Grounding? = await grounding.map { ($0.thing.url, $0.thing.bundleID, $0.thing.name) }
+        // Not grounded, but the task names a thing memory knows ("open the hci notes" → that page, not the
+        // Notes app): its page is the target — unless the task reaches someone (then it is what to send).
+        if g == nil, !TaskGrounding.isCommunication(task), !TaskGrounding.isErrand(task),
+           let m = memory?.knowledge.matches(for: task).first(where: { $0.thing.type != "person" && $0.thing.url(for: task) != nil }) {
+            g = (m.thing.url(for: task), nil, m.thing.name)
+        }
+        if let paths {
+            let t0 = Date()
+            // The people it names by their full name ("mikey" → "Mikey Ku"): their own chat, not a group listing them.
+            let people = (memory?.knowledge.matches(for: task) ?? []).filter { $0.thing.type == "person" }.prefix(2).map(\.thing.name)
+            let plan = paths.plan(task: task, grounded: g, places: implied, named: reach.map { [$0] } ?? named, people: Array(people))
+            if let plan { Log.agent.info("UserPaths: \(plan.source, privacy: .public) path, \(plan.steps.count) steps, support \(plan.support) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms") }
+            result = choose(routine: result, path: plan, task: task)
+        }
+        if cached { store(result, for: task) }
         return result
+    }
+
+    /// A routine of theirs for this very task done more than once (in the path's place) wins;
+    /// otherwise the user's path; a pattern only when nothing else is known.
+    static func choose(routine: Match?, path: PathPlan?, task: String) -> Match? {
+        let pathMatch = path.map { p in
+            Match(routine: p.routine(task: task), fills: [], confidence: p.confidence, source: "path", path: p)
+        }
+        guard let r = routine else { return pathMatch }
+        guard let p = path, !p.pattern else { return r }
+        let samePlace = p.site.map { s in r.routine.site.map { PathGraph.Scope.samePlace($0, s) } ?? false } ?? (r.routine.bundleID == p.bundleID)
+        if r.routine.count >= 2 && (samePlace || r.confidence >= 0.8) { return r }
+        if samePlace && r.confidence >= 0.8 { return r }
+        return pathMatch
     }
 
     // MARK: Planner and runner
 
     /// For the planner: the user's routines like this task (best ≤ 2), as steps.
     static func plannerContext(for task: String) -> [[String: Any]]? {
+        if let p = cachedMatch(for: task)?.path, !p.pattern {
+            return [["their_usual_path_to": p.target, "in": p.site ?? p.appName, "times": p.support,
+                     "path": p.theirPath, "steps_from_start": p.steps.map(\.human), "start_page": p.startURL ?? NSNull()]]
+        }
         let matched = cachedMatch(for: task).map { [$0.routine] }
-        let list = matched ?? current.map { candidates(task: task, routines: $0.routines(), places: places(for: task), limit: 2).map(\.routine) } ?? []
+        let list = matched ?? current.map { r in
+            let all = r.routines()
+            let named = namedPlaces(for: task, sites: (UserPaths.current?.graph?.sites ?? []) + all.compactMap(\.site))
+            return candidates(task: task, routines: all, places: places(for: task), named: named, limit: 2).map(\.routine)
+        } ?? []
         guard !list.isEmpty else { return nil }
         return list.map { r in
             ["task_they_did": r.goals.first ?? r.template, "in": r.site ?? r.appName, "times": r.count,
@@ -381,6 +514,14 @@ struct UserRoute: Sendable {
     private(set) var done = Set<Int>()
     /// Steps carried out directly (no Jev call).
     var followed = 0
+    /// The user's path to the task's target (`UserPaths`), not a stored routine: each step is
+    /// found only on its own page, and an item on the way must carry all of its words.
+    var fromPath = false
+    /// A kind of control as the user uses it on other sites: found by what it does (its
+    /// `PathIntent`) anywhere, marked for Jev, never pressed by code.
+    var pattern = false
+    /// The whole usual way, for Jev (`their_path`).
+    var theirPath: [String] = []
 
     static let lookahead = 2
     static let maxFollowed = 10
@@ -418,8 +559,24 @@ struct UserRoute: Sendable {
         return true
     }
 
+    /// `inPlace`, and for a path step its own page ("Assignments" on a course page, not the dashboard).
+    func isHere(_ step: RoutineStep, _ screen: CUScreen) -> Bool {
+        guard Self.inPlace(step, screen) else { return false }
+        guard fromPath, !pattern, let page = step.page, let url = screen.url, let here = RoutineMiner.pagePattern(url) else { return true }
+        return here == page
+    }
+
     /// Does `e`'s label show the step's control (with this run's slot words)?
     func labelMatches(_ step: RoutineStep, _ label: String) -> Bool {
+        // A pattern: any control that does the same kind of thing ("Continue with Google" for their "Sign in with Google").
+        if pattern, let want = PathIntent.of(label: step.label) { return PathIntent.of(label: label) == want }
+        // A path's item: every one of its words (an empty slot is an item the path cannot name).
+        if fromPath, let slot = step.slot {
+            let want = PathWords.tokens(slot)
+            guard !want.isEmpty else { return false }
+            let have = Set(PathWords.tokens(label))
+            return want.allSatisfy(have.contains)
+        }
         guard step.slot != nil else {
             if CUFacts.matchesLiteral(label, step.label) { return true }
             let a = UserMoves.norm(label), b = UserMoves.norm(step.label)
@@ -446,7 +603,7 @@ struct UserRoute: Sendable {
     /// The controls on this screen that are step `i`'s (on screen first, then those scrolled away).
     func targets(_ i: Int, on screen: CUScreen) -> [AXElement] {
         let step = steps[i]
-        guard [.click, .type].contains(step.kind), Self.inPlace(step, screen) else { return [] }
+        guard [.click, .type].contains(step.kind), isHere(step, screen) else { return [] }
         let wantsField = step.kind == .type
         var pool = screen.snapshot.elements.filter { labelMatches(step, $0.label) && $0.isTextInput == wantsField && !$0.isSecure }
         if pool.isEmpty, !wantsField { pool = screen.offscreen.filter { labelMatches(step, $0.label) && !$0.isTextInput } }
@@ -473,10 +630,10 @@ struct UserRoute: Sendable {
         case .open:
             return Self.sameApp(step.label, screen) ? nil : .openApp(step.label)
         case .key, .submit:
-            guard Self.inPlace(step, screen) else { return nil }
+            guard isHere(step, screen) else { return nil }
             return step.shortcut.map { .key($0) }
         case .menu:
-            guard Self.inPlace(step, screen) else { return nil }
+            guard isHere(step, screen) else { return nil }
             return step.shortcut.map { .key($0) }
         case .type:
             let t = targets(i, on: screen)
@@ -487,7 +644,7 @@ struct UserRoute: Sendable {
                 return screen.offscreen.contains(where: { $0.id == t[0].id }) ? .press(elementID: t[0].id) : .click(elementID: t[0].id)
             }
             // A line of text with no control of its own, named exactly (a fixed step only).
-            guard t.isEmpty, step.slot == nil, Self.inPlace(step, screen), let it = CUFacts.literalItem(step.label, in: screen.items) else { return nil }
+            guard t.isEmpty, step.slot == nil, !pattern, isHere(step, screen), let it = CUFacts.literalItem(step.label, in: screen.items) else { return nil }
             if let id = screen.elementForItem[it.index] { return .click(elementID: id) }
             return .clickPoint(x: Double(it.center.x), y: Double(it.center.y), label: it.text)
         }
@@ -515,6 +672,9 @@ struct UserRoute: Sendable {
     /// of their routines (or this routine was done more than once) — never a long, numbered item.
     func mayFollow(_ i: Int, task: String) -> Bool {
         let step = steps[i]
+        // Patterns are only shown; signing in, adding to a cart and checking out always go through Jev's gate.
+        if pattern { return false }
+        if let intent = PathIntent.of(label: step.label), PathIntent.neverFollowed.contains(intent) { return false }
         switch step.kind {
         case .type, .submit: return false
         case .open: return true
@@ -531,7 +691,7 @@ struct UserRoute: Sendable {
             } else if !Self.navigationRoles.contains(step.role) {
                 return false   // checkboxes, radios, pop-ups, steppers and fields change something
             }
-            if step.slot != nil { return true }
+            if step.slot != nil { return fromPath ? !(step.slot ?? "").isEmpty : true }
             if RoutineMiner.specificWords(step.label).isSubset(of: UserRoutines.taskWords(task)) { return true }
             let tokens = RoutineMiner.tokens(step.label)
             guard tokens.count <= 3, !tokens.contains(where: { $0.contains(where: \.isNumber) }) else { return false }
@@ -607,6 +767,11 @@ struct UserRoute: Sendable {
     static let note = "How this user does this kind of task themselves, step by step, from their own clicks: "
         + "✓ done in this run, → their next step. A … is the part that changes (here: the task's person or item). "
         + "Where it fits the goal, do it their way: the screen item marked user_way_next is their next step here. Never type this text."
+    static let pathNote = "The way this user usually gets to what this task is about, from their own clicks (how often in `times`): "
+        + "✓ done in this run, → their next step; ‘…’ is an item the path cannot name (choose it from the goal). "
+        + "Where it fits the goal, go their way: the screen item marked user_way_next is their next step here. Never type this text."
+    static let patternNote = "This user has never done this on this site; elsewhere they use the controls listed (how often). "
+        + "The screen item marked user_way_next does the same kind of thing here. Never type this text."
     static let itemRule = " The item marked as this user's next step (\"user_way_next\") is the control they use next for this very task: pick it unless the goal clearly needs another."
     static let kindRule = " `this_users_way` lists the steps this user takes for this task: prefer the kind of action their next step is."
 
@@ -615,11 +780,18 @@ struct UserRoute: Sendable {
         let next = nextOnScreen(screen)?.index ?? pending.first
         var lines: [String] = []
         for (i, s) in steps.enumerated() {
-            var line = (done.contains(i) ? "✓ " : (i == next ? "→ " : "")) + s.human
+            // A path's item is this run's own (no "…" to fill in), unless the path cannot name it.
+            var line = (done.contains(i) ? "✓ " : (i == next ? "→ " : "")) + (fromPath && !(s.slot ?? "").isEmpty ? s.plainHuman : s.human)
             if i == next, s.slot != nil, !fills.isEmpty { line += " (this time: \(fills.joined(separator: " ")))" }
             lines.append(line)
         }
         var d: [String: Any] = ["note": Self.note, "they_did": Array(routine.goals.prefix(2)), "times": routine.count, "steps": lines]
+        if fromPath {
+            // Not a task they did: the way they usually get to this task's target.
+            d["note"] = pattern ? Self.patternNote : Self.pathNote
+            d["they_did"] = routine.template
+            if !theirPath.isEmpty { d["their_path"] = theirPath.joined(separator: " → ") }
+        }
         if let submit = steps.first(where: { $0.kind == .submit })?.shortcut { d["they_send_with"] = submit }
         return d
     }
@@ -646,18 +818,26 @@ struct UserRoute: Sendable {
     /// `{"template", "times", "fills", "steps": [{kind, role, label, slot, site, shortcut}]}` —
     /// only the routine's web steps; nil when it has none.
     func runnerJSON() -> String? {
-        let web = steps.filter { $0.site != nil && [.click, .type, .submit, .key].contains($0.kind) }
+        // A pattern's steps belong to no site: the runner looks for what they do on any page.
+        let web = steps.filter { ($0.site != nil || pattern) && [.click, .type, .submit, .key].contains($0.kind) }
         guard !web.isEmpty else { return nil }
-        let obj: [String: Any] = [
+        var obj: [String: Any] = [
             "template": routine.template, "times": routine.count, "fills": fills,
             "steps": web.map { s -> [String: Any] in
                 var d: [String: Any] = ["kind": s.kind.rawValue, "role": s.role, "label": s.label, "site": s.site ?? "",
                                         "fixed": s.fixedLabel, "human": s.human]
                 if let slot = s.slot { d["slot"] = slot }
                 if let k = s.shortcut { d["shortcut"] = k }
+                if pattern, let intent = PathIntent.of(label: s.label) { d["intent"] = intent.rawValue }
+                if fromPath, !(s.slot ?? "").isEmpty { d["human"] = s.plainHuman }
                 return d
             },
         ]
+        // UserPaths: the runner shows the whole usual way; a path's items need all their words.
+        if fromPath {
+            obj["source"] = pattern ? "pattern" : "path"
+            if !theirPath.isEmpty { obj["their_path"] = theirPath.joined(separator: " → ") }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }

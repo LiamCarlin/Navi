@@ -46,11 +46,11 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserPaths` (their own path from where a run starts to the task's target, from every click: the primary plan), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
-| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice) |
+| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice), `VoiceVocabulary` (the user's own words: recognizer hints + Jev-confirmed sound-alikes) |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
 `NaviServices.bootstrap()` wires concrete types. **Do not rename** `QueryRouter`,
@@ -86,8 +86,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     answers `kind` + speculative targets (`CUDecide`); `ActionExecutor` acts. Keep the action set
     **mutually exclusive** (Return/Escape/Back are kinds, never also shortcuts). When Jev stops
     (done, none, confidence < 0.4, 3 idle / 2 repeated actions, step limit) the writer
-    (`CUWriter`, Claude) reads the screen and answers or hands back one move (`focus`); it
-    never picks an action, and a third stall with no new page is final. Browser steps on
+    (`CUWriter`, Claude) reads the screen and answers with a typed `verdict` or hands back one
+    move (`focus`); it never picks an action. A stuck run (third stall, a focus Jev could not use,
+    no hand-offs/steps left with a next move) goes to the Claude takeover (see "Stuck → Claude
+    takeover" below), not to the end. Browser steps on
     Chromium still go to vendored jev-ultrafast on the DOM. `TaskPlanner` splits a task into
     single-surface steps (prefetched while typing). Run folders: `~/Library/Logs/Navi/runs/`.
     Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
@@ -230,11 +232,80 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     a sensible routine in ~150 ms for 12 of 13 tasks that were instances (missed "open my canvas
     assignments for generative ai", 0.47) and said none for weather / a web search; `UserMoves` marks are now per page pattern ("canvas.olin.edu/courses/#")
     once the user has ≥ 6 actions there, else per site.
+  - **User paths — the user's way to the target, primary** (`Agent/UserPaths`, built with `UserRoutines`): routines
+    match a task by its phrasing (few repeat; "sign into DoorDash with Google" once followed the Atlassian
+    Google sign-in), so the plan now starts from the task's *target*. `PathGraph.build` (local, at launch and
+    after each digest, ~1.3 s Debug for 43k actions; labels and paths only, never typed text) turns every
+    journal action into an abstract step — place (a site in a browser, else the app; Slack/Claude stay apps),
+    page pattern, kind, role, stable container, label when it is the same every time or a *slot* for the item
+    that changes (digits, > 4 words, or one day only; a `PathIntent` label never) — with edges between
+    consecutive steps of a visit (≤ 2 min), visit entries, each item's last chain and the page it opened, and
+    each page's URLs with their majority title (a title naming another site's app is another tab's).
+    `UserPaths.plan` (index lookups, ≤ ~10 ms): scope = the place the task names (`UserRoutines.namedPlaces`:
+    an AppSkill and the user's own instance of it — "canvas" → canvas.olin.edu —, or a site by its own name,
+    never an ordinary word like "start") or the app the person is reached in, else the grounded thing's place,
+    else what it implies (then anywhere of theirs); targets, best first: the grounded / named thing's page
+    (`source` "thing"), a page whose title+URL carries the task's names ("assignment 3" pairs a number with
+    its kind word; a bare number names nothing), an item whose label does (a chat row by its name, the
+    person's full name from `UserKnowledge`; assistants never), a page kind ("my last canvas assignment"),
+    a `PathIntent` control they use there (⌘N New Note, New Mail, Add to cart — never a field). Errands for
+    "the cheapest / a random …" and mail tasks skip pages/items. Path = Dijkstra on −log P(next|step) from the
+    run's start (the site's entry page, or the app's visit entries) within one app — never through the
+    field the task's text goes into, never starting with a send — kept only if every edge was taken ≥ 2×,
+    else the page changes of the chain that reached that item (in an app: its search, typing + Return);
+    then what they do next (type in ‘Message’, Return). A web path starts on the target's own URL when
+    known. It reaches the drivers as a `Routine` (`UserRoutines.Match` source "path", key `path:…`,
+    confidence 0.6–0.9 by support), so `UserRoute` follows it — navigation pressed by code, a path step only
+    on its own page and an item only with all its words ("assignment 3" ≠ "Lab 3"); Jev gets
+    `this_users_way` + `their_path`; the runner the same JSON (`source`, `# UserPaths hook`). `choose`: a
+    routine done ≥ 2× in the same place wins, else the path. A `PathIntent` the user never used *there*
+    becomes a **pattern** (their labels elsewhere, matched by what a control does, marked, never pressed,
+    never a start). Place guard for routines: a routine is dropped when the task names (or reaches the
+    person in) another place. Never pressed by any route: sign in, add to cart, checkout. Grounding
+    (`TaskGrounding`): errands (order/buy/cart) never ground to own work ("random chipotle bowl" ≠ the
+    Onshape "Yarn Bowl"); "conversation/chat with X" is communication and reaches X's chat app; when some
+    candidate carries every name the task says, candidates carrying none are dropped, and the user's own
+    instance of a named web app counts as it ("canvas" → canvas.olin.edu, not only *.instructure.com).
+    `UserKnowledge.startURL`: never for errands, never when a name of the task is unexplained by the thing
+    ("chipotle" vs the Yarn Bowl), and a project without a page opens its document carrying its name ("hci
+    notes" → the HCI doc). One seam for tests: `ScreenMemory` (knowledge + routines + paths) —
+    `TaskGrounding.ground(task:memory:jev:)`, `UserRoutines.match(task:memory:jev:)`,
+    `UserKnowledge.startURL(for:knowledge:)`, `AgentRun.routineStartPlace` — the task bench calls these on its
+    memory copy (uncached), never copies of them. Probe on a
+    `.backup` copy (temporary test, `TEST_RUNNER_NAVI_PROBE_DIR`): 142 places with ≥ 10 steps, 97 with a
+    repeated two-step chain; 13/13 unrelated tasks → no routine.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
     field text is started speculatively on the obvious field while Jev decides. Voice runs allow
-    2 hand-backs (`maxClaudeFallbacks`). Claude drives only when Jev is unreachable.
+    2 hand-backs (`maxClaudeFallbacks`). Claude drives when Jev is unreachable, and — new policy,
+    2026-10-30 — for a few steps when Jev is stuck (below).
+  - **Stuck → Claude takeover; typed outcomes** (Liam, 2026-10-30: success over speed on the hard
+    ~10 %). Every stop is judged by a typed verdict — `RunVerdict`: achieved / partial / not_achieved
+    / impossible / needs_user — and **only achieved is `.completed`**; the rest arrive as `.failed`
+    with `AgentRunHandle.verdict` telling them apart (a question for the user = needs_user; an
+    answer whose own words say "I couldn't…/isn't confirmed" is never achieved: `CUWriter.saysNotDone`,
+    the runner's `says_could_not`). Callers (voice island, panel) read `handle.verdict`.
+    Native: `CUEscalation.next` (pure) turns the writer's answer into complete / ask the user /
+    Jev with a focus / takeover / end; the takeover is `AgentRun.claudeAssist` — the
+    `computer_toolset_20260801` loop, bounded (`CUEscalation.takeoverTurns` = 6 rounds, ≤ 2 a step),
+    on the same pinned `AgentTarget` (background rules hold), `JevGate` on every turn, clicks on
+    pay controls refused (`JevGate.paysKeyword` on the AX element under the point); its last word
+    (`CUEscalation.handback`): "Done:" → the writer re-reads, "Stopped:" → needs_user, moved the
+    screen → Jev resumes with the stall counters reset (`CURunState.afterTakeover`), else the
+    writer's answer stands. Browser (runner adaptation 32): circling / no change / BLOCKED / a DONE
+    under 85 % → `judge` (Claude, screenshot + page text → verdict JSON) → achieved ends done,
+    impossible/needs_user end honestly, else `Takeover` drives the same tab by CDP (viewport JPEG ≤
+    1280 px, `Input.dispatch*`, `go_to_url`/`go_back`; ≤ 8 rounds, ≤ 3 a run; Jev's irreversible/
+    prohibited nouls per turn — no approval channel mid-run, so an unasked send/delete ends as
+    needs_user unless `autonomous`; never pays; never types into password/code/card fields) and
+    hands back on a new document; its "Done:" is judged again. The done event carries `outcome`,
+    `answer`, `takeovers`. Run in the runner, not on Chrome's window: the tab may be a background
+    tab, CDP is exact per tab, and Jev resumes on the same history. Live replay (DoorDash, the
+    Sign In ↔ Close circle whose iframe Jev cannot read): takeover typed into the dialog, judged
+    achieved, ~20 s. The coach's "[Errno 32] Broken pipe" was a dead pooled HTTP/2 connection:
+    Claude calls use `claude_post` (own HTTP/1.1 client, retries transport errors). Off switch:
+    `agentClaudeTakeover` = false (both drivers; `NAVI_TAKEOVER=0`, `NAVI_JUDGE=0` in the runner).
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
@@ -277,6 +348,40 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     builder on screen); 31 — every Jev request carries `facts` (today, the goal's relative
     dates resolved: "next friday" → Friday, November 6, 2026). Replays: McDonald's → 2 items
     in cart with no coach; Flights picks the right Friday; Chipotle false "done" now refused.
+    32 — a stuck or unsure stop is judged and, when not there yet, finished by a Claude takeover
+    on the same tab (see "Stuck → Claude takeover; typed outcomes").
+    Perception — everything a person can see and click, nothing they can't (2026-10-30, after
+    DoorDash's Sign In → Close loop): 33 — frames are part of the page: DoorDash's sign-in
+    dialog is an aria-modal div whose content is a same-site cross-origin iframe
+    (identity.doordash.com), so the table held only Close. Visible frames are read with the same
+    snapshot (same-process: an isolated world via `Page.createIsolatedWorld`; out-of-process: the
+    iframe target's own session, found by `parentFrameId`), their controls join at top-level
+    coordinates only where a parent hit test reaches the `<iframe>` and never behind the page's
+    dialog; actions carry `frame`, clicks/fills/selects are resolved in the frame (`FrameReader`);
+    node ids of frame n start at n × 1,000,000; captcha frames are never offered (an invisible
+    reCAPTCHA badge is ignored); 34 — open shadow roots are queried, hit-tested and read, and
+    `<style>`/`<script>` text is never in a name (DoorDash labels ended in ".prism-size-… {…}");
+    35 — role=dialog/alertdialog and ARIA-less fixed overlays count as the dialog in front when a
+    backdrop blocks the page (`page.dialog` names it, its text comes first); 6+ unnamed controls
+    of one role (map pins) are dropped, a lone one is "link with no label at the top right";
+    36 — a perception gap is reported: `page["perception_gap"]` = `{reason: unreadable_frame |
+    empty_dialog | unseen_change | captcha, detail, …}` and one `{"event":"perception_gap",…}`
+    line per page, after up to 4 re-looks 0.25 s apart (frames load after their dialog);
+    `unseen_change` = a click whose DOM fingerprint stayed the same while a 32×20 thumbnail of
+    the tab changed ≥ 12 % (the picture before a click is taken only on a page with frames, or once a click
+    there changed nothing Navi reads — each capture costs ~140 ms, so ordinary clicks skip it). The run controller decides (vision takeover; captcha → the user).
+    Fixtures run in a private headless Chrome: `scripts/ultrafast/test_perception_chrome.py`.
+    Live replay: "open DoorDash's sign in window and switch it to the Sign Up tab" → Sign up or
+    Login → Sign Up (inside the iframe) → done, 2 steps, no coach.
+    Native side (`AXSnapshot`, `CUPerception`): containers with > 12 children are walked a page
+    at a time (the rest after every other region) and a walk with < 12 controls stretches its
+    0.15 s box to 0.45 s — axprobe: Music 18 → 36 controls (player, shelves), Outlook 20 → 48,
+    Messages 1 → 14 (Catalyst: ~6 ms per AX call); a sheet is the walk's root, a popover or an
+    `AXModal` group limits the items (`AXSnapshot.modalScope`); a value equal to the placeholder
+    is empty; a text area that only shows text (Messages bubbles: value not settable) is text;
+    an unnamed big text area is "empty text area (the document body)"; `CUScreen.perceptionGap`
+    / `CUPerception.perceptionGap(_:before:acted:pixelsChanged:)` → `empty_dialog`,
+    `nothing_readable`, `unseen_change` for the run loop.
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,
@@ -409,7 +514,51 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     locally — each used to cost a 2 s agent run. A spoken task may run for as long
     as it keeps reporting steps (minutes); only one silent for 2 min is stopped.
     Goals are normalised first (`VoiceDecider.normalizedGoal`: "can you", "please",
-    "navi", a leftover "you" stripped). ⌥Space (`voiceHotKey*`) starts/stops listening
+    "navi", a leftover "you" stripped, an abandoned lead "with... " / "Wait, " dropped).
+    **Working surface** (`Agent/WorkingSurface`): every run records where it worked (the runner's
+    final tab URL/title via `UltrafastBridge`, the app a native step drove, the page/app a voice
+    command opened) and, when it ends, the task + outcome (in memory, 20 min, one per place). The
+    voice call asks Jev `work_where` (replaces `start_from`/`continues_previous`): `here` (the screen
+    in front — folded with a recent place it shows), `last_N` (a recent place), `new_place`. ≥ 0.5 ⇒
+    `last_N` runs with `RunOptions.continueOn` (its tab, re-attached by URL — `NAVI_ATTACH_URL` —, or
+    its app; grounding and routine starts skipped), `here` on the open tab / app in front (also
+    `continueOn` when the last task worked there), `new_place` never on the open tab. Unsure/offline:
+    the open tab only for page actions or when the last task worked on that very tab. ⌘Space: the
+    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. Live (2026-10-30):
+    14/14 sensible picks ("I meant in DoorDash where we just were" → the DoorDash tab at 0.99, "order
+    me a burger" on a Canvas tab → new place 1.0); Haiku planned "open my cart…" after the order on
+    doordash.com. **Fragments never run**: `whole_instruction` noul (< 0.25 — logged fragments scored
+    0.05–0.15, a correction 0.32) plus a local rule (a preposition/conjunction start with no verb:
+    "to my cart") ⇒ merge with following words, join the still-queued previous instruction
+    (`Decision.amend`, ≤ 8 s), wait for the pause, then "Didn't catch…". A long sentence Jev files
+    under control/stop that is no control phrase is an instruction. **Misheard own words**
+    (`VoiceVocabulary`): the user's people/projects/sites go to the recognizer as contextual strings;
+    a word that sounds like one (consonant-skeleton edit distance, near sounds cheap) is offered to
+    Jev as `misheard_i` with `users_own_words` in the state and replaced only at ≥ 0.6 ("cannabis" →
+    Canvas 0.78; "order cannabis gummies" 0.25). Benchmark fixes (2026-10-30): `work_where` also offers
+    `previous` while a command is running/queued (the second half of a split sentence works wherever
+    the first half ends up — resolved when it starts); "resume" while listening is a task ("continue
+    where I left off"); idle, `replaces_current` asks whether HEAD corrects what Navi just did — a
+    correction is never dropped as chatter; an unknown "open X" app name is only guessed from a short
+    "open …" phrasing (a known web app is its site); with a browser in front "close this tab" is always
+    the key press; a plain "and" after a dictation verb stays in the text unless an instruction verb
+    follows; after a long pause a head with `whole_instruction` ≥ 0.6 is acted on, not given up; an
+    errand at a business Navi has no page for starts from "<business> order online"
+    (`TaskPlanner.errandQuery`), not a search for the sentence; "to my …" with no verb is "go to my …"
+    (the recognizer drops the "go"; a still-queued instruction takes the tail first); a web app named
+    while Jev picked the browser ("open up a Google Doc" → Chrome) is the web app; a head naming one of
+    the user's own documents with a page (`namesOwnDocument`) runs on that page, not in an app a word
+    suggests; an earlier "open Chrome" continues on Chrome's tab. Errands at a named business start on
+    its own site (`TaskPlanner.errandStartURL`): a site in the user's history carrying its name, else the
+    page DuckDuckGo `!ducky` redirects to (resolved ahead by the voice executor, ≤ 1.5 s; no consent
+    page), else that redirect URL. Without "from X" ("order me a random chipotle bowl") the business is a
+    task word that a site's name *is* (the user's history, else the top result for what is ordered —
+    kept only when its domain is that word; "burger" → burgervillage.com is a product, not a business).
+    A dictated message to someone (`isDictatedMessage`: send verb +
+    relation / known person / capitalised name + text, "send a message to …", "reply to …") is never
+    dropped as chatter or answered as a question. The instruction's own verb is never "misheard". Offline bench after the port: 85 %
+    (errand 70, school 83, messaging 90, native 100; baseline 73). Live tests: `VoiceWorkingSurfaceLiveTests`,
+    `PlannerWorkingSurfaceTests` (`.needsNetwork`). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
     **Only my voice** (`Voice/VoicePrint`, toggle `voiceOnlyMyVoice`): once the user taught Navi
     their voice (`VoiceEnrollment`: six command-like lines, ~1 min, in setup, Settings → Voice,

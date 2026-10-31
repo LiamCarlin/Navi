@@ -90,6 +90,9 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
         /// control keeps this small: the user is watching and can simply say what to
         /// do next, which beats a 10 s screenshot loop every time.
         var maxClaudeFallbacks: Int? = nil
+        /// WorkingSurface hook: continue where an earlier run worked (its tab or app) instead of
+        /// starting from the task's own place or the screen in front. Skips grounding/routine starts.
+        var continueOn: WorkingSurface? = nil
     }
 
     @MainActor
@@ -106,13 +109,16 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
                                      revealWhenDone: s.agentRevealWhenDone,
                                      planWithClaude: options.planWithClaude,
                                      surfaceHint: options.surface,
-                                     useCurrentTab: options.useCurrentTab)
+                                     useCurrentTab: options.useCurrentTab,
+                                     continueOn: options.continueOn)
         let run = AgentRun(task: task, context: context, config: config, jev: jev, claude: claude)
         let handle = AgentRunHandle(task: task,
                                     cancel: { run.cancel() },
                                     respond: { run.respond($0) })
         let log = AgentRunLog(task: task)
-        handle.onEmit = { log.record($0) }
+        let startedAt = Date()
+        // WorkingSurface hook: the run's last place becomes a recent place when it ends.
+        handle.onEmit = { log.record($0); WorkingSurface.observe($0, task: task, startedAt: startedAt) }
         run.start(handle: handle)
         return handle
     }
@@ -159,6 +165,8 @@ final class AgentRun: @unchecked Sendable {
         var planWithClaude: Bool = true
         var surfaceHint: TaskSurface.Surface = .unsure
         var useCurrentTab: Bool = false
+        /// WorkingSurface hook: see `RunOptions.continueOn`.
+        var continueOn: WorkingSurface? = nil
     }
 
     static let screenshotMaxLongEdge = 1280
@@ -208,6 +216,8 @@ final class AgentRun: @unchecked Sendable {
     private var routeMatch: UserRoutines.Match?
     /// Background mode: the window the last screenshot came from (event routing for Claude's clicks).
     private var screenshotWindow: CGWindowID?
+    /// The typed outcome the last step's driver reported on its handle (`AgentRunHandle.verdict`).
+    private var lastStepVerdict: RunVerdict?
     @MainActor private var overlay: AgentOverlay?
 
     init(task: String, context: QueryContext, config: Config, jev: JevClient, claude: ClaudeClient) {
@@ -319,13 +329,21 @@ final class AgentRun: @unchecked Sendable {
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
             // …and whether it is something they have done before, their way (in parallel).
             async let routine = UserRoutines.match(task: originalTask)
-            if let g = await TaskGrounding.ground(task: originalTask) {
+            // WorkingSurface hook: a follow-up of the last run ("open my cart" after the DoorDash order)
+            // is about that place, not about whatever screen memory last showed for its words.
+            if config.continueOn == nil, let g = await TaskGrounding.ground(task: originalTask) {
                 grounded = g
                 handle.emit(.status("From your screen memory: \(g.thing.name) · \(g.thing.place) · \(TaskGrounding.shortWhen(g.thing.lastSeen, now: Date()))"))
             }
             if let m = await routine {
                 routeMatch = m
-                handle.emit(.status("You've done this before (\(m.routine.count)×): \(m.routine.template) — following your steps"))
+                // UserPaths hook: a path is the user's usual way to the task's target, not a task they did.
+                if let p = m.path {
+                    handle.emit(.status(p.pattern ? "New here — looking for what you use elsewhere: \(p.theirPath.joined(separator: ", "))"
+                                                  : "Your usual way to \(p.target) (\(p.support)×): \(p.theirPath.joined(separator: " → "))"))
+                } else {
+                    handle.emit(.status("You've done this before (\(m.routine.count)×): \(m.routine.template) — following your steps"))
+                }
             }
             try checkCancelled()
             // Step 0 — the plan. Usually already answered by `prepare` while the user was typing.
@@ -341,6 +359,7 @@ final class AgentRun: @unchecked Sendable {
             } else {
                 let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
                 Log.agent.error("Agent run failed: \(msg, privacy: .private)")
+                handle.verdict = .notAchieved
                 handle.emit(.failed(msg))
             }
         }
@@ -377,6 +396,23 @@ final class AgentRun: @unchecked Sendable {
     private func resolvePlanWithoutPlanner() async -> (FrontmostProbe.Info, TaskPlanner.Plan) {
         var surface = config.surfaceHint
         var front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        // WorkingSurface hook: continue where the earlier run worked — its tab (attached again by
+        // URL) or its app — before grounding, routines or the screen in front get a say.
+        if let s = config.continueOn {
+            if let b = front.bundleID, AXSnapshotter.isBrowser(b) { front.url = FrontmostProbe.browserURL(bundleID: b) }
+            switch WorkingSurface.start(for: s, front: front) {
+            case .page(let url, _) where !url.isEmpty && ComputerAgent.browserRunner != nil:
+                Log.agent.info("WorkingSurface: continuing on \(WorkingSurface.shortURL(url), privacy: .private)")
+                var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
+                plan.steps[0].url = url
+                return (front, plan)
+            case .app(let bundle, let name) where bundle != nil || name != nil:
+                Log.agent.info("WorkingSurface: continuing in \(name ?? bundle ?? "?", privacy: .public)")
+                let inFront = bundle != nil && front.bundleID == bundle
+                return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: inFront ? nil : (bundle ?? name)))
+            default: break
+            }
+        }
         // "Open the last assignment I did", "go back to the onshape model": the thing the task was
         // grounded to is where the work happens — its page, or the app it lives in. Only for a
         // command to reopen it; not when the task reaches someone (the thing is what to send),
@@ -397,14 +433,15 @@ final class AgentRun: @unchecked Sendable {
         }
         // Something this user has done before their own way (`UserRoutines`): it starts where they
         // start it — their app, or their page on the site — unless the task names another app.
-        if let m = routeMatch, m.confidence >= 0.6, !config.useCurrentTab, let start = Self.routineStart(m, task: originalTask) {
+        // UserPaths hook: `routineStartPlace` decides (shared with the task bench).
+        if let m = routeMatch, !config.useCurrentTab, let start = Self.routineStartPlace(m, task: originalTask, surface: surface) {
             switch start {
-            case .page(let url) where surface != .nativeApp && ComputerAgent.browserRunner != nil:
+            case .page(let url) where ComputerAgent.browserRunner != nil:
                 Log.agent.info("UserRoutines: starting on the user's page for this routine")
                 var plan = TaskPlanner.fallback(task: originalTask, surface: .browser)
                 plan.steps[0].url = url
                 return (front, plan)
-            case .app(let bundle) where surface != .browser:
+            case .app(let bundle):
                 Log.agent.info("UserRoutines: \(bundle, privacy: .public) is where the user does this")
                 return (front, TaskPlanner.fallback(task: originalTask, surface: .app, app: front.bundleID == bundle ? nil : bundle))
             default: break
@@ -453,6 +490,18 @@ final class AgentRun: @unchecked Sendable {
     }
 
     enum RoutineStart: Equatable { case app(String), page(String) }
+
+    /// UserPaths hook: where a matched routine or path starts a run Jev gave `surface` — its page unless
+    /// the run is in an app (but the page of a thing the task names in their own work, "open the hci
+    /// notes", wins over an app guessed from a common word, unless the task names that app); its app
+    /// unless the run is in the browser. nil below 0.6 or when the task names another app.
+    static func routineStartPlace(_ m: UserRoutines.Match, task: String, surface: TaskSurface.Surface) -> RoutineStart? {
+        guard m.confidence >= 0.6, let start = routineStart(m, task: task) else { return nil }
+        switch start {
+        case .page: return surface != .nativeApp || (m.path?.source == "thing" && AppSkills.mentioned(in: task) == nil) ? start : nil
+        case .app: return surface != .browser ? start : nil
+        }
+    }
 
     /// Where a matched routine starts: its first page (a clean URL that names none of the
     /// last run's slot words, else the site), or its app when it is installed. nil when the
@@ -528,7 +577,8 @@ final class AgentRun: @unchecked Sendable {
                 ranRunner = true
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 // The start URL is the page that is open now: continue on that tab.
-                let attach = frontmost.url != nil && url == frontmost.url
+                // WorkingSurface hook: …or the tab an earlier run worked in (the runner finds it by URL).
+                let attach = (frontmost.url != nil && url == frontmost.url) || WorkingSurface.Store.shared.isRecentPage(url)
                 let goal = task
                 let background = config.background
                 await showOverlay(step: max(1, actionIndex))
@@ -597,6 +647,9 @@ final class AgentRun: @unchecked Sendable {
                     }
                 }
                 pageText = lastSnapshotText
+                // WorkingSurface hook: the app (or natively driven tab) this step worked in.
+                let worked = await probe(includeURL: true)
+                WorkingSurface.noteApp(task: originalTask, bundleID: worked.bundleID, appName: worked.appName, url: worked.url, title: worked.windowTitle)
             }
             lastStepNative = !ranRunner
             try checkCancelled()
@@ -604,6 +657,8 @@ final class AgentRun: @unchecked Sendable {
             case .cancelled:
                 throw CancellationError()      // `main` emits the single `.cancelled`
             case .failed(let msg):
+                // The step's own typed outcome (needs the user, impossible here, not done) rides up.
+                handle.verdict = lastStepVerdict.flatMap { $0 == .achieved ? nil : $0 } ?? .notAchieved
                 handle.emit(.failed(plan.isMultiStep ? "Step \(i + 1) of \(plan.steps.count) failed: \(msg)" : msg)); return
             case .completed(let summary):
                 let isLast = i + 1 == plan.steps.count
@@ -621,6 +676,7 @@ final class AgentRun: @unchecked Sendable {
                 }
             }
         }
+        handle.verdict = .achieved
         handle.emit(.completed(summary: plan.isMultiStep ? summaries.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n") : (summaries.first ?? "Done.")))
         // The window the task worked in is the deliverable of an effect task ("make a
         // note", "create the event"): a background run leaves it behind the user's
@@ -678,7 +734,9 @@ final class AgentRun: @unchecked Sendable {
         }
         await body(child)
         child.finish()
-        return await forwarder.value
+        let outcome = await forwarder.value
+        lastStepVerdict = child.verdict
+        return outcome
     }
 
     /// What a step found, for the next step's `{{result}}`: Haiku reads the
@@ -686,7 +744,7 @@ final class AgentRun: @unchecked Sendable {
     private func extractResult(goal: String, pageText: String?, fallback: String) async -> String? {
         guard claude.isConfigured, let pageText, !pageText.isEmpty else { return fallback }
         let system = """
-        You extract results for a task runner. Given a goal and the visible text of the page or screen where the goal was carried out, state the information the goal asked for in one to three plain sentences: the actual facts, names, numbers, prices, dates and links found. Copy values exactly; never guess. If the page does not contain what was asked, say briefly what is missing. No preamble.
+        You extract results for a task runner. Given a goal and the visible text of the page or screen where the goal was carried out, state the information the goal asked for in one to three plain sentences: the actual facts, names, numbers, prices, dates and links found. Copy values exactly; never guess. If the page does not contain what was asked, say briefly what is missing. You only report what the page shows: never say what you yourself can or cannot do or click. No preamble.
         """
         let prompt = "Goal: \(goal)\n\nVisible text:\n\(pageText.prefix(6000))"
         if let text = try? await claude.complete(model: TaskPlanner.model, system: system, prompt: prompt, maxTokens: 400) {
@@ -920,18 +978,42 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.status(calls.line(handoffs: run.handoffs.count)))
         }
 
-        /// The writer's answer as the run's end.
+        /// The writer's answer as the run's end: completed only when its typed verdict is achieved.
         func conclude(_ a: CUWriter.Answer, outcome: CURunState.Outcome) {
             writerAnswer = a.text.isEmpty ? nil : a.text
-            writeRun(outcome.rawValue)
+            writeRun(outcome.rawValue + " · " + a.verdict.rawValue)
             if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
             if !a.achieved { noteRoute(worked: false) }
+            handle.verdict = a.verdict
             if a.achieved {
                 remember()
                 handle.emit(.completed(summary: a.text.isEmpty ? Self.summary(humanLog) : a.text))
             } else {
                 handle.emit(.failed(a.text.isEmpty ? "Stopped: \(outcome.told)." : a.text))
             }
+        }
+
+        /// The code path ended the run without a writer read (no Anthropic key, the read failed):
+        /// say so in the verdict — Jev's own "done" is the only success that can stand unread.
+        func finishUnread(_ outcome: CURunState.Outcome, failure: String) {
+            writeRun(outcome.rawValue)
+            if outcome == .done {
+                remember()
+                handle.verdict = .achieved
+                handle.emit(.completed(summary: Self.summary(humanLog)))
+            } else {
+                handle.verdict = .notAchieved
+                handle.emit(.failed(failure))
+            }
+        }
+
+        /// Claude's takeovers in this step (`CUEscalation.maxTakeovers`).
+        var takeovers = 0
+        /// Pages whose perception gap was already handed to the writer (once each).
+        var gapsEscalated: Set<String> = []
+        func takeoverAvailable() -> Bool {
+            writerAvailable && screenshots && takeovers < CUEscalation.maxTakeovers
+                && UserDefaults.navi.object(forKey: "agentClaudeTakeover") as? Bool ?? true
         }
 
         /// The writer's read of the screen as it is now, as a task: `handOff` awaits it, and a
@@ -956,26 +1038,72 @@ final class AgentRun: @unchecked Sendable {
             }
         }
 
-        /// Jev stopped: the writer reads the screen and answers for the user; its focus may send
-        /// Jev back to work (runner.py `hand_off`). True to resume; otherwise the run has ended.
+        /// Claude's computer-use loop drives a few steps on the same target (Liam's policy: Jev is
+        /// stuck, success beats speed), with the writer's read as its brief. What its last word means
+        /// is `CUEscalation.handback`; the screen it leaves is observed for Jev.
+        func takeOver(_ outcome: CURunState.Outcome, _ answer: CUWriter.Answer) async throws -> CUEscalation.Handback {
+            takeovers += 1
+            let before = screen.signature
+            let why = outcome.told
+            handle.emit(.status("Jev is stuck (\(outcome.rawValue)) — Claude takes over for a few steps"))
+            await updateOverlay(step: max(1, actionIndex), status: "Claude is taking over")
+            Log.agent.info("Takeover \(takeovers) started: \(outcome.rawValue, privacy: .public)")
+            let t0 = Date()
+            let result: ClaudeOutcome
+            do {
+                result = try await claudeAssist(why: why, read: answer, history: run.history, turns: CUEscalation.takeoverTurns, handle: handle)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try checkCancelled()
+                result = .failed("Claude could not take over: \((error as? NaviError)?.errorDescription ?? error.localizedDescription)")
+            }
+            // Claude may have opened another app: every later walk, event and capture follows it.
+            target = self.target
+            executor.target = target
+            screen = await observe()
+            let moved = !screen.signature.same(as: before)
+            var said = "", stoppedFor: String?, saidDone = false, acted = true
+            switch result {
+            case .done(let s): said = s; saidDone = true
+            case .paused(let s), .stepLimit(let s):
+                said = s
+                acted = !s.hasPrefix("Looked only")
+            case .failed(let s):
+                said = s
+                if s.hasPrefix("Stopped:") { stoppedFor = String(s.dropFirst("Stopped:".count)).trimmingCharacters(in: .whitespaces) }
+                else { acted = false }
+            }
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            let back = CUEscalation.handback(saidDone: saidDone, stoppedFor: stoppedFor, screenMoved: moved, acted: acted)
+            handle.emit(.status("Claude's takeover ended after \(ms / 1000) s (\(moved ? "screen moved on" : "screen unchanged")): \(AgentAction.short(said, 160))"))
+            Log.agent.info("Takeover \(takeovers) ended in \(ms) ms: moved=\(moved) result=\(String(describing: back), privacy: .public)")
+            folder.write(CURunFolder.name(step, "takeover.json"), json: ["why": outcome.rawValue, "brief": answer.text, "focus": answer.focus,
+                                                                          "said": said, "moved": moved, "ms": ms, "handback": String(describing: back)])
+            if acted || saidDone { run.afterTakeover("Claude (vision) took over: \(said)") }
+            if !said.isEmpty, acted { humanLog.append("Claude: \(AgentAction.short(said, 80))") }
+            return back
+        }
+
+        /// Jev stopped: the writer reads the screen and answers for the user with a typed verdict;
+        /// that verdict, not the stop, decides what follows (`CUEscalation.next`): done, a question,
+        /// Jev again with a focus, or Claude driving for a few steps. True to resume Jev; otherwise
+        /// the run has ended.
         func handOff(_ stopped: CURunState.Outcome, doneConfidence: Double = 0) async throws -> Bool {
             let outcome = run.countStall(stopped)
             if outcome == .done, effectGoal, !wantsResult, !humanLog.isEmpty, doneConfidence >= Self.acceptDoneConfidence || !writerAvailable {
-                writeRun(outcome.rawValue)
-                remember()
-                handle.emit(.completed(summary: Self.summary(humanLog)))
+                finishUnread(.done, failure: "")
                 return false
             }
             guard writerAvailable else {
-                writeRun(outcome.rawValue)
-                if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
-                else { handle.emit(.failed(DeveloperMode.isEnabled
+                finishUnread(outcome, failure: DeveloperMode.isEnabled
                     ? "Stopped: \(outcome.told). Add an Anthropic key so Navi can read the screen and keep going."
-                    : "Stopped: \(outcome.told).")) }
+                    : "Stopped: \(outcome.told).")
                 return false
             }
-            // A focus that led to no action leaves the answer it came with standing.
-            if let h = run.handoffs.last, h.actions == run.history.count, let lastAnswer {
+            // A focus that led to no action: asking Jev again would only repeat it.
+            let focusWasTried = run.handoffs.last.map { $0.actions == run.history.count } ?? false
+            if focusWasTried, let lastAnswer, !takeoverAvailable() {
                 conclude(lastAnswer, outcome: outcome)
                 return false
             }
@@ -997,34 +1125,58 @@ final class AgentRun: @unchecked Sendable {
             case .failure(let error):
                 try checkCancelled()
                 let msg = error.errorDescription ?? "\(error)"
-                writeRun(outcome.rawValue)
-                if outcome == .done { remember(); handle.emit(.completed(summary: Self.summary(humanLog))) }
-                else { handle.emit(.failed("Stopped: \(outcome.told), and the screen could not be read (\(msg)).")) }
+                finishUnread(outcome, failure: "Stopped: \(outcome.told), and the screen could not be read (\(msg)).")
                 return false
             }
             calls.writer(ms: ms)
             lastAnswer = answer
             folder.write(CURunFolder.name(step, "review.json"), json: ["outcome": outcome.rawValue, "ms": ms, "achieved": answer.achieved,
+                                                                       "verdict": answer.verdict.rawValue,
                                                                        "answer": answer.text, "focus": answer.focus, "question": answer.question,
                                                                        "may_resume": mayResume, "packet": packet])
             if let png { folder.write(CURunFolder.name(step, "review.png"), data: png) }
             try checkCancelled()
-            // Navi has no reply box mid-run: a question ends the run and is put to the user,
-            // whose answer comes back as the next request (the conversation carries this one).
-            if mayResume, !answer.achieved, !answer.question.isEmpty {
+            switch CUEscalation.next(answer, outcome: outcome, mayResume: mayResume, takeoverAvailable: takeoverAvailable(),
+                                     focusWasTried: focusWasTried) {
+            case .complete, .end:
+                conclude(answer, outcome: outcome)
+                return false
+            case .askUser:
+                // Navi has no reply box mid-run: a question ends the run and is put to the user, whose
+                // answer comes back as the next request (the conversation carries this one). Not done ⇒
+                // never "completed": the verdict says the user is needed.
                 writerAnswer = answer.text
                 writeRun("question")
-                handle.emit(.completed(summary: [answer.text, answer.question].filter { !$0.isEmpty }.joined(separator: "\n")))
+                handle.verdict = .needsUser
+                handle.emit(.failed([answer.text, answer.question].filter { !$0.isEmpty }.joined(separator: "\n")))
                 return false
-            }
-            if mayResume, !answer.achieved, !answer.focus.isEmpty {
-                run.refocus(.init(step: step, outcome: outcome, focus: answer.focus, actions: run.history.count))
+            case .resumeJev(let focus):
+                run.refocus(.init(step: step, outcome: outcome, focus: focus, actions: run.history.count))
                 handle.emit(.status("Read the screen in \(ms) ms: \(answer.text)"))
-                handle.emit(DeveloperMode.isEnabled ? .planned("Next for Jev: \(answer.focus)") : .status("Next: \(answer.focus)"))
+                handle.emit(DeveloperMode.isEnabled ? .planned("Next for Jev: \(focus)") : .status("Next: \(focus)"))
                 return true
+            case .takeover:
+                switch try await takeOver(outcome, answer) {
+                case .verify:
+                    // Claude says it is done: the writer checks the screen it left.
+                    return try await handOff(.done)
+                case .needsUser(let what):
+                    writerAnswer = what
+                    writeRun("needs user")
+                    noteRoute(worked: false)
+                    handle.verdict = .needsUser
+                    handle.emit(.failed(what.isEmpty ? answer.text : what))
+                    return false
+                case .resume:
+                    // Out of Jev's steps: one more read decides (and may take over once more).
+                    if step >= config.maxSteps { return try await handOff(.stepLimit) }
+                    handle.emit(.status("Back to Jev from here"))
+                    return true
+                case .stop:
+                    conclude(answer, outcome: outcome)
+                    return false
+                }
             }
-            conclude(answer, outcome: outcome)
-            return false
         }
 
         // Apps the task implies ("text …" → Messages) are open_app targets too, so Jev can
@@ -1072,6 +1224,7 @@ final class AgentRun: @unchecked Sendable {
             if replayed == traj.steps.count, traj.complete, !wantsResult {
                 writeRun("done (replayed)")
                 remember()
+                handle.verdict = .achieved
                 handle.emit(.completed(summary: Self.summary(humanLog)))
                 return
             }
@@ -1086,6 +1239,14 @@ final class AgentRun: @unchecked Sendable {
             if !run.screenMoved(screen.signature) {
                 handle.emit(.status("The last \(CURunState.maxIdle) actions changed nothing on screen"))
                 if try await handOff(.stalled) { continue } else { return }
+            }
+            // A screen whose content Jev cannot be offered (a sheet with only its close button, a
+            // window nothing reads from): the writer reads the picture and Claude may take over,
+            // once per screen — instead of Jev guessing from an incomplete list.
+            if let gap = screen.perceptionGap, gapsEscalated.insert(screen.signature.page + "|" + gap.detail).inserted {
+                handle.emit(.status("Can't read part of the screen (\(gap.reason.rawValue)) — looking at it instead"))
+                Log.agent.info("Perception gap: \(gap.reason.rawValue, privacy: .public)")
+                if try await handOff(.perceptionGap) { continue } else { return }
             }
             // The user's own next step for this task, on screen once and safe to take: pressed
             // directly, their way — no Jev call (`UserRoute.direct`).
@@ -1337,6 +1498,7 @@ final class AgentRun: @unchecked Sendable {
                 if case .askApproval(let risk) = JevGate.decide(gv, mode: config.approvalMode, readOnlyTurn: action.isReadOnly) {
                     if let d = lastDeclined, d == action {
                         writeRun("declined")
+                        handle.verdict = .needsUser
                         handle.emit(.failed("You declined ‘\(human)’ and Jev proposed it again — stopping."))
                         return
                     }
@@ -1474,6 +1636,7 @@ final class AgentRun: @unchecked Sendable {
                 if let outcome = recipientOutcome, let field = recipientField, let typed = text,
                    outcome.stopsContactApp, RecipientPicker.contactApps.contains(screen.snapshot.bundleID ?? "") {
                     writeRun("no contact")
+                    handle.verdict = .needsUser
                     handle.emit(.failed(outcome.failure(typed: typed, field: field.displayName, app: screen.snapshot.appName)))
                     return
                 }
@@ -1506,6 +1669,7 @@ final class AgentRun: @unchecked Sendable {
                 _ = run.recordAction(what ?? "", waiting: false)
                 writeRun("done (the click the goal names landed)")
                 remember()
+                handle.verdict = .achieved
                 handle.emit(.completed(summary: Self.summary(humanLog)))
                 return
             }
@@ -1638,6 +1802,76 @@ final class AgentRun: @unchecked Sendable {
                                     overlayStep: nil, handle: handle)
     }
 
+    /// Jev is stuck (a decision Jev made — circling, stalls, nothing it can use): Claude drives at
+    /// most `turns` rounds on the same pinned target, with the writer's read as its brief, then
+    /// says Done / Stopped / Did and hands back (`CUEscalation.handback`). Jev's gate still reads
+    /// every turn in `claudeLoop`; Navi never pays; background-mode rules come with the system prompt.
+    private func claudeAssist(why: String, read: CUWriter.Answer, history: [String], turns: Int,
+                              handle: AgentRunHandle) async throws -> ClaudeOutcome {
+        if let problem = await MainActor.run(body: { Self.checkPermissions(claude: claude) }) {
+            return .failed(problem)
+        }
+        let front = await probe()
+        var text = Self.systemPrompt(task: task, context: context, frontmost: front, background: target)
+        text += """
+
+
+        # You are taking over for a few steps
+        A fast driver that reads the app's accessibility tree has been working on this task and got stuck: \(why). Finish the task, or move it clearly forward, in at most \(turns) turns; then the fast driver may continue from where you leave the screen.
+        Navi never pays: never press Place order, Pay, Buy now, Confirm purchase or the like — a purchase ends with the item in the cart. Never type passwords, codes or card numbers. Do not send, post or delete anything the task does not ask for.
+        When you stop, reply with one line and no tool call: "Done: <what the screen shows>" when the whole task is complete on screen, "Stopped: <what the user must do>" when only the user can continue (a login, a payment, a choice the task leaves open), else "Did: <what you did>".
+        """
+        let system: [[String: Any]] = [["type": "text", "text": text, "cache_control": ["type": "ephemeral"]]]
+        let tools: [[String: Any]] = [["type": "computer_toolset_20260801"]] + AgentCustomTools.definitions
+        var brief = "Task: \(task)\n\nWhy you are taking over: \(why)"
+        if !read.text.isEmpty { brief += "\nWhat the screen shows now (screen reader): \(read.text)" }
+        if !read.focus.isEmpty { brief += "\nSuggested next step: \(read.focus)" }
+        if !history.isEmpty { brief += "\n\nSteps so far:\n" + history.suffix(10).map { "- \($0)" }.joined(separator: "\n") }
+        brief += "\n\nStart by taking a screenshot."
+        messages = [["role": "user", "content": [["type": "text", "text": brief]]]]
+        map = nil
+        stuckStreak = 0
+        return try await claudeLoop(system: system, tools: tools, maxTurns: max(1, turns), bounded: true,
+                                    overlayStep: nil, handle: handle)
+    }
+
+    /// A click Claude proposes on a control that spends the user's money ("Place order", "Pay
+    /// now"): the refusal text, else nil. The control under the point is read from the target
+    /// app's accessibility tree (background mode: that app, even behind other windows).
+    private func paysRefusal(for call: AgentToolCall) async -> String? {
+        guard call.isComputer, ["left_click", "double_click", "triple_click"].contains(call.name),
+              let c = call.coordinate, let m = map else { return nil }
+        let p = m.point(fromScreenshot: c.0, c.1)
+        var pid = target?.pid
+        if pid == nil { pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier } }
+        guard let pid, let label = Self.axLabel(at: p, pid: pid), let hit = JevGate.paysKeyword(in: label) else { return nil }
+        return "Refused: ‘\(AgentAction.short(label, 60))’ would spend the user's money (\(hit)) — Navi never pays. If the item is in the cart, reply \"Done: …\"; the user places the order."
+    }
+
+    /// The label of the control at a screen point in one app (its title, description or value,
+    /// looking up to three parents for a button that holds the hit text).
+    static func axLabel(at p: CGPoint, pid: pid_t) -> String? {
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(pid), Float(p.x), Float(p.y), &hit) == .success,
+              var el = hit else { return nil }
+        func string(_ e: AXUIElement, _ attr: String) -> String? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(e, attr as CFString, &v) == .success, let s = v as? String else { return nil }
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
+        var labels: [String] = []
+        for _ in 0..<4 {
+            for attr in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+                if let s = string(el, attr as String), !labels.contains(s) { labels.append(s) }
+            }
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXParentAttribute as CFString, &parent) == .success, let p = parent else { break }
+            el = p as! AXUIElement   // swiftlint:disable:this force_cast — kAXParentAttribute is an AXUIElement
+        }
+        return labels.isEmpty ? nil : labels.joined(separator: " · ")
+    }
+
     // MARK: - Claude-only driver
 
     private func mainClaudeOnly(_ handle: AgentRunHandle) async throws {
@@ -1667,8 +1901,13 @@ final class AgentRun: @unchecked Sendable {
 
     private func finishClaudeOnly(_ outcome: ClaudeOutcome, handle: AgentRunHandle) {
         switch outcome {
-        case .done(let s), .paused(let s): handle.emit(.completed(summary: s))
-        case .failed(let m): handle.emit(.failed(m))
+        case .done(let s), .paused(let s):
+            // Claude's own end of turn, unread by the writer: its words still must not say "I couldn't".
+            if CUWriter.saysNotDone(s) { handle.verdict = .notAchieved; handle.emit(.failed(s)) }
+            else { handle.verdict = .achieved; handle.emit(.completed(summary: s)) }
+        case .failed(let m):
+            handle.verdict = m.hasPrefix("Stopped:") ? .needsUser : .notAchieved
+            handle.emit(.failed(m))
         case .stepLimit:
             handle.emit(.failed("Reached the step limit (\(config.maxSteps)) before finishing. Increase it in Settings → Agent or narrow the task."))
         }
@@ -1743,10 +1982,12 @@ final class AgentRun: @unchecked Sendable {
                     // is an observation, recorded as such so Jev (which sees the live
                     // tree) decides whether the goal is really met — not Claude's memory
                     // of a bubble sent two instructions ago.
+                    // (A takeover's "Done:" is re-read by the writer before anything ends, so a look-only
+                    // "Done:" — the goal was already met — is passed on for that check.)
+                    if text.hasPrefix("Done:") { return .done(text) }
                     if executed.isEmpty {
                         return .paused(Self.lookedOnly(text))
                     }
-                    if text.hasPrefix("Done:") { return .done(text) }
                     return .paused(text.isEmpty ? synthesized() : text)
                 }
                 return .done(text.isEmpty ? "Done." : text)
@@ -1789,6 +2030,13 @@ final class AgentRun: @unchecked Sendable {
                 var turnFailed = false
                 for call in calls {
                     try checkCancelled()
+                    if let refusal = await paysRefusal(for: call) {
+                        handle.emit(.status("Claude went for a payment button — Navi never pays"))
+                        results.append(AgentToolResult.error(for: call, refusal))
+                        recentActions.append(AgentActionDescriber.technical(call) + " → refused: Navi never pays")
+                        turnFailed = true
+                        continue
+                    }
                     actionIndex += 1
                     let human = AgentActionDescriber.human(call)
                     handle.emit(.step(index: actionIndex, description: human))
@@ -1822,7 +2070,7 @@ final class AgentRun: @unchecked Sendable {
                 stuckStreak = 0
             }
             if bounded, turn >= maxTurns {
-                userContent.append(["type": "text", "text": "You have used the action budget for this step. Do not call any more tools. Reply with one line: start with \"Did:\" summarising what you just did, or \"Done:\" if the entire task is now complete."])
+                userContent.append(["type": "text", "text": "You have used the action budget for this step. Do not call any more tools. Reply with one line: start with \"Did:\" summarising what you just did, \"Done:\" if the entire task is now complete on screen, or \"Stopped:\" if only the user can continue."])
                 wrapUpSent = true
             }
             messages.append(["role": "user", "content": userContent])

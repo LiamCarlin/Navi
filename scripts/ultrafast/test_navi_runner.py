@@ -177,7 +177,7 @@ print("canvas OK")
 
 # --- click point (adaptation 7) ---
 assert nr.browser_module.browser_operation is nr.browser_operation_navi
-assert "getClientRects" in nr.CLICK_POINT_JS and "e.contains(t)" in nr.CLICK_POINT_JS
+assert "getClientRects" in nr.CLICK_POINT_JS and "if (n===e) return {x,y}" in nr.CLICK_POINT_JS
 print("click point OK")
 
 # --- Google Docs body (adaptation 15) ---
@@ -455,6 +455,24 @@ os.environ.pop("NAVI_USER_ROUTE_JSON")
 assert nr.UserRoute().annotate(body) is body
 print("user route OK")
 
+# --- UserPaths: the user's path to the target (items need all their words) and patterns (any site) ---
+path = {"template": "your usual way to \u2018Assignment 03\u2019", "times": 3, "fills": [], "source": "path",
+        "steps": [{"kind": "click", "role": "link", "label": "Assignment 03", "fixed": "", "slot": "assignment 3", "site": "canvas.olin.edu",
+                   "human": "click link \u2018Assignment 03\u2019"}]}
+pr = nr.UserRoute(route=path)
+listing = [{"index": "1", "label": "Assignment 02", "operations": ["CLICK"]}, {"index": "2", "label": "Assignment 03", "operations": ["CLICK"]},
+           {"index": "3", "label": "Lab 3 Report", "operations": ["CLICK"]}]
+assert [e["index"] for e in pr.targets(0, "canvas.olin.edu", listing)] == ["2"]            # "03" is "3"; a number with its kind word
+assert not pr.label_matches(path["steps"][0], "Lab 3 Report")
+pattern = {"template": "signInWithGoogle", "times": 4, "fills": [], "source": "pattern",
+           "steps": [{"kind": "click", "role": "button", "label": "Sign in with Google", "fixed": "sign in with google", "site": "",
+                      "intent": "signInWithGoogle", "human": "click button \u2018Sign in with Google\u2019"}]}
+pt = nr.UserRoute(route=pattern)
+dd = [{"index": "1", "label": "Continue with Google", "operations": ["CLICK"]}, {"index": "2", "label": "Continue with Apple", "operations": ["CLICK"]}]
+assert [e["index"] for e in pt.targets(0, "doordash.com", dd)] == ["1"]
+assert nr.path_intent("Add to cart") == "addToCart" and nr.path_intent("Go to Cart") == "openCart" and nr.path_intent("Inbox") is None
+print("user paths OK")
+
 # --- the tab is the deliverable (adaptation 13) ---
 for var in ("NAVI_TAB_POLICY", "NAVI_KEEP_TAB"):
     os.environ.pop(var, None)
@@ -583,7 +601,7 @@ print("recipient picking ok")
 
 # Adaptation 23: a modal in front is all Jev can click; app-install detours are dropped.
 js = nr.patched_snapshot_js()
-assert "const modals=" in js and "modals.some(m=>m.contains(e))" in js
+assert "const modals=" in js and "modals.some(m=>within(m,e))" in js
 mcd = {"actions": [{"id": "e1", "kind": "click", "label": "Close"},
                    {"id": "e2", "kind": "click", "label": "Order Pickup Scan the code, download the McD’s app & start earning points.*"},
                    {"id": "e3", "kind": "click", "label": "Order Delivery"},
@@ -654,3 +672,239 @@ assert nr.date_facts("dinner on sunday", fri)["dates_in_goal"]["on sunday"] == "
 assert nr.date_facts("book it tomorrow", fri)["dates_in_goal"]["tomorrow"] == "Saturday, October 31, 2026"
 assert "dates_in_goal" not in nr.date_facts("open youtube", fri)
 print("done evidence and dates ok")
+
+# Adaptation 32: typed outcomes, the takeover, and the Broken-pipe diagnosis.
+import httpx as _httpx
+# The false "completed" answers from the 2026-10-29/30 logs all say they were not done.
+for t in ["I couldn't open DoorDash from here - the screen is still showing your Amazon cart",
+          "I cannot complete the \"add to cart\" action as I can only view and report on visible text",
+          "The song playing isn't confirmed as the newest one",
+          "I don't see a playlist named Focus in your library",
+          "The note titled Student Spark hasn't been created yet."]:
+    assert nr.says_could_not(t), t
+for t in ["Big Mac is in your bag — ready for you to place the order.", "Music is playing now: Ain't In LA by Adéla.",
+          "The note Student Spark now says hello class."]:
+    assert not nr.says_could_not(t), t
+v = nr.normalize_verdict({"verdict": "achieved", "answer": "I couldn't add it to the bag."})
+assert v["verdict"] == "partial", v
+assert nr.normalize_verdict({"verdict": "Not achieved", "answer": "x"})["verdict"] == "not_achieved"
+assert nr.normalize_verdict({"verdict": "banana"})["verdict"] == "not_achieved"
+assert nr.normalize_verdict({"verdict": "needs-user", "answer": "Pick your Google account."})["verdict"] == "needs_user"
+assert nr.json_object('```json\n{"verdict": "achieved"}\n```') == {"verdict": "achieved"}
+# Escalation: met → done; impossible / needs the user → end; else Claude takes over while it may.
+assert nr.escalation({"verdict": "achieved"}, True) == "done"
+assert nr.escalation({"verdict": "needs_user"}, True) == "end"
+assert nr.escalation({"verdict": "impossible"}, True) == "end"
+assert nr.escalation({"verdict": "partial"}, True) == "takeover"
+assert nr.escalation({"verdict": "not_achieved"}, False) == "end"
+assert nr.escalation(None, True) == "takeover"              # the judge was unreachable: drive anyway
+assert nr.escalation(None, False) == "coach"
+assert nr.escalation({"verdict": "not_achieved"}, True, acted_since_last_takeover=False) == "end"
+assert nr.outcome_status({"verdict": "achieved"}) == "done" and nr.outcome_status({"verdict": "partial"}) == "blocked"
+assert nr.takeover_result("Done: Big Mac in the bag", 3) == "done"
+assert nr.takeover_result("Stopped: pick your Google account", 1) == "stopped"
+assert nr.takeover_result("Did: opened the menu", 2) == "handback" and nr.takeover_result("", 0) == "no_progress"
+os.environ.pop("NAVI_JUDGE", None)
+assert nr.should_judge_done(0.63) and not nr.should_judge_done(0.95)
+os.environ["NAVI_JUDGE"] = "0"; assert not nr.should_judge_done(0.1); os.environ.pop("NAVI_JUDGE")
+# Keys, the gate, Navi never pays.
+assert nr.parse_key("Return")[:4] == ("Enter", "Enter", 13, "\r")
+k = nr.parse_key("cmd+a"); assert k[4] == 4 and (k[5] == ["selectAll"] or sys.platform != "darwin") and k[3] is None
+assert nr.parse_key("shift+Tab")[4] == 8 and nr.parse_key("a")[3] == "a"
+try:
+    nr.parse_key("hyper+q"); raise AssertionError("bad modifier accepted")
+except ValueError:
+    pass
+assert nr.gate_stops("order me a burger", 0.1, 0.9) and "credentials" in nr.gate_stops("x", 0, 0.9)
+assert nr.gate_stops("open the sign in dialog", 0.8, 0.1, mode="askForRisky")
+assert nr.gate_stops("send mom a text saying hi", 0.8, 0.1, mode="askForRisky") is None
+assert nr.gate_stops("send mom a text saying hi", 0.8, 0.1, mode="alwaysAsk")
+assert nr.gate_stops("open the sign in dialog", 0.8, 0.1, mode="autonomous") is None
+assert nr.pays_refusal("Place Order · $11.59") and nr.pays_refusal("Add to cart") is None
+# Older screenshots are pruned from the takeover's conversation.
+msgs = [{"role": "user", "content": [{"type": "image", "source": {}}]}] + [
+    {"role": "user", "content": [{"type": "tool_result", "content": [{"type": "image", "source": {}}]}]} for _ in range(4)]
+nr.prune_images(msgs, keep=3)
+imgs = sum(1 for m in msgs for b in m["content"] for p in (b.get("content") if b.get("type") == "tool_result" else [b]) if p.get("type") == "image")
+assert imgs == 3 and msgs[0]["content"][0]["type"] == "text"
+
+# JPEG size from the SOF marker (screenshots are scaled to ≤ 1280 px; clicks map back by the ratio).
+JPEG = b"\xff\xd8\xff\xe0\x00\x04ab\xff\xc0\x00\x11\x08\x03\x20\x05\x00" + b"\x00" * 64
+assert nr.jpeg_size(JPEG) == (1280, 800), nr.jpeg_size(JPEG)
+import base64 as _b64
+
+
+class FakeTab:
+    def __init__(self):
+        self.calls = []; self.url = "https://www.doordash.com/"; self.fp = "a"; self.secret = False
+
+    def evaluate(self, js):
+        if js.startswith("[innerWidth"):
+            return [1280, 800, 0, 120, 2]
+        if js.startswith(nr.AT_POINT_JS):
+            x = float(js[len(nr.AT_POINT_JS) + 1:].split(",")[0])
+            return {"label": "Place Order" if x > 1000 else "Continue with Google", "tag": "BUTTON", "frame": False}
+        if js == nr.SECRET_FIELD_JS:
+            return self.secret
+        return None
+
+    def call(self, method, **kw):
+        self.calls.append((method, kw))
+        if method == "Page.captureScreenshot":
+            return {"data": _b64.b64encode(JPEG).decode()}
+        return {}
+
+    def observe(self, screenshot=False):
+        return {"url": self.url, "fingerprint": self.fp, "title": "DoorDash"}
+
+
+tab = FakeTab()
+shot, ratio = nr.viewport_shot(tab)
+cap = [kw for m, kw in tab.calls if m == "Page.captureScreenshot"][0]
+assert cap["clip"]["scale"] == 0.5 and cap["clip"]["y"] == 120 and ratio == 1.0, (cap, ratio)
+
+
+class FakeAgent:
+    def __init__(self, tab):
+        self.state = {"browser": tab, "page": {"url": tab.url, "fingerprint": "a", "title": "DoorDash"}, "history": []}
+
+
+replies = []
+
+
+def fake_claude(body, timeout=90, what="Claude"):
+    return replies.pop(0)
+
+
+real_claude_post, real_gate = nr.claude_post, nr.gate_verdict
+nr.claude_post = fake_claude
+nr.gate_verdict = lambda goal, says, proposed, recent: (0.1, 0.0)
+emitted = []
+real_emit = nr.emit
+nr.emit = lambda event, **f: emitted.append((event, f))
+try:
+    steps = []
+    replies[:] = [
+        {"stop_reason": "tool_use", "content": [{"type": "text", "text": "The sign-in dialog is open."},
+                                                 {"type": "tool_use", "id": "t1", "name": "left_click", "toolset_name": "computer", "input": {"coordinate": [640, 400]}},
+                                                 {"type": "tool_use", "id": "t2", "name": "left_click", "toolset_name": "computer", "input": {"coordinate": [1100, 400]}}]},
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Stopped: pick your Google account in the window that opened."}]},
+    ]
+    t = nr.Takeover()
+    res = t.run(FakeAgent(tab), "Sign into DoorDash with my Google account", "going in circles", None, steps.append)
+    assert res["result"] == "stopped" and res["actions"] == 1, res
+    assert steps[0]["action"] == "Claude: click ‘Continue with Google’" and steps[0]["kind"] == "takeover", steps
+    presses = [kw for m, kw in tab.calls if m == "Input.dispatchMouseEvent" and kw["type"] == "mousePressed"]
+    assert len(presses) == 1 and presses[0]["x"] == 640.0, presses           # the Place Order click never happened
+    assert any("Navi never pays" in f.get("message", "") for e, f in emitted)
+    assert t.available() and t.count == 1
+    # Navi never types into a password / code / card field.
+    tab.secret = True
+    replies[:] = [{"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "t3", "name": "type", "toolset_name": "computer", "input": {"text": "hunter2"}}]},
+                  {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Stopped: the password is yours to type."}]}]
+    res = t.run(FakeAgent(tab), "Sign into DoorDash", "stuck", None, steps.append)
+    assert res["result"] == "stopped" and not any(m == "Input.insertText" for m, kw in tab.calls)
+    # The gate stops an irreversible turn the goal did not ask for.
+    nr.gate_verdict = lambda goal, says, proposed, recent: (0.9, 0.0)
+    tab.secret = False
+    replies[:] = [{"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "t4", "name": "key", "toolset_name": "computer", "input": {"text": "Return"}}]}]
+    res = t.run(FakeAgent(tab), "find the dinner menu", "stuck", None, steps.append)
+    assert res["result"] == "stopped" and "yours" in res["summary"] and not t.available(), res   # 3 takeovers used
+    # A first takeover hands back to Jev as soon as the page moved to a new document.
+    nr.gate_verdict = lambda goal, says, proposed, recent: (0.1, 0.0)
+    t2 = nr.Takeover()
+    tab2 = FakeTab()
+    agent2 = FakeAgent(tab2)
+    replies[:] = [{"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "t5", "name": "left_click", "toolset_name": "computer", "input": {"coordinate": [100, 100]}}]}]
+    real_observe = tab2.observe
+    tab2.observe = lambda screenshot=False: {"url": "https://www.doordash.com/store/7th-street-burger", "fingerprint": "b", "title": "7th Street Burger"}
+    res = t2.run(agent2, "order me a burger", "going in circles", None, steps.append)
+    assert res["result"] == "handback" and res["actions"] == 1 and replies == [], res
+    # Custom tool results carry no toolset_name; computer ones do.
+    assert "toolset_name" not in nr.Takeover.result({"id": "x", "name": "go_back"})
+    assert nr.Takeover.result({"id": "x", "name": "left_click", "toolset_name": "computer"})["toolset_name"] == "computer"
+finally:
+    nr.claude_post, nr.gate_verdict, nr.emit = real_claude_post, real_gate, real_emit
+
+# The Broken pipe: a transport error is retried on a fresh connection instead of ending the diagnosis.
+attempts = []
+
+
+def flaky_post(url, headers=None, json=None, timeout=None):
+    attempts.append(url)
+    if len(attempts) == 1:
+        raise _httpx.WriteError("[Errno 32] Broken pipe")
+    return FakeResp(200, {"content": [{"type": "text", "text": '{"verdict": "achieved", "answer": "Signed in.", "next_step": ""}'}]})
+
+
+real_client_post = nr.CLAUDE_CLIENT.post
+nr.CLAUDE_CLIENT.post = flaky_post
+try:
+    v = nr.judge("sign in", {"url": "https://x.test", "title": "t", "text": ""}, [], "check")
+    assert v["verdict"] == "achieved" and len(attempts) == 2, (v, attempts)
+    c = nr.Coach()
+    attempts.clear()
+
+    def coach_post(url, headers=None, json=None, timeout=None):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise _httpx.WriteError("[Errno 32] Broken pipe")
+        return FakeResp(200, {"content": [{"type": "text", "text": '{"diagnosis": "d", "guidance": "Click [2]."}'}]})
+
+    nr.CLAUDE_CLIENT.post = coach_post
+    c.ask("g", {"url": "https://x.test", "title": "t", "text": "", "actions": []}, [], "circling")
+    assert c.guidance == "Click [2]." and len(attempts) == 2
+finally:
+    nr.CLAUDE_CLIENT.post = real_client_post
+print("takeover, typed outcomes and broken pipe ok")
+# Adaptations 33–36 (pure parts; scripts/ultrafast/test_perception_chrome.py runs the fixtures in Chrome).
+js = nr.patched_snapshot_js()
+for needle in ["deepAll(selector)", "deepHit(px,py)", "within(e,t)", "overlayLayer()", "cache.modals=modals",
+               "STYLE|SCRIPT|NOSCRIPT|TEMPLATE", "frame_candidates:", "dialog:modals.length", "modalPass"]:
+    assert needle in js, needle
+assert nr.scrub_label("Build Your Pizza - $11.39 .prism-size-msf7vl > * { --prism-inline-children-spacing: var(--x); }") == "Build Your Pizza - $11.39"
+assert nr.scrub_label("#2 Most Liked .prism-size-msf7vl > * { --prism-inline-children-spacing: var(--") == "#2 Most Liked"
+assert nr.scrub_label("Sizes {S, M, L}") == "Sizes {S, M, L}"          # braces without CSS stay
+top = {"url": "https://www.doordash.com/home", "w": 1120, "h": 780, "text": "Home\nDeals", "dialog": "Sign in or Sign up",
+       "guards": {"1": ["g"]}, "actions": [{"id": "e1", "node": 1, "kind": "click", "label": "Close Sign in or Sign up", "role": "button",
+                                            "rect": {"x": 300, "y": 110, "w": 20, "h": 20}},
+                                           {"id": "wait", "kind": "wait", "label": "Wait for the page to update"}]}
+frame = {"id": "F1", "parent": "TOP", "session": "s", "url": "https://identity.doordash.com/auth"}
+ref = {"x": 280.0, "y": 164.0, "clip": (280.0, 164.0, 840.0, 729.0), "modal": True, "reachable": True}
+snap = {"url": "https://identity.doordash.com/auth", "text": "Sign in or Sign up\nContinue with Google", "page_key": ["pk"],
+        "guards": {"1000001": ["g1"], "1000002": ["g2"]},
+        "actions": [{"id": "e1", "node": 1000001, "kind": "click", "label": "Continue with Google", "role": "button", "rect": {"x": 20, "y": 80, "w": 200, "h": 40}},
+                    {"id": "e2", "node": 1000002, "kind": "click", "label": "Hidden behind", "role": "button", "rect": {"x": 20, "y": 200, "w": 200, "h": 40}},
+                    {"id": "wait", "kind": "wait", "label": "Wait"}]}
+page = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": ref, "info": {"title": "Login/Signup"}, "snapshot": snap, "hits": [True, False]}])
+assert [(a["id"], a["label"]) for a in page["actions"]] == [("e1", "Close Sign in or Sign up"), ("e2", "Continue with Google"), ("wait", "Wait for the page to update")]
+g = page["actions"][1]
+assert g["frame"] == "F1" and g["rect"]["x"] == 300 and g["rect"]["y"] == 244 and page["guards"]["1000001"] == ["g1"]
+assert page["text"].startswith("Sign in or Sign up\nContinue with Google\nHome") and page["frames"]["F1"]["page_key"] == ["pk"]
+assert nr.perception_gap(page) is None
+# Behind the page's dialog: nothing from the frame.
+assert len(nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": dict(ref, modal=False), "info": {}, "snapshot": snap, "hits": [True, True]}])["actions"]) == 2
+# Before the fix: the dialog offered only Close → a gap, named.
+gap = nr.perception_gap(json.loads(json.dumps(top)))
+assert gap["reason"] == "empty_dialog" and "Sign in or Sign up" in gap["detail"], gap
+# A big frame with nothing in it, and a captcha.
+empty = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": ref, "info": {}, "snapshot": {"actions": [], "text": ""}, "hits": []}])
+assert nr.perception_gap(empty)["reason"] == "unreadable_frame"
+cap = dict(frame, url="https://www.google.com/recaptcha/api2/anchor?k=1&size=normal")
+capped = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": cap, "ref": ref, "info": {}, "snapshot": dict(snap, url=cap["url"]), "hits": [True, True]}])
+assert len(capped["actions"]) == 2 and nr.perception_gap(capped)["reason"] == "captcha"
+badge = dict(frame, url="https://www.google.com/recaptcha/enterprise/anchor?k=1&size=invisible")
+assert "unread_frames" not in nr.merge_frames(json.loads(json.dumps(top)), [{"frame": badge, "ref": ref, "info": {}, "snapshot": None, "hits": []}])
+# A click that changed pixels but not the DOM.
+before = {"fingerprint": "f", "url": "u"}
+after = {"fingerprint": "f", "url": "u", "actions": [{"kind": "click", "label": "Play"}]}
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play"}, 0.4)["reason"] == "unseen_change"
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play", "canvas": True}, 0.4) is None
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play"}, 0.02) is None
+assert nr.visual_change([0] * 10, [0] * 8 + [200, 200]) == 0.2 and nr.visual_change(None, [1]) is None
+# Unnamed controls: many are clutter, one gets a place.
+pins = {"w": 1000, "h": 600, "actions": [{"id": f"e{i}", "node": i, "kind": "click", "role": "button", "label": "button",
+                                          "rect": {"x": 10 * i, "y": 300, "w": 10, "h": 10}} for i in range(1, 8)]
+        + [{"id": "e9", "node": 9, "kind": "click", "role": "link", "label": "link", "rect": {"x": 950, "y": 10, "w": 30, "h": 30}}]}
+assert [a["label"] for a in nr.tidy_unnamed(pins)["actions"]] == ["link with no label at the top right"] and pins["omitted_unnamed"] == 7
+print("frames, labels, unnamed controls and perception gaps ok")

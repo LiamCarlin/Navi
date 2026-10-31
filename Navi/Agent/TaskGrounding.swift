@@ -214,6 +214,9 @@ enum TaskGrounding {
     static func shouldGround(task: String, scope: Scope, words: (specific: Set<String>, generic: Set<String>), named: Bool) -> Bool {
         if scope.recent || refersToMessage(task) { return true }
         if isSearch(task) { return false }
+        // An errand is about the world, not the user's own work: "order me a random chipotle bowl" is
+        // no Onshape "Yarn Bowl", "add it to my cart" no product page from last week (unless "…like last time").
+        if isErrand(task) { return false }
         guard !words.specific.isEmpty || !words.generic.isEmpty else { return false }
         if named || !thingKinds(in: task).isEmpty { return true }
         return task.lowercased().range(of: #"\b(my|our|mine)\b"#, options: .regularExpression) != nil
@@ -288,7 +291,7 @@ enum TaskGrounding {
         let aboutMessages = refersToMessage(task)
         let interval = scope.interval ?? DateInterval(start: now.addingTimeInterval(-UserKnowledge.window), end: now)
 
-        struct Group { var c: Candidate; var bestScore: Double; var nameScore: Double }
+        struct Group { var c: Candidate; var bestScore: Double; var nameScore: Double; var named = 0 }
         var matchScore: [String: Double] = [:]
         var groups: [String: Group] = [:]
         var channelMemo: [String: Bool] = [:]
@@ -300,7 +303,7 @@ enum TaskGrounding {
         }
         for s in sessions where s.end >= interval.start && s.start <= interval.end && !isNoise(s) {
             let skill = AppSkills.skill(bundleID: s.bundleID, url: s.url)
-            if let named, skill?.name != named.name, !(named.bundleIDs.contains(s.bundleID)) { continue }
+            if let named, skill?.name != named.name, !(named.bundleIDs.contains(s.bundleID)), !isInstance(of: named, url: s.url) { continue }
             if !assistantNamed, UserHabits.isAssistant(bundleID: s.bundleID, appName: s.appName) || UserHabits.isAssistant(url: s.url) { continue }
             // Settings and sign-up pages are where one set something up, not the thing.
             if let u = s.url, UserKnowledge.isSetupPage(u), task.lowercased().range(of: #"\b(settings?|access|account|billing|preferences)\b"#, options: .regularExpression) == nil { continue }
@@ -312,8 +315,9 @@ enum TaskGrounding {
             let weak = bag(tagNames.joined(separator: " "))
             var score = 0.0
             var solid = false   // a hit in the session's own title, page or app — tags alone are often a tab bar's OCR
+            var namedHits = 0   // the task's own names it carries in its title, page or app
             for x in w.specific {
-                if strong.contains(x) { score += 2; solid = true } else if placeWords.contains(x) { score += 1.5; solid = true } else if weak.contains(x) { score += 1 }
+                if strong.contains(x) { score += 2; solid = true; namedHits += 1 } else if placeWords.contains(x) { score += 1.5; solid = true; namedHits += 1 } else if weak.contains(x) { score += 1 }
             }
             for x in w.generic {
                 if strong.contains(x) { score += 1; solid = true } else if weak.contains(x) { score += 0.5 }
@@ -348,11 +352,16 @@ enum TaskGrounding {
             if s.end > g.c.lastSeen { g.c.lastSeen = s.end }
             if !s.title.isEmpty, !g.c.did.contains(s.title) { g.c.did.append(s.title) }
             g.bestScore = max(g.bestScore, score)
+            g.named = max(g.named, namedHits)
             // The name from the session that matched best (a page's own title when it has one).
             if score > g.nameScore { g.nameScore = score; g.c.name = name }
             groups[key] = g
         }
-        var out = groups.values.map { g -> Candidate in
+        // Something carries every name the task says ("generative ai"): what carries none of them is another
+        // course of the same app ("my canvas assignments" at another school), not a contender.
+        let all = w.specific.count
+        let fullyNamed = all > 0 && groups.values.contains { $0.named == all }
+        var out = groups.values.filter { !fullyNamed || $0.named > 0 }.map { g -> Candidate in
             var c = g.c
             c.score = g.bestScore + min(2, log2(1 + c.seconds / 300))   // time spent: worked on, not glanced at
             c.did = Array(c.did.prefix(3))
@@ -461,6 +470,26 @@ enum TaskGrounding {
     static func isCommunication(_ task: String) -> Bool {
         UserHabits.candidates(for: task).contains { UserContacts.channelKinds.contains($0.kind) || $0.kind == "calendar" }
             || task.lowercased().range(of: #"\b(send|share|forward|invite|reply|respond|ping|dm|call|tell|ask|remind|introduce)\b"#, options: .regularExpression) != nil
+            || isConversationWith(task)
+    }
+
+    /// "my conversation with mikey", "the chat with bella": a person's chat, not a project they share.
+    static func isConversationWith(_ task: String) -> Bool {
+        task.lowercased().range(of: #"\b(conversation|convo|chat|thread|dms?|messages|texts)\s+with\b"#, options: .regularExpression) != nil
+    }
+
+    /// The user's own instance of a web app the task names ("canvas" → canvas.olin.edu, whose host is
+    /// none of the playbook's): a label of its host is the app's name.
+    static func isInstance(of skill: AppSkill, url: String?) -> Bool {
+        guard let host = url.flatMap(UserHabits.host(of:)), !skill.hosts.isEmpty else { return false }
+        let names = Set(([skill.name] + skill.aliases).flatMap(UserKnowledge.tokens).filter { $0.count >= 4 })
+        return host.split(separator: ".").contains { names.contains(String($0)) }
+    }
+
+    /// Buying, ordering, a cart: things in the world, not the user's own work.
+    static func isErrand(_ task: String) -> Bool {
+        withoutDictation(task).lowercased().range(of: #"\b(order|buy|purchase|checkout|check out|cart|basket|add (it|this|that|them|one) to)\b"#,
+                                                  options: .regularExpression) != nil
     }
 
     /// The grounded thing as `user_context` reads it (planner, Jev, runner).
@@ -499,7 +528,10 @@ enum TaskGrounding {
     }
 
     /// What `task` refers to, settled once (Jev when there is a choice), ≤ `timeout` s.
-    static func ground(task: String, timeout: Double = 2.0) async -> Grounded? {
+    /// `memory`/`jev`: a memory of the caller's (the task bench's copy) instead of the installed one —
+    /// the same code, uncached, no screen probe.
+    static func ground(task: String, timeout: Double = 2.0, memory: ScreenMemory? = nil, jev: JevClient? = nil) async -> Grounded? {
+        if let memory { return await resolve(task: task, knowledge: memory.knowledge, jev: jev, cached: false) }
         guard let k = UserKnowledge.current else { return nil }
         switch lookupOrStart(task: task, knowledge: k) {
         case .done(let g): return g
@@ -538,7 +570,7 @@ enum TaskGrounding {
         if cache.count > 200 { cache = cache.filter { now.timeIntervalSince($0.value.at) < cacheTTL } }
     }
 
-    private static func resolve(task: String, knowledge k: UserKnowledge, jev: JevClient?) async -> Grounded? {
+    private static func resolve(task: String, knowledge k: UserKnowledge, jev: JevClient?, cached: Bool = true) async -> Grounded? {
         let now = Date()
         let snap = k.snapshot(now: now)
         let sc = scope(of: task, now: now)
@@ -552,7 +584,7 @@ enum TaskGrounding {
                                 things: snap.things, people: peopleWords, now: now)
             if !cs.isEmpty {
                 if let jev, jev.isConfigured {
-                    let screen = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+                    let screen = cached ? await MainActor.run { FrontmostProbe.current(includeURL: false) } : nil
                     let (state, questions) = request(task: task, candidates: cs, screen: screen, now: now)
                     do {
                         let r = try await jev.ask(state: JevClient.JSONValue(any: state), questions: questions)
@@ -570,7 +602,7 @@ enum TaskGrounding {
                 }
             }
         }
-        store(result, for: task, at: now)
+        if cached { store(result, for: task, at: now) }
         return result
     }
 

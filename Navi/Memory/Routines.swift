@@ -71,6 +71,13 @@ struct RoutineStep: Codable, Equatable, Sendable {
         }
     }
 
+    /// `human` with the label as it is (a path's item for this very run).
+    var plainHuman: String {
+        var s = self
+        s.slot = nil
+        return s.human
+    }
+
     /// "Message to Haakon Olsen" with slot "haakon olsen" → "Message to …".
     static func blanked(_ label: String, slot: String) -> String {
         let drop = Set(RoutineMiner.tokens(slot))

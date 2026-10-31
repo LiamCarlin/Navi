@@ -105,25 +105,46 @@ enum CUWriter {
 
     struct Answer: Equatable, Sendable {
         var text: String
-        /// Whether the screen itself shows the goal reached, in the writer's judgement.
+        /// Whether the screen itself shows the goal reached, in the writer's judgement (`verdict == .achieved`).
         var achieved: Bool
         /// The next sub-goal for Jev, in terms of the screen.
         var focus: String = ""
         /// What only the user can say.
         var question: String = ""
+        /// The typed outcome: achieved / partial / not achieved / impossible here / needs the user.
+        var verdict: RunVerdict
+
+        init(text: String, achieved: Bool, focus: String = "", question: String = "", verdict: RunVerdict? = nil) {
+            let v = verdict ?? (achieved ? .achieved : .notAchieved)
+            self.text = text
+            self.achieved = v == .achieved
+            self.focus = focus
+            self.question = question
+            self.verdict = v
+        }
+    }
+
+    /// The answer's own words say the goal was not reached ("I couldn't open DoorDash", "isn't
+    /// confirmed", "hasn't been created yet", "I don't see a playlist named Focus"). An answer that
+    /// says so is never an achieved run, whatever flag came with it.
+    static func saysNotDone(_ text: String) -> Bool {
+        let pattern = #"(?i)\b(i (could ?n[o’']t|can ?n[o’']t|cannot|was(n[’']t| not) able|am unable|did ?n[o’']t manage)|unable to|(is|was|has|have)(n[’']t| not) (been |yet )?(confirmed|created|added|sent|found|done|completed|opened|saved)|i (do|did) ?n[o’']t see|not (yet )?(been )?(done|complete|completed|created|added|sent|saved)|still (needs|has) to)\b"#
+        return text.range(of: pattern, options: .regularExpression) != nil
     }
 
     /// upstream ANSWER_SYSTEM, with the action list Navi's Jev actually has.
     static let answerSystem = """
     An agent is driving a user's computer toward the user's goal. A small classifier picks each action, and it has stopped and handed the run to you. You receive the goal, the actions taken, why the classifier stopped, a capture of the screen as it is now (when screen recording is allowed), the text read from that screen, and the text of the screens it passed through on the way, oldest first. You may also receive the focus the classifier was working on, the earlier times it stopped with the focus you gave each time, what the user said when asked, and what the user asked earlier in this conversation.
 
-    Tell the user the result. When the goal asks for information, lead with that information, taken only from those screens and from what the user said: never from memory, and never a guess. When the goal asks for something to be done, say whether the screen shows it done. When the screen does not hold the result, say so plainly, then say what is on screen and the one next step that would get there. Trust the capture over the text where the two disagree. Plain text, no markdown, four sentences at most, and shorter when the user is listening rather than reading (spoken is true). Set achieved to true only when the screen itself shows the goal reached, every part of it: check each thing the goal names, such as which item, where it goes, and what value it takes, and when the screen shows something done but not one of those parts, the goal is not reached.
+    Tell the user the result. When the goal asks for information, lead with that information, taken only from those screens and from what the user said: never from memory, and never a guess. When the goal asks for something to be done, say whether the screen shows it done. When the screen does not hold the result, say so plainly, then say what is on screen and the one next step that would get there. Trust the capture over the text where the two disagree. Plain text, no markdown, four sentences at most, and shorter when the user is listening rather than reading (spoken is true). Set verdict to achieved only when the screen itself shows the goal reached, every part of it: check each thing the goal names, such as which item, where it goes, and what value it takes, and when the screen shows something done but not one of those parts, the goal is not reached. Otherwise verdict is partial (some parts are done), not_achieved (not done yet, but the agent could still get there), impossible (this app or site has no way to do it at all), or needs_user (only the user can go on: a choice or fact only they have, a login, a payment, a permission). Never write about what you yourself can or cannot do; write what the screen shows and what happened.
 
     When the goal is not reached you may keep the run going, in one of two ways and never both. Set focus to send the classifier back to work: one short imperative sentence naming the next step in terms of what this screen shows, quoting the text of the item to use when there is one. The classifier can click an on-screen item, press a control the app lists but does not show, type into a text field (a writer fills in the text, replacing what the field holds), choose a value in a pop-up, press one of the app's keyboard shortcuts, press Return or Escape, scroll, go back, wait, switch to another app, and open a website by its https address; it cannot read, compare, or remember, so a focus is one move, not a plan. It cannot right-click, double-click, drag, or select text, so a focus that needs one of those is refused: name the button, menu, shortcut, or link that does the same. Never conclude from memory that a setting, feature, or page does not exist: apps move and rename them between versions. While the screen still shows a place to look, such as a search result, a row marked as matching, a menu, or a section not yet opened, give opening it as the focus. Do not give again a focus from earlier_stops that changed nothing. Set question to ask the user, only when user_can_be_asked is true, and only for what the screens cannot tell you and the goal leaves open: a choice between options the user would care about, or a fact only the user has. One short question. Never ask for a password or any other credential, and never ask what user_said already answers. Leave both empty when the goal is reached, when no action of the agent's would help, or when the next step is one only the user should take, such as a login or a payment. When the run ends short of the goal, because you leave both empty or because why_the_run_stopped says it ends, say plainly what the agent could not do.
     """
 
-    static let answerSchema: [String: Any] = schema(["achieved": "boolean", "answer": "string", "focus": "string", "question": "string"],
-                                                    order: ["achieved", "answer", "focus", "question"])
+    /// The verdict comes last (keys are sorted): the answer is the reason, the verdict the call.
+    static let answerSchema: [String: Any] = schema(["answer": "string", "focus": "string", "question": "string",
+                                                     "verdict": "enum:achieved|partial|not_achieved|impossible|needs_user"],
+                                                    order: ["answer", "focus", "question", "verdict"])
 
     static func answerPacket(goal: String, screen: CUScreen, history: [String], stopped: String, earlier: [[String: Any]],
                              guidance: CUGuidance, earlierStops: [[String: Any]], canAsk: Bool, spoken: Bool,
@@ -147,16 +168,22 @@ enum CUWriter {
         return p
     }
 
+    /// The writer's reply as an answer: a typed `verdict` (or the older `achieved` flag). An
+    /// "achieved" whose own words say it was not done is read as partial.
     static func parseAnswer(_ data: [String: Any]) -> Answer? {
-        guard let achieved = data["achieved"] as? Bool else { return nil }
         func s(_ k: String) -> String { ((data[k] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
-        return Answer(text: s("answer"), achieved: achieved, focus: s("focus"), question: s("question"))
+        var verdict: RunVerdict
+        if let v = (data["verdict"] as? String).flatMap(RunVerdict.init(loose:)) { verdict = v }
+        else if let achieved = data["achieved"] as? Bool { verdict = achieved ? .achieved : .notAchieved }
+        else { return nil }
+        if verdict == .achieved, saysNotDone(s("answer")) { verdict = .partial }
+        return Answer(text: s("answer"), achieved: verdict == .achieved, focus: s("focus"), question: s("question"), verdict: verdict)
     }
 
     static func composeAnswer(claude: ClaudeClient, model: String, packet: [String: Any], screenshotPNG: Data?) async throws -> Answer {
         let data = try await claude.structured(model: model, system: answerSystem, packet: packet, schema: answerSchema,
                                                maxTokens: 1024, imagePNG: screenshotPNG)
-        guard let a = parseAnswer(data) else { throw NaviError.decoding("The writer's answer has no achieved flag") }
+        guard let a = parseAnswer(data) else { throw NaviError.decoding("The writer's answer has no verdict") }
         return a
     }
 
@@ -164,10 +191,15 @@ enum CUWriter {
 
     /// A strict object schema over string/boolean properties, in the order given (the reason is
     /// written before the flag it justifies).
+    /// A type spelled `"enum:a|b|c"` is a string limited to those values.
     static func schema(_ types: [String: String], order: [String]) -> [String: Any] {
-        ["type": "object",
-         "properties": Dictionary(uniqueKeysWithValues: order.map { ($0, ["type": types[$0]!] as [String: Any]) }),
-         "required": order,
-         "additionalProperties": false]
+        func property(_ t: String) -> [String: Any] {
+            guard t.hasPrefix("enum:") else { return ["type": t] }
+            return ["type": "string", "enum": t.dropFirst(5).split(separator: "|").map(String.init)]
+        }
+        return ["type": "object",
+                "properties": Dictionary(uniqueKeysWithValues: order.map { ($0, property(types[$0]!)) }),
+                "required": order,
+                "additionalProperties": false]
     }
 }

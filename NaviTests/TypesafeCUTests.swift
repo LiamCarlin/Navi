@@ -344,6 +344,81 @@ struct TypesafeCUTests {
         #expect(CUOCRReader.changed(a, c, w: 64, h: 64))
     }
 
+    // MARK: What a person can see and click (perception)
+
+    @Test func aPlaceholderIsNotAValue() {
+        // Music's empty search field reported its placeholder as its value.
+        #expect(AXSnapshot.fieldValue("Search", placeholder: "Search") == "")
+        #expect(AXSnapshot.fieldValue("Search ", placeholder: " Search") == "")
+        #expect(AXSnapshot.fieldValue("coldplay", placeholder: "Search") == "coldplay")
+        #expect(AXSnapshot.fieldValue("Search", placeholder: "") == "Search")
+        #expect(AXSnapshot.fieldValue(nil, placeholder: "Search") == nil)
+        let field = AXElement(id: "e1", role: "AXSearchField", label: "Search", value: "", frame: CGRect(x: 0, y: 0, width: 200, height: 22),
+                              isFocused: true, placeholder: "Search")
+        let f = CUPerception.focusedField(AXSnapshot(elements: [field], focused: "e1"))
+        #expect(f?.placeholder == "Search" && f?.value == "" && f?.label == "")
+    }
+
+    @Test func anEmptyDocumentBodyIsATypingTargetThatSaysSo() {
+        let body = AXElement(id: "e1", role: "AXTextArea", label: "", value: "", frame: CGRect(x: 300, y: 100, width: 600, height: 500))
+        let small = AXElement(id: "e2", role: "AXTextField", label: "", value: "", frame: CGRect(x: 10, y: 10, width: 120, height: 22))
+        let titled = AXElement(id: "e3", role: "AXTextArea", label: "Note", value: "", frame: CGRect(x: 300, y: 100, width: 600, height: 500))
+        #expect(CUPerception.itemText(body) == "empty text area (the document body)")
+        #expect(CUPerception.itemText(small) == "text field")
+        #expect(CUPerception.itemText(titled) == "Note")
+        var filled = body; filled.value = "Student Spark"
+        #expect(CUPerception.itemText(filled) == "text area (the document body)")
+        let screen = CUPerception.perceive(AXSnapshot(elements: [body, small]), ocr: nil, goal: "x")
+        #expect(screen.editableItems.map(\.text).contains("empty text area (the document body)"))
+    }
+
+    @Test func aLayerInFrontLimitsWhatIsOffered() {
+        #expect(AXSnapshot.opensLayer(role: "AXPopover", modalFlag: false, frame: nil, window: nil))
+        let window = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        #expect(AXSnapshot.opensLayer(role: "AXGroup", modalFlag: true, frame: CGRect(x: 200, y: 200, width: 500, height: 400), window: window))
+        #expect(!AXSnapshot.opensLayer(role: "AXGroup", modalFlag: true, frame: CGRect(x: 0, y: 0, width: 10, height: 10), window: window))
+        #expect(!AXSnapshot.opensLayer(role: "AXGroup", modalFlag: false, frame: window, window: window))
+        let menu = AXElement(role: "AXMenuBarItem", label: "File", frame: .zero)
+        let behind = AXElement(role: "AXButton", label: "Compose", frame: CGRect(x: 10, y: 10, width: 50, height: 20))
+        let inside = AXElement(role: "AXButton", label: "Cancel", frame: CGRect(x: 300, y: 300, width: 50, height: 20))
+        let nested = AXElement(role: "AXButton", label: "Save", frame: CGRect(x: 400, y: 300, width: 50, height: 20))
+        // Layer 0 (a popover) holds layer 1 (a group inside it): both count as inside the top-level layer.
+        let kept = AXSnapshot.limitToModal([menu, behind, inside, nested], scopes: [nil, nil, 0, 1], parents: [nil, 0], top: 0,
+                                           webModal: false, isBrowser: false)
+        #expect(kept.map(\.label) == ["File", "Cancel", "Save"])
+        // A web page's dialog leaves the browser's own controls (tabs, address bar) reachable.
+        var tab = AXElement(role: "AXRadioButton", label: "Inbox", frame: .zero); tab.isWebContent = false
+        var page = behind; page.isWebContent = true
+        var dialog = inside; dialog.isWebContent = true
+        #expect(AXSnapshot.limitToModal([tab, page, dialog], scopes: [nil, nil, 0], parents: [nil], top: 0, webModal: true, isBrowser: true)
+            .map(\.label) == ["Inbox", "Cancel"])
+        // A layer whose controls were not walked hides nothing.
+        #expect(AXSnapshot.limitToModal([behind], scopes: [nil], parents: [nil], top: 0, webModal: false, isBrowser: false).count == 1)
+    }
+
+    @Test func focusOnTheWindowClearsEveryCellsFocusFlag() {
+        let cells = (0..<3).map { AXElement(role: "AXCell", label: "Row \($0)", frame: CGRect(x: 0, y: CGFloat($0) * 30, width: 200, height: 24), isFocused: true) }
+        let cleared = AXSnapshot.withAppFocus(cells, focusedIndex: nil, extra: nil, elsewhere: true).map(\.isFocused)
+        #expect(cleared == [false, false, false])
+        let one = AXSnapshot.withAppFocus(cells, focusedIndex: 1, extra: nil, elsewhere: true).map(\.isFocused)
+        #expect(one == [false, true, false])
+        let kept = AXSnapshot.withAppFocus(cells, focusedIndex: nil, extra: nil).map(\.isFocused)
+        #expect(kept == [true, true, true])
+    }
+
+    @Test func perceptionGapsNameWhatTheItemsMiss() {
+        var sheet = AXSnapshot(elements: [AXElement(id: "e1", role: "AXButton", label: "Cancel", frame: CGRect(x: 300, y: 300, width: 60, height: 22))])
+        sheet.modalScope = "Share"
+        #expect(CUPerception.perceptionGap(CUPerception.perceive(sheet, ocr: nil, goal: "x"))?.reason == .emptyDialog)
+        sheet.elements.append(AXElement(id: "e2", role: "AXButton", label: "Messages", frame: CGRect(x: 380, y: 300, width: 60, height: 22)))
+        #expect(CUPerception.perceive(sheet, ocr: nil, goal: "x").perceptionGap == nil)
+        #expect(CUPerception.perceptionGap(CUPerception.perceive(AXSnapshot(elements: []), ocr: [], goal: "x"))?.reason == .nothingReadable)
+        #expect(CUPerception.perceptionGap(Self.screen) == nil)
+        #expect(CUPerception.perceptionGap(Self.screen, before: Self.screen, acted: true, pixelsChanged: true)?.reason == .unseenChange)
+        #expect(CUPerception.perceptionGap(Self.screen, before: Self.screen, acted: true, pixelsChanged: false) == nil)
+        #expect(CUPerception.isCloser("Close Sign in or Sign up") && CUPerception.isCloser("Not Now") && !CUPerception.isCloser("Closed captions"))
+    }
+
     // MARK: Rows and criteria (test_decide.py)
 
     @Test func aDuplicatedLabelNamesItsRowAndAUniqueOneDoesNot() {
