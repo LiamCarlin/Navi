@@ -342,6 +342,37 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     in cart with no coach; Flights picks the right Friday; Chipotle false "done" now refused.
     32 — a stuck or unsure stop is judged and, when not there yet, finished by a Claude takeover
     on the same tab (see "Stuck → Claude takeover; typed outcomes").
+    Perception — everything a person can see and click, nothing they can't (2026-10-30, after
+    DoorDash's Sign In → Close loop): 33 — frames are part of the page: DoorDash's sign-in
+    dialog is an aria-modal div whose content is a same-site cross-origin iframe
+    (identity.doordash.com), so the table held only Close. Visible frames are read with the same
+    snapshot (same-process: an isolated world via `Page.createIsolatedWorld`; out-of-process: the
+    iframe target's own session, found by `parentFrameId`), their controls join at top-level
+    coordinates only where a parent hit test reaches the `<iframe>` and never behind the page's
+    dialog; actions carry `frame`, clicks/fills/selects are resolved in the frame (`FrameReader`);
+    node ids of frame n start at n × 1,000,000; captcha frames are never offered (an invisible
+    reCAPTCHA badge is ignored); 34 — open shadow roots are queried, hit-tested and read, and
+    `<style>`/`<script>` text is never in a name (DoorDash labels ended in ".prism-size-… {…}");
+    35 — role=dialog/alertdialog and ARIA-less fixed overlays count as the dialog in front when a
+    backdrop blocks the page (`page.dialog` names it, its text comes first); 6+ unnamed controls
+    of one role (map pins) are dropped, a lone one is "link with no label at the top right";
+    36 — a perception gap is reported: `page["perception_gap"]` = `{reason: unreadable_frame |
+    empty_dialog | unseen_change | captcha, detail, …}` and one `{"event":"perception_gap",…}`
+    line per page, after up to 4 re-looks 0.25 s apart (frames load after their dialog);
+    `unseen_change` = a click whose DOM fingerprint stayed the same while a 32×20 thumbnail of
+    the tab changed ≥ 12 %. The run controller decides (vision takeover; captcha → the user).
+    Fixtures run in a private headless Chrome: `scripts/ultrafast/test_perception_chrome.py`.
+    Live replay: "open DoorDash's sign in window and switch it to the Sign Up tab" → Sign up or
+    Login → Sign Up (inside the iframe) → done, 2 steps, no coach.
+    Native side (`AXSnapshot`, `CUPerception`): containers with > 12 children are walked a page
+    at a time (the rest after every other region) and a walk with < 12 controls stretches its
+    0.15 s box to 0.45 s — axprobe: Music 18 → 36 controls (player, shelves), Outlook 20 → 48,
+    Messages 1 → 14 (Catalyst: ~6 ms per AX call); a sheet is the walk's root, a popover or an
+    `AXModal` group limits the items (`AXSnapshot.modalScope`); a value equal to the placeholder
+    is empty; a text area that only shows text (Messages bubbles: value not settable) is text;
+    an unnamed big text area is "empty text area (the document body)"; `CUScreen.perceptionGap`
+    / `CUPerception.perceptionGap(_:before:acted:pixelsChanged:)` → `empty_dialog`,
+    `nothing_readable`, `unseen_change` for the run loop.
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,

@@ -23,6 +23,8 @@ struct CURunState: Sendable {
         case lowConfidence = "low confidence"
         case stalled
         case stuck
+        /// What Jev is offered misses what is on screen (`CUScreen.perceptionGap`).
+        case perceptionGap = "perception gap"
         case stepLimit = "step limit"
 
         /// The words the writer is handed (runner.py `STOPPED`).
@@ -33,6 +35,7 @@ struct CURunState: Sendable {
             case .lowConfidence: return "the classifier was not confident enough in any next action"
             case .stalled: return "the last actions changed nothing"
             case .stuck: return "the agent is stuck: its last actions changed nothing, as they did twice before on these same pages, and the focus given each time did not help, so the run ends with this answer"
+            case .perceptionGap: return "part of the screen cannot be read from the accessibility tree (a dialog with nothing readable in it, or a window nothing can be read from), so the classifier cannot act on it"
             case .stepLimit: return "the run used every step it was allowed"
             }
         }
@@ -161,7 +164,7 @@ enum CUEscalation {
         if answer.verdict == .needsUser { return .end }
         // Circling, stuck after focuses, or a focus Jev could not act on: Jev has shown it cannot
         // do this from the tree — Claude's eyes go first.
-        if takeoverAvailable, outcome == .stuck || focusWasTried { return .takeover }
+        if takeoverAvailable, outcome == .stuck || outcome == .perceptionGap || focusWasTried { return .takeover }
         if mayResume, !answer.focus.isEmpty { return .resumeJev(answer.focus) }
         if takeoverAvailable { return .takeover }
         return .end

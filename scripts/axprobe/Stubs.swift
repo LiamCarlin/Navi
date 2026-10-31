@@ -53,7 +53,9 @@ enum UserMoves {
         var next: Set<Int> = []
         var shortcuts: [(String, String)] = []
         var state: [String: Any]?
-        var isEmpty: Bool { clicks.isEmpty && next.isEmpty && state == nil }
+        var routeNext: Set<Int> = []
+        var route: [String: Any]?
+        var isEmpty: Bool { clicks.isEmpty && next.isEmpty && state == nil && routeNext.isEmpty && route == nil }
     }
     static let note = "How this user does things themselves, from their own clicks, shortcuts and past sessions: "
         + "similar tasks they did before and the steps they took, their habits, and what they click most here. "
@@ -62,3 +64,10 @@ enum UserMoves {
     static let itemRule = " Items marked as this user's (\"this user clicks this here\", \"what this user usually clicks next\") are the ones this user picks on this screen: where the goal could mean several items, pick theirs."
     static let kindRule = " Items marked user_clicks / user_next, shortcuts this user uses and `how_this_user_works` show how this user does it themselves: when they serve the goal, follow their way."
 }
+/// Voice's goal normaliser (CUFacts.literalTarget calls it): the probe's goals are typed, not spoken.
+enum VoiceDecider { static func normalizedGoal(_ s: String) -> String { s } }
+/// `UserRoutines` without screen memory: the probe follows no routine.
+enum UserRoute { static let itemRule = ""; static let kindRule = "" }
+/// The app's test-host guard and settings suite: the probe is never a test host and uses the standard suite.
+enum TestHost { static func guarded(_ c: URLSessionConfiguration) -> URLSessionConfiguration { c } }
+extension UserDefaults { static var navi: UserDefaults { .standard } }

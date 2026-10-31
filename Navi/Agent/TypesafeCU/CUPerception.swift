@@ -30,6 +30,10 @@ struct CUScreen: @unchecked Sendable {
     }
     var offscreen: [AXElement] { snapshot.offscreen }
     var signature: CUSignature { .of(app: app, url: url ?? snapshot.windowTitle, field: field, items: items) }
+    /// What a person sees here that the items do not carry (a dialog with nothing but its close
+    /// button, a window nothing can be read from), or nil. `CUPerception.perceptionGap(_:before:…)`
+    /// also judges an action whose effect was only visible in pixels.
+    var perceptionGap: CUPerceptionGap? { CUPerception.perceptionGap(self) }
 
     func element(forItem index: Int) -> AXElement? { elementForItem[index].flatMap(snapshot.element) }
     /// Text inputs Jev may type into, as items. Never a secure field, and never a list row's
@@ -43,6 +47,21 @@ struct CUScreen: @unchecked Sendable {
     var selectableItems: [CUItem] {
         items.filter { it in element(forItem: it.index).map { $0.isPopUp && !$0.options.isEmpty } ?? false }
     }
+}
+
+/// Something a person sees that the item list does not carry, so Jev cannot act on it. The run
+/// loop decides what follows (a vision look); perception only says what is missing.
+struct CUPerceptionGap: Equatable, Sendable {
+    enum Reason: String, Sendable {
+        /// A sheet / popover / modal dialog is in front and offers nothing but closing it.
+        case emptyDialog = "empty_dialog"
+        /// Nothing on the window to act on or read, even after OCR (a canvas, a game, a CEF shell).
+        case nothingReadable = "nothing_readable"
+        /// The last action changed pixels while the items stayed the same.
+        case unseenChange = "unseen_change"
+    }
+    var reason: Reason
+    var detail: String
 }
 
 /// One OCR line (or merged block): text, Vision's confidence, box in screen points.
@@ -65,7 +84,7 @@ enum CUPerception {
         let echoes = CUFacts.goalEchoes(goal)
         // Controls: every element the walk kept. An unlabelled field still gets a name.
         let controls: [(CUItem, String)] = snapshot.elements.compactMap { e in
-            let text = e.label.isEmpty ? (e.isTextInput ? "text field" : "") : e.label
+            let text = itemText(e)
             guard !text.isEmpty else { return nil }
             return (CUItem(index: 0, text: text, confidence: 1, box: e.frame, role: CURoles.word(e.role), source: .ax), e.id)
         }
@@ -92,7 +111,53 @@ enum CUPerception {
 
     static func focusedField(_ snapshot: AXSnapshot) -> CUField? {
         guard let f = snapshot.focusedElement, f.isTextInput, !f.isSecure else { return nil }
-        return CUField(role: f.role, label: f.label, placeholder: "", value: f.value ?? "", frame: f.frame, elementID: f.id)
+        let label = f.label == f.placeholder ? "" : f.label
+        return CUField(role: f.role, label: label, placeholder: f.placeholder, value: f.value ?? "", frame: f.frame, elementID: f.id)
+    }
+
+    static let bodyMinSize = CGSize(width: 200, height: 80)
+
+    /// The item text for a control. A field with no name is still a field — and a large text area
+    /// with nothing in it (a new note's body, an empty document) says so, so "type it into the
+    /// note" has a target that reads like one.
+    static func itemText(_ e: AXElement) -> String {
+        if !e.label.isEmpty, !(e.isTextInput && e.label == e.placeholder && (e.value ?? "").isEmpty && isBody(e)) { return e.label }
+        guard e.isTextInput else { return "" }
+        guard isBody(e) else { return e.role == "AXTextArea" ? "text area" : "text field" }
+        let hint = e.placeholder.isEmpty ? "" : " — ‘\(e.placeholder)’"
+        return (e.value ?? "").isEmpty ? "empty text area (the document body)" + hint : "text area (the document body)"
+    }
+
+    static func isBody(_ e: AXElement) -> Bool {
+        e.role == "AXTextArea" && e.frame.width >= bodyMinSize.width && e.frame.height >= bodyMinSize.height
+    }
+
+    // MARK: Perception gaps
+
+    static let closerLabels: Set<String> = ["close", "cancel", "dismiss", "done", "ok", "not now", "no thanks", "skip",
+                                            "back", "go back", "maybe later", "x", "×", "✕"]
+
+    static func isCloser(_ text: String) -> Bool {
+        let t = CUFacts.plainLabel(text)
+        return closerLabels.contains(t) || closerLabels.contains(where: { t.hasPrefix($0 + " ") && ["close", "dismiss", "cancel"].contains($0) })
+    }
+
+    /// What the screen is missing, or nil. `before`/`acted`/`pixelsChanged` judge the last action:
+    /// it changed the capture (`CUOCRReader.changed`) while the item signature stayed the same.
+    static func perceptionGap(_ screen: CUScreen, before: CUScreen? = nil, acted: Bool = false, pixelsChanged: Bool? = nil) -> CUPerceptionGap? {
+        let controls = screen.items.filter { $0.fromAX && $0.role != "menu" }
+        if let scope = screen.snapshot.modalScope, !controls.isEmpty, controls.allSatisfy({ isCloser($0.text) }) {
+            return CUPerceptionGap(reason: .emptyDialog,
+                                   detail: "The \(scope) in front offers nothing but closing it — its content is not readable.")
+        }
+        if screen.usedOCR, !screen.items.contains(where: { $0.role != "menu" }) {
+            return CUPerceptionGap(reason: .nothingReadable, detail: "Nothing on \(screen.app)'s window can be read, even with OCR.")
+        }
+        if acted, pixelsChanged == true, let before, before.signature == screen.signature {
+            return CUPerceptionGap(reason: .unseenChange,
+                                   detail: "The last action visibly changed \(screen.app)'s window, but nothing Navi reads changed.")
+        }
+        return nil
     }
 
     /// Whether a block sits inside the focused one-line field: its value or placeholder read

@@ -86,6 +86,9 @@ struct RunOutcomeTests {
         #expect(E.next(Self.answer(.notAchieved, focus: "Click 'Body'"), outcome: .stepLimit, mayResume: false, takeoverAvailable: true) == .takeover)
         // Nothing left to try.
         #expect(E.next(Self.answer(.notAchieved, focus: "f"), outcome: .stuck, mayResume: false, takeoverAvailable: false) == .end)
+        // A screen Jev can't be offered (a sheet with only Close): Claude's eyes, not another Jev guess.
+        #expect(E.next(Self.answer(.notAchieved, focus: "Click 'Continue with Google'"), outcome: .perceptionGap, mayResume: true, takeoverAvailable: true) == .takeover)
+        #expect(E.next(Self.answer(.notAchieved, focus: "f"), outcome: .perceptionGap, mayResume: true, takeoverAvailable: false) == .resumeJev("f"))
     }
 
     @Test func aTakeoverHandsBackOnlyOnProgress() {

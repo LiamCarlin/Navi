@@ -126,6 +126,17 @@ Reliability adaptations (from failed runs, see git log):
      back to Jev once the page moved on. The done event carries `outcome` and
      `answer`. Claude calls retry a dead pooled connection (the "[Errno 32]
      Broken pipe" that killed the coach). Details at the section comment.
+ 33. Frames are part of the page: visible same- and out-of-process iframes are
+     read too (DoorDash's sign-in dialog is an identity.doordash.com iframe);
+     their controls join only where a click reaches them; actions carry
+     `frame`; captcha frames are never offered.
+ 34. Open shadow roots are queried and hit-tested; <style>/<script> text is
+     never part of a label.
+ 35. role=dialog/alertdialog and backdrop overlays count as the dialog in
+     front; 6+ unnamed controls of one role (map pins) are dropped.
+ 36. A perception gap (unreadable_frame / empty_dialog / unseen_change /
+     captcha) is reported in the page and as one event; the run controller
+     decides what to do with it.
 """
 
 import argparse
@@ -509,10 +520,72 @@ class FastBrowser(Browser):
 
     def close(self):
         # The tab was the user's before the run: leave it exactly where it is.
+        FRAMES.pop(getattr(self, "session", None), None)
         if self.attached:
             self.target = None
             return
         super().close()
+
+    # Adaptation 33: a frame element is fresh when its own frame's page key and guard still match.
+    def fresh(self, page, action=None):
+        if action is not None and action.get("frame") and action["kind"] in {"click", "select"}:
+            node, fid = action["node"], action["frame"]
+            if type(node) is not int:
+                return False
+            try:
+                current = frame_reader(self.session).evaluate(
+                    fid, "(() => { const c=window.__jevFast; "
+                         f"return c ? [c.pageKey(),c.guard(c.nodes.get({node}))] : null; }})()")
+            except StalePage:
+                return False
+            return current == [(page.get("frames") or {}).get(fid, {}).get("page_key"), page["guards"].get(str(node))]
+        return super().fresh(page, action)
+
+    # Adaptation 36: thumbnails around a click, and the perception gap after an observation.
+    def thumbnail(self, page):
+        try:
+            w, h = page.get("w"), page.get("h")
+            if not w or not h:
+                return None
+            shot = self.call("Page.captureScreenshot", format="jpeg", quality=40,
+                             clip={"x": 0, "y": 0, "width": w, "height": h, "scale": 0.1})
+            return thumbnail_cells(shot.get("data"))
+        except Exception:  # noqa: BLE001 — no evidence either way
+            return None
+
+    def act(self, action, page, text=None):
+        self.acted_on = (page, action)
+        self.before_thumb = self.thumbnail(page) if action.get("kind") in {"click", "select"} else None
+        return super().act(action, page, text=text)
+
+    def observe(self, screenshot=True):
+        acted = getattr(self, "acted_on", None)
+        self.acted_on = None
+        page = super().observe(screenshot=screenshot)
+        before, action = acted if acted else (None, None)
+        changed = None
+        if before is not None and before.get("fingerprint") == page.get("fingerprint") and getattr(self, "before_thumb", None):
+            changed = visual_change(self.before_thumb, self.thumbnail(page))
+        gap = perception_gap(page, before, action, changed)
+        retries = 0
+        retried = self.__dict__.setdefault("gaps_retried", set())
+        key = gap and (page.get("url"), gap["reason"], gap.get("detail"))
+        if gap and gap["reason"] in {"unreadable_frame", "empty_dialog"} and key not in retried:
+            # A dialog's frame loads after the dialog: look again (once per gap) before calling it one.
+            retried.add(key)
+            while gap and retries < GAP_RETRIES:
+                retries += 1
+                time.sleep(GAP_RETRY_S)
+                page = super().observe(screenshot=screenshot)
+                gap = perception_gap(page)
+        if gap:
+            page["perception_gap"] = gap
+            reported = self.__dict__.setdefault("gaps_reported", set())
+            if page.get("fingerprint") not in reported:
+                reported.add(page.get("fingerprint"))
+                emit("perception_gap", url=page.get("url"), elements=sum(1 for a in page.get("actions", []) if a.get("kind") in INTERACTIVE),
+                     retries=retries, **gap)
+        return page
 
 
 def same_page(a, b):
@@ -1938,8 +2011,10 @@ CLICK_POINT_JS = """(action => {
   points.push([b.x+dx,b.y+dy],[b.right-dx,b.y+dy],[b.x+dx,b.bottom-dy],[b.right-dx,b.bottom-dy]);
   for (const [x,y] of points) {
     if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
-    const t=document.elementFromPoint(x,y);
-    if (t && e.contains(t)) return {x,y};
+    // Adaptation 34: the hit test descends into open shadow roots, like the snapshot's.
+    let t=document.elementFromPoint(x,y);
+    for (let i=0; t && t.shadowRoot && i<20; i++) { const s=t.shadowRoot.elementFromPoint(x,y); if (!s || s===t) break; t=s; }
+    for (let n=t; n; n=n instanceof ShadowRoot ? n.host : n.parentNode) if (n===e) return {x,y};
   }
   return null;
 })"""
@@ -1966,10 +2041,16 @@ def browser_operation_navi(request):
     """Upstream `browser_operation`, with click/fill targeting from CLICK_POINT_JS and
     dropdowns set by SELECT_JS. A target that is gone is a StalePage (observe again), never
     an error that ends the run."""
+    if request["operation"] == "observe":
+        # Adaptations 33–35: frames, labels and unnamed controls on top of the snapshot.
+        return perceive(request["session"], _upstream_browser_operation(request))
     if request["operation"] == "act" and request["action"]["kind"] == "select":
         action = request["action"]
         if type(action["node"]) is not int:
             raise ValueError("Invalid observed node")
+        if action.get("frame"):
+            frame_select(request["session"], action)
+            return {"executed": action["id"]}
         result = cdp("Runtime.evaluate", session_id=request["session"],
                      expression=SELECT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
         if result.get("exceptionDetails") or not result.get("result", {}).get("value"):
@@ -1984,13 +2065,16 @@ def browser_operation_navi(request):
     def call(method, **params):
         return cdp(method, session_id=session, **params)
 
-    result = call("Runtime.evaluate", expression=CLICK_POINT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
-    if result.get("exceptionDetails"):
-        raise StalePage("Document changed during evaluation")
-    target = result.get("result", {}).get("value")
-    if target is None:
-        raise StalePage("Target changed or is covered. Observe again.")
-    x, y = target["x"], target["y"]
+    if action.get("frame"):
+        x, y = frame_point(session, action)      # adaptation 33: resolved and hit-tested in its frame
+    else:
+        result = call("Runtime.evaluate", expression=CLICK_POINT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+        if result.get("exceptionDetails"):
+            raise StalePage("Document changed during evaluation")
+        target = result.get("result", {}).get("value")
+        if target is None:
+            raise StalePage("Target changed or is covered. Observe again.")
+        x, y = target["x"], target["y"]
     for event in ("mousePressed", "mouseReleased"):
         call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
     if action.get("dblclick"):
@@ -2010,7 +2094,7 @@ def browser_operation_navi(request):
             call("Input.dispatchKeyEvent", type="keyDown", key="a", code="KeyA", modifiers=modifiers, commands=["selectAll"])
             call("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", modifiers=modifiers)
         call("Input.insertText", text=request["text"])
-        if is_recipient_label(action.get("label")) and not action.get("docs_body"):
+        if is_recipient_label(action.get("label")) and not action.get("docs_body") and not action.get("frame"):
             RECIPIENT_NOTES.append(pick_recipient(call, action["node"], request["text"]))
     return {"executed": action["id"]}
 
@@ -2458,6 +2542,110 @@ SNAPSHOT_PATCHES = [
      "    if (ctx) a.label=a.label+' — '+ctx.slice(0,70);\n"
      "  }\n"
      "  const text=words.join('\\n').slice(0,6000), height=document.documentElement.scrollHeight;"),
+    # Adaptation 34 — open shadow roots are part of the page. Controls inside web components
+    # (Shopify, Salesforce, Reddit, many checkouts) were never enumerated, and a hit test that
+    # lands in a shadow tree returns its host, so the reachability check dropped them anyway.
+    # `roots` holds the document and every open shadow root; queries, hit tests and "inside
+    # the dialog" all cross shadow boundaries.
+    ("  const safe = e => !['password','file','hidden'].includes(e.type);\n",
+     "  const safe = e => !['password','file','hidden'].includes(e.type);\n"
+     "  const roots=[document];\n"
+     "  for (let i=0; i<roots.length && roots.length<300; i++) for (const h of roots[i].querySelectorAll('*')) if (h.shadowRoot) roots.push(h.shadowRoot);\n"
+     "  const deepAll=sel=>roots.length===1 ? [...document.querySelectorAll(sel)] : roots.flatMap(r=>[...r.querySelectorAll(sel)]);\n"
+     "  const within=(m,e)=>{ for (let n=e; n; n=n instanceof ShadowRoot ? n.host : n.parentNode) if (n===m) return true; return false; };\n"
+     "  const deepHit=(x,y)=>{ let t=document.elementFromPoint(x,y);\n"
+     "    for (let i=0; t && t.shadowRoot && i<20; i++) { const s=t.shadowRoot.elementFromPoint(x,y); if (!s || s===t) break; t=s; }\n"
+     "    return t; };\n"
+     # Adaptation 35 — the top layer. A dialog is what a person can act on when the page
+     # behind it is blocked: aria-modal / <dialog> as before, and also role=dialog/alertdialog
+     # and plain fixed overlays (no ARIA at all) when a backdrop covers the rest of the viewport.
+     "  const area=r=>Math.max(0,r.width)*Math.max(0,r.height), VP=()=>innerWidth*innerHeight;\n"
+     "  const CONTROLS='a[href],button,input,select,textarea,[role=\"button\"],[role=\"link\"],[role=\"textbox\"]';\n"
+     "  const translucent=s=>{ const c=String(s.backgroundColor||'').match(/[\\d.]+/g);\n"
+     "    return (!!c && c.length===4 && +c[3]>0.05 && +c[3]<1) || (!!s.backdropFilter && s.backdropFilter!=='none'); };\n"
+     "  const blocks=(t,m)=>{\n"
+     "    for (let n=t, i=0; n && n.nodeType===1 && i<4; n=n.parentElement, i++) {\n"
+     "      if (m && within(m,n)) return true;\n"
+     "      const s=getComputedStyle(n);\n"
+     "      if ((s.position==='fixed' || s.position==='absolute') && area(n.getBoundingClientRect())>=VP()*0.8 &&\n"
+     "          ((m && within(n,m)) || !n.querySelector(CONTROLS))) return true;\n"
+     "    }\n"
+     "    return false;\n"
+     "  };\n"
+     "  const blocksPage=m=>{\n"
+     "    const b=m.getBoundingClientRect();\n"
+     "    if (area(b)>=VP()*0.9) return true;\n"
+     "    let out=0, hit=0;\n"
+     "    for (const [fx,fy] of [[.03,.5],[.97,.5],[.5,.03],[.5,.97],[.03,.03],[.97,.03],[.03,.97],[.97,.97],[.2,.5],[.8,.5]]) {\n"
+     "      const x=innerWidth*fx, y=innerHeight*fy;\n"
+     "      if (x>=b.left && x<=b.right && y>=b.top && y<=b.bottom) continue;\n"
+     "      out++;\n"
+     "      if (blocks(deepHit(x,y),m)) hit++;\n"
+     "    }\n"
+     "    return out>0 && hit>=Math.ceil(out*0.75);\n"
+     "  };\n"
+     "  const overlayLayer=()=>{\n"
+     "    let L=null;\n"
+     "    for (let n=deepHit(innerWidth/2,innerHeight/2); n && n!==document.body && n!==document.documentElement;\n"
+     "         n=n.parentElement || (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null))\n"
+     "      if (getComputedStyle(n).position==='fixed') L=n;\n"
+     "    if (!L || L.closest('[aria-hidden=\"true\"],[inert]')) return [];\n"
+     "    const b=L.getBoundingClientRect();\n"
+     "    if (area(b)<VP()*0.06) return [];\n"
+     "    if (area(b)>=VP()*0.9) return translucent(getComputedStyle(L)) ||\n"
+     "      [...L.children].some(c=>area(c.getBoundingClientRect())>=VP()*0.8 && translucent(getComputedStyle(c))) ? [L] : [];\n"
+     "    return blocksPage(L) ? [L] : [];\n"
+     "  };\n"
+     "  const dialogName=m=>{\n"
+     "    const by=(m.getAttribute('aria-labelledby')||'').split(/\\s+/).map(id=>(m.getRootNode().getElementById ? m.getRootNode().getElementById(id) : null)||document.getElementById(id))\n"
+     "      .filter(Boolean).map(e=>e.innerText).join(' ');\n"
+     "    const h=m.querySelector('h1,h2,h3,h4,[role=\"heading\"]');\n"
+     "    return String(m.getAttribute('aria-label')||by||(h && h.innerText)||String(m.innerText||'').split('\\n').find(t=>t.trim())||'dialog').replace(/\\s+/g,' ').trim().slice(0,80);\n"
+     "  };\n"),
+    ("for (const e of document.querySelectorAll(selector)) {", "for (const e of deepAll(selector)) {"),
+    ("(e===t || e.contains(t) || t.contains(e) ||", "(e===t || within(e,t) || within(t,e) ||"),
+    ("if (reaches(e,document.elementFromPoint(px,py))) return false;", "if (reaches(e,deepHit(px,py))) return false;"),
+    # Adaptation 34 — <style>/<script> text is never part of a name. DoorDash's buttons embed a
+    # <style> element, so labels read "Build Your Pizza - $11.39 .prism-size-msf7vl > * {…".
+    ("n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : ''",
+     "n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' && !/^(STYLE|SCRIPT|NOSCRIPT|TEMPLATE)$/.test(n.tagName) ? name(n,seen) : ''"),
+    (".map(id=>name(document.getElementById(id),seen))",
+     ".map(id=>name((e.getRootNode().getElementById ? e.getRootNode().getElementById(id) : null)||document.getElementById(id),seen))"),
+    # Adaptation 35 — which layers count as the dialog in front (see the helpers above).
+    ("const modals=[...document.querySelectorAll('[aria-modal=\"true\"],dialog')].filter(m=>{",
+     "const modals=[...deepAll('[aria-modal=\"true\"],dialog,[role=\"dialog\"],[role=\"alertdialog\"]')].filter(m=>{"),
+    ("    const top=document.elementFromPoint(cx,cy);\n    return !!top && m.contains(top);\n  });\n",
+     "    const top=deepHit(cx,cy);\n"
+     "    if (!top || !within(m,top)) return false;\n"
+     "    return m.getAttribute('aria-modal')==='true' || m.tagName==='DIALOG' || blocksPage(m);\n"
+     "  });\n"
+     "  if (!modals.length) modals.push(...overlayLayer());\n"
+     "  cache.modals=modals;\n"),
+    ("if (modals.length && !modals.some(m=>m.contains(e))) continue;", "if (modals.length && !modals.some(m=>within(m,e))) continue;"),
+    ("if (modals.length && !modals.some(m=>m.contains(c))) continue;", "if (modals.length && !modals.some(m=>within(m,c))) continue;"),
+    # The dialog's own text comes first (it is what the person is reading), and text inside
+    # open shadow roots is read too. Upstream walked document.body only and stopped at 6000
+    # characters — usually before reaching a dialog appended at the end of the body.
+    ("const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);\n"
+     "  const range=document.createRange(); let node,length=0;\n"
+     "  while ((node=walker.nextNode()) && length<6000) {",
+     "const words=[], textRoots=[...modals.map(m=>[m,true]), ...roots.map(r=>[r===document ? document.body : r,false])];\n"
+     "  let walker=null, modalPass=false, wi=0;\n"
+     "  const range=document.createRange(); let node,length=0;\n"
+     "  while (length<6000) {\n"
+     "    node=walker && walker.nextNode();\n"
+     "    if (!node) { if (wi>=textRoots.length) break; walker=document.createTreeWalker(textRoots[wi][0],NodeFilter.SHOW_TEXT); modalPass=textRoots[wi][1]; wi++; continue; }"),
+    ("if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;",
+     "if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;\n"
+     "    if (!modalPass && modals.length && modals.some(m=>within(m,parent))) continue;"),
+    # What the page reports beyond upstream: the open dialog's name and how many visible
+    # frames could hold more of the page (adaptation 33 reads them only when there are any).
+    ("scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};",
+     "scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,\n"
+     "    dialog:modals.length ? dialogName(modals[modals.length-1]) : null,\n"
+     "    frame_candidates:deepAll('iframe,frame').filter(f=>{ const r=f.getBoundingClientRect();\n"
+     "      return r.width>=24 && r.height>=24 && r.right>0 && r.bottom>0 && r.left<innerWidth && r.top<innerHeight &&\n"
+     "        f.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); }).length};"),
 ]
 
 
@@ -2471,6 +2659,506 @@ def patched_snapshot_js():
             raise RuntimeError("upstream snapshot.js changed; the canvas patch in navi_runner.py needs updating")
         js = js.replace(old, new)
     return js
+
+
+# --- Adaptation 33: what is inside a frame is on the page ---------------------
+#
+# The snapshot runs in the top document only, so anything in an <iframe> was invisible to
+# Jev. DoorDash's "Sign In" opens an aria-modal dialog whose whole content — "Continue with
+# Google", the email field — is an iframe from identity.doordash.com: the table held only the
+# dialog's Close button, and Jev clicked Sign In → Close → Sign In until the coach gave up.
+# Embedded checkouts, consent managers, payment and login widgets work the same way.
+#
+# Every visible frame is now read with the same patched snapshot in an isolated world of its
+# own document — same-process frames (same-origin or same-site) through the page's session,
+# out-of-process ones (cross-site) through a session attached to their target — and its
+# controls join the table at their place on screen: offset by the <iframe>'s content box,
+# kept only where a hit test in the parent lands on that <iframe> (nothing covers them), and
+# dropped when the page has a dialog open that the frame is not inside. Clicks go to the
+# top-level coordinates (Chrome routes input into frames); the element is resolved and
+# hit-tested in its own frame first, exactly like a top-document click. Node ids of a frame
+# start at FRAME_NODE_BASE × its number, so they never collide with the top document's.
+
+FRAME_WORLD = "navi-perception"
+FRAME_NODE_BASE = 1_000_000
+MAX_FRAMES = 10
+FRAME_DEPTH = 3
+CAPTCHA_FRAME = re.compile(r"recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile|arkoselabs|funcaptcha|captcha", re.I)
+INVISIBLE_CAPTCHA = re.compile(r"[?&]size=invisible\b", re.I)
+
+# Runs on the <iframe> element (`this`) in its parent's world, after that world's snapshot:
+# where the frame's content box is, what of it is on screen, whether it is inside the
+# parent's open dialog, and which of `points` (parent coordinates) a click would reach.
+FRAME_INFO_FN = """function (points) {
+  const f=this, c=window.__jevFast;
+  if (!f || !f.isConnected || f.closest('[aria-hidden="true"],[inert]') ||
+      !f.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
+  const r=f.getBoundingClientRect(), s=getComputedStyle(f), px=v=>parseFloat(v)||0;
+  const x=r.x+f.clientLeft+px(s.paddingLeft), y=r.y+f.clientTop+px(s.paddingTop);
+  const w=f.clientWidth-px(s.paddingLeft)-px(s.paddingRight), h=f.clientHeight-px(s.paddingTop)-px(s.paddingBottom);
+  if (w<24 || h<24) return null;
+  const clip=[Math.max(0,x),Math.max(0,y),Math.min(innerWidth,x+w),Math.min(innerHeight,y+h)];
+  if (clip[2]-clip[0]<12 || clip[3]-clip[1]<12) return null;
+  const within=(m,e)=>{ for (let n=e; n; n=n instanceof ShadowRoot ? n.host : n.parentNode) if (n===m) return true; return false; };
+  const hit=(hx,hy)=>{ let t=document.elementFromPoint(hx,hy);
+    for (let i=0; t && t.shadowRoot && i<20; i++) { const q=t.shadowRoot.elementFromPoint(hx,hy); if (!q || q===t) break; t=q; }
+    return t===f; };
+  const modals=(c && c.modals) || [];
+  const reachable=[[.5,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8],[.5,.15],[.5,.85]].some(([a,b])=>
+    hit(clip[0]+(clip[2]-clip[0])*a, clip[1]+(clip[3]-clip[1])*b));
+  return {x,y,w,h,clip,reachable,modal:!modals.length || modals.some(m=>within(m,f)),
+    title:f.title||f.name||'',hits:(points||[]).map(([hx,hy])=>hx>=clip[0] && hx<clip[2] && hy>=clip[1] && hy<clip[3] && hit(hx,hy))};
+}"""
+
+
+def frame_snapshot_js(number):
+    """The patched snapshot, for frame `number`: its node ids start above the top document's."""
+    return ("(() => { window.__jevFast ||= {ids:new WeakMap(), nodes:new Map(), next:%d}; return %s; })()"
+            % (FRAME_NODE_BASE * number + 1, browser_module.READ_STATE))
+
+
+class FrameReader:
+    """Reads the visible frames of one tab (one page session) and routes input into them."""
+
+    def __init__(self, session):
+        self.session = session
+        self.numbers = {}     # frame id → small number (node-id base)
+        self.attached = {}    # out-of-process frame id → its own session
+        self.last = {}        # frame id → where it was read: session, context, parent, offset
+
+    def call(self, method, session=None, **params):
+        return cdp(method, session_id=session or self.session, **params)
+
+    def number(self, fid):
+        return self.numbers.setdefault(fid, len(self.numbers) + 1)
+
+    def tree(self):
+        """The top frame's id and its descendant frames, parents first: id, parent, the session
+        that holds the frame's document, url. Page.getFrameTree lists the frames in this
+        renderer; out-of-process frames are iframe targets whose parentFrameId we know."""
+        frames = []
+
+        def local(node, session, depth):
+            for child in node.get("childFrames") or []:
+                f = child["frame"]
+                frames.append({"id": f["id"], "parent": node["frame"]["id"], "session": session,
+                               "url": f.get("url", "") + (f.get("urlFragment") or ""), "depth": depth})
+                if depth < FRAME_DEPTH:
+                    local(child, session, depth + 1)
+
+        top = self.call("Page.getFrameTree")["frameTree"]
+        local(top, self.session, 1)
+        depth = {top["frame"]["id"]: 0, **{f["id"]: f["depth"] for f in frames}}
+        try:
+            targets = [t for t in cdp("Target.getTargets").get("targetInfos", []) if t.get("type") == "iframe"]
+        except Exception:  # noqa: BLE001 — out-of-process frames are then simply not read
+            targets = []
+        grew = True
+        while grew:
+            grew = False
+            for t in targets:
+                tid, parent = t.get("targetId"), t.get("parentFrameId")
+                if tid in depth or parent not in depth or depth[parent] >= FRAME_DEPTH:
+                    continue
+                session = self.attached.get(tid)
+                if session is None:
+                    try:
+                        session = cdp("Target.attachToTarget", targetId=tid, flatten=True)["sessionId"]
+                    except Exception:  # noqa: BLE001 — gone, or not attachable
+                        depth[tid] = FRAME_DEPTH
+                        continue
+                    self.attached[tid] = session
+                frames.append({"id": tid, "parent": parent, "session": session, "url": t.get("url", ""),
+                               "depth": depth[parent] + 1, "oopif": True})
+                depth[tid] = depth[parent] + 1
+                if depth[tid] < FRAME_DEPTH:
+                    try:
+                        before = len(frames)
+                        local(self.call("Page.getFrameTree", session=session)["frameTree"], session, depth[tid] + 1)
+                        depth.update({f["id"]: f["depth"] for f in frames[before:]})
+                    except Exception:  # noqa: BLE001
+                        pass
+                grew = True
+        return top["frame"]["id"], frames
+
+    def owner(self, fid, psession, pcontext, points=None, obj=None):
+        """FRAME_INFO_FN on the <iframe> holding `fid`, in its parent's world; (object id, info)."""
+        if obj is None:
+            backend = self.call("DOM.getFrameOwner", session=psession, frameId=fid)["backendNodeId"]
+            params = {"backendNodeId": backend, "objectGroup": FRAME_WORLD}
+            if pcontext:
+                params["executionContextId"] = pcontext
+            obj = self.call("DOM.resolveNode", session=psession, **params)["object"]["objectId"]
+        result = self.call("Runtime.callFunctionOn", session=psession, objectId=obj, functionDeclaration=FRAME_INFO_FN,
+                           arguments=[{"value": points}], returnByValue=True)
+        return obj, (result.get("result") or {}).get("value")
+
+    def release(self, sessions):
+        for s in sessions:
+            try:
+                self.call("Runtime.releaseObjectGroup", session=s, objectGroup=FRAME_WORLD)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def read(self, page):
+        """Snapshots of the visible frames of `page` (the top document's snapshot)."""
+        if not page.get("frame_candidates"):
+            self.last = {}
+            return []
+        top, frames = self.tree()
+        refs = {top: {"session": self.session, "context": None, "x": 0.0, "y": 0.0,
+                      "clip": (0.0, 0.0, float(page.get("w") or 1e9), float(page.get("h") or 1e9)), "modal": True}}
+        results, touched = [], {self.session}
+        for f in frames:
+            if len(results) >= MAX_FRAMES:
+                break
+            parent = refs.get(f["parent"])
+            if parent is None:
+                continue
+            try:
+                obj, info = self.owner(f["id"], parent["session"], parent["context"])
+            except Exception:  # noqa: BLE001 — detached while we looked
+                continue
+            touched.add(parent["session"])
+            if not info:
+                continue
+            x, y = parent["x"] + info["x"], parent["y"] + info["y"]
+            c, pc = info["clip"], parent["clip"]
+            clip = (max(pc[0], parent["x"] + c[0]), max(pc[1], parent["y"] + c[1]),
+                    min(pc[2], parent["x"] + c[2]), min(pc[3], parent["y"] + c[3]))
+            if clip[2] - clip[0] < 12 or clip[3] - clip[1] < 12:
+                continue
+            ref = {"session": f["session"], "context": None, "parent": f["parent"], "x": x, "y": y, "clip": clip,
+                   "modal": parent["modal"] and bool(info.get("modal")), "reachable": bool(info.get("reachable")),
+                   "psession": parent["session"], "pcontext": parent["context"]}
+            snap = None
+            try:
+                ref["context"] = self.call("Page.createIsolatedWorld", session=f["session"], frameId=f["id"],
+                                           worldName=FRAME_WORLD)["executionContextId"]
+                r = self.call("Runtime.evaluate", session=f["session"], contextId=ref["context"],
+                              expression=frame_snapshot_js(self.number(f["id"])), returnByValue=True)
+                if not r.get("exceptionDetails"):
+                    snap = (r.get("result") or {}).get("value")
+            except Exception:  # noqa: BLE001 — navigating; reported as unread below
+                snap = None
+            refs[f["id"]] = ref
+            result = {"frame": f, "ref": ref, "info": info, "snapshot": snap, "hits": []}
+            acts = [a for a in (snap or {}).get("actions", []) if a.get("kind") in INTERACTIVE]
+            if acts:
+                points = [[a["rect"]["x"] + a["rect"]["w"] / 2 + info["x"], a["rect"]["y"] + a["rect"]["h"] / 2 + info["y"]]
+                          for a in acts]
+                try:
+                    result["hits"] = (self.owner(f["id"], parent["session"], parent["context"], points, obj)[1] or {}).get("hits") or []
+                except Exception:  # noqa: BLE001
+                    result["hits"] = []
+            results.append(result)
+        self.release(touched)
+        self.last = {fid: r for fid, r in refs.items() if fid != top}
+        return results
+
+    def locate(self, fid):
+        """(session, context, x, y) of frame `fid` from the last observation, its offset measured again now."""
+        if fid not in self.last or self.last[fid].get("context") is None:
+            raise StalePage("The frame is gone. Observe again.")
+        chain, f = [], fid
+        while f in self.last:
+            chain.append(f)
+            f = self.last[f]["parent"]
+        x = y = 0.0
+        sessions = set()
+        try:
+            for f in reversed(chain):
+                ref = self.last[f]
+                _, info = self.owner(f, ref["psession"], ref["pcontext"])
+                sessions.add(ref["psession"])
+                if not info:
+                    raise StalePage("The frame is hidden now. Observe again.")
+                x, y = x + info["x"], y + info["y"]
+        except StalePage:
+            raise
+        except Exception:  # noqa: BLE001
+            raise StalePage("The frame changed. Observe again.") from None
+        finally:
+            self.release(sessions)
+        ref = self.last[fid]
+        return ref["session"], ref["context"], x, y
+
+    def evaluate(self, fid, expression):
+        session, context, _, _ = self.locate_fast(fid)
+        r = self.call("Runtime.evaluate", session=session, contextId=context, expression=expression, returnByValue=True)
+        if r.get("exceptionDetails"):
+            raise StalePage("The frame changed during evaluation")
+        return (r.get("result") or {}).get("value")
+
+    def locate_fast(self, fid):
+        ref = self.last.get(fid)
+        if not ref or ref.get("context") is None:
+            raise StalePage("The frame is gone. Observe again.")
+        return ref["session"], ref["context"], ref["x"], ref["y"]
+
+
+FRAMES = {}   # page session → FrameReader
+
+
+def frame_reader(session):
+    if session not in FRAMES:
+        FRAMES[session] = FrameReader(session)
+    return FRAMES[session]
+
+
+def frame_unread(result, page):
+    """A frame a person sees that gave Jev nothing: no snapshot, or nothing on it at all."""
+    snap, ref, info = result.get("snapshot"), result["ref"], result["info"]
+    clip = ref["clip"]
+    visible_area = max(0.0, clip[2] - clip[0]) * max(0.0, clip[3] - clip[1])
+    big = visible_area >= 0.15 * float(page.get("w") or 1) * float(page.get("h") or 1)
+    if not ref.get("reachable") or not (big or (page.get("dialog") and ref.get("modal"))):
+        return False
+    if snap is None:
+        return True
+    acts = [a for a in snap.get("actions", []) if a.get("kind") in INTERACTIVE]
+    return not acts and not (snap.get("text") or "").strip()
+
+
+def merge_frames(page, results):
+    """Folds frame snapshots (FrameReader.read) into the top document's snapshot, in place."""
+    interactive = [a for a in page["actions"] if a.get("kind") in INTERACTIVE]
+    controls = [a for a in page["actions"] if a.get("kind") not in INTERACTIVE]
+    n = max([int(a["id"][1:]) for a in interactive if re.fullmatch(r"e\d+", str(a.get("id")))] or [0])
+    first_text, last_text, added, unread = [], [], [], []
+    frames = page.setdefault("frames", {})
+    guards = page.setdefault("guards", {})
+    for result in results:
+        f, ref, snap = result["frame"], result["ref"], result.get("snapshot")
+        url = (snap or {}).get("url") or f.get("url") or ""
+        if not ref.get("modal"):
+            continue                                   # behind the page's open dialog
+        captcha = bool(CAPTCHA_FRAME.search(url)) and not INVISIBLE_CAPTCHA.search(url)
+        if captcha:
+            # Never offered: a challenge is the user's to answer. Reported (adaptation 36).
+            if ref.get("reachable"):
+                unread.append({"url": url[:200], "captcha": True, "w": round(ref["clip"][2] - ref["clip"][0]),
+                               "h": round(ref["clip"][3] - ref["clip"][1])})
+            continue
+        if INVISIBLE_CAPTCHA.search(url):
+            continue
+        if frame_unread(result, page):
+            unread.append({"url": url[:200], "captcha": False, "w": round(ref["clip"][2] - ref["clip"][0]),
+                           "h": round(ref["clip"][3] - ref["clip"][1]), "title": (result["info"] or {}).get("title", "")})
+        if not snap:
+            continue
+        acts = [a for a in snap.get("actions", []) if a.get("kind") in INTERACTIVE]
+        hits = result.get("hits") or []
+        clip = ref["clip"]
+        for i, a in enumerate(acts):
+            if i >= len(hits) or not hits[i]:
+                continue                               # covered in the parent, or outside the frame's box
+            rect = a["rect"]
+            moved = {**rect, "x": rect["x"] + ref["x"], "y": rect["y"] + ref["y"]}
+            cx, cy = moved["x"] + moved["w"] / 2, moved["y"] + moved["h"] / 2
+            if not (clip[0] <= cx < clip[2] and clip[1] <= cy < clip[3]):
+                continue
+            added.append({**a, "rect": moved, "frame": f["id"]})
+        for key, guard in (snap.get("guards") or {}).items():
+            guards[str(key)] = guard
+        frames[f["id"]] = {"page_key": snap.get("page_key"), "url": url}
+        text = (snap.get("text") or "").strip()
+        if text:
+            (first_text if page.get("dialog") else last_text).append(text)
+    room = max(0, 250 - len(interactive))
+    for a in added[:room]:
+        n += 1
+        a["id"] = f"e{n}"
+    page["actions"] = interactive + added[:room] + controls
+    if first_text or last_text:
+        page["text"] = "\n".join([*first_text, page.get("text") or "", *last_text]).strip()[:6000]
+    if unread:
+        page["unread_frames"] = unread
+    return page
+
+
+# --- Adaptation 34: labels are what a person reads ---------------------------
+#
+# Belt and braces for the <style> fix in the snapshot: a label that still carries CSS (a
+# style element some framework renders as text, an aria-label built from class names) is
+# cut back to its words.
+
+SELECTOR_PART = re.compile(r"^(?:[.#@:*>+~\[]|::?)[^\s{}]*$")
+
+
+def scrub_label(label):
+    """`label` without CSS rule blocks (`.a > * { --x: 1 }`, cut off or not) and their selectors."""
+    if not label or "{" not in label or not re.search(r"[:;]|--", label):
+        return label
+    out = label
+    while "{" in out:
+        i = out.index("{")
+        j = out.find("}", i)
+        tokens = out[:i].split()
+        while tokens and SELECTOR_PART.match(tokens[-1]):
+            tokens.pop()
+        out = " ".join(tokens) + " " + (out[j + 1:] if j >= 0 else "")
+    cleaned = re.sub(r"\s+", " ", out).strip(" -—")
+    return cleaned or label
+
+
+# --- Adaptation 35: unnamed controls -----------------------------------------
+#
+# A control with no name anywhere (no text, title, icon alt, test id, nothing near it) was
+# offered as "button". One is a real choice ("button at top right" — an icon); a map's 30
+# unlabelled pins or an icon grid are noise that splits Jev's vote, so six or more unnamed
+# controls of one role are left out.
+
+UNNAMED_CLUTTER = 6
+
+
+def place_word(rect, w, h):
+    if not rect or not w or not h:
+        return ""
+    cx, cy = rect["x"] + rect["w"] / 2, rect["y"] + rect["h"] / 2
+    row = ["top", "middle", "bottom"][max(0, min(2, int(3 * cy / h)))]
+    col = ["left", "center", "right"][max(0, min(2, int(3 * cx / w)))]
+    return "center" if (row, col) == ("middle", "center") else f"{row} {col}" if col != "center" else row
+
+
+def tidy_unnamed(page):
+    actions = page.get("actions") or []
+    unnamed = {}
+    for a in actions:
+        if a.get("kind") in INTERACTIVE and (a.get("label") or "").strip().lower() == str(a.get("role") or "").lower():
+            unnamed.setdefault(a.get("role"), []).append(a)
+    drop = set()
+    for role, group in unnamed.items():
+        if len({a.get("node") for a in group}) >= UNNAMED_CLUTTER:
+            drop.update(id(a) for a in group)
+        else:
+            for a in group:
+                where = place_word(a.get("rect"), page.get("w"), page.get("h"))
+                a["label"] = f"{role} with no label" + (f" at the {where}" if where else "")
+    if drop:
+        page["actions"] = [a for a in actions if id(a) not in drop]
+        page["omitted_unnamed"] = len(drop)
+    return page
+
+
+def perceive(session, info):
+    """The top document's snapshot plus its frames, with labels cleaned; fingerprint recomputed."""
+    for a in info.get("actions") or []:
+        if a.get("label"):
+            a["label"] = scrub_label(a["label"])
+    try:
+        results = frame_reader(session).read(info)
+    except StalePage:
+        raise
+    except Exception:  # noqa: BLE001 — the top document alone is still a valid observation
+        results = []
+    if results:
+        merge_frames(info, results)
+        for a in info["actions"]:
+            if a.get("frame") and a.get("label"):
+                a["label"] = scrub_label(a["label"])
+    tidy_unnamed(info)
+    info["fingerprint"] = browser_module.fingerprint(info)
+    return info
+
+
+def frame_point(session, action):
+    """Top-level click point of a frame element, hit-tested inside its frame (CLICK_POINT_JS)."""
+    reader = FRAMES.get(session)
+    if reader is None:
+        raise StalePage("The frame is gone. Observe again.")
+    fsession, context, ox, oy = reader.locate(action["frame"])
+    r = cdp("Runtime.evaluate", session_id=fsession, contextId=context,
+            expression=CLICK_POINT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+    if r.get("exceptionDetails"):
+        raise StalePage("The frame changed during evaluation")
+    target = (r.get("result") or {}).get("value")
+    if target is None:
+        raise StalePage("Target changed or is covered. Observe again.")
+    return target["x"] + ox, target["y"] + oy
+
+
+def frame_select(session, action):
+    reader = FRAMES.get(session)
+    if reader is None:
+        raise StalePage("The frame is gone. Observe again.")
+    fsession, context, _, _ = reader.locate_fast(action["frame"])
+    r = cdp("Runtime.evaluate", session_id=fsession, contextId=context,
+            expression=SELECT_JS + "(" + json.dumps(action) + ")", returnByValue=True)
+    if r.get("exceptionDetails") or not (r.get("result") or {}).get("value"):
+        raise StalePage("Dropdown changed or is gone. Observe again.")
+
+
+# --- Adaptation 36: a perception gap is reported, not guessed around ---------
+#
+# Some of what a person sees still never reaches the table: a frame that cannot be read
+# (closed shadow roots, a plugin, a document still loading after every retry), a dialog that
+# offers nothing but its close button, a click that visibly changed the screen while the DOM
+# Jev reads stayed the same (canvas apps, video players, WebGL maps), a captcha. Jev cannot
+# work around what it is not shown; it only circles. After such an observation the runner
+# looks again a few times (frames load after the dialog that holds them) and, if the gap is
+# still there, says so:
+#
+#   page["perception_gap"] = {"reason": "unreadable_frame" | "empty_dialog" | "unseen_change"
+#                                       | "captcha", "detail": "<one sentence>", ...}
+#   {"event": "perception_gap", "reason": …, "detail": …, "url": …, "elements": N, …}
+#
+# once per page (fingerprint). The run controller decides what to do with it (a vision
+# takeover; for "captcha", handing the page to the user — never solving it).
+
+GAP_RETRIES = 4
+GAP_RETRY_S = 0.25
+VISUAL_CHANGE_MIN = 0.12      # share of thumbnail cells that must change for "unseen_change"
+CLOSER =re.compile(r"^\s*(close|dismiss|cancel|no,? thanks|not now|skip|maybe later|go back|back)\b|^\s*[×✕✖xX]\s*$", re.I)
+
+
+def thumbnail_cells(jpeg_b64, cols=32, rows=20):
+    """Grey thumbnail of a JPEG as a flat list, or None (no Pillow / unreadable)."""
+    if not jpeg_b64:
+        return None
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+        with Image.open(io.BytesIO(base64.b64decode(jpeg_b64))) as img:
+            return list(img.convert("L").resize((cols, rows)).tobytes())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def visual_change(before, after, threshold=24):
+    """Share of thumbnail cells that changed by more than `threshold` grey levels (None: unknown)."""
+    if not before or not after or len(before) != len(after):
+        return None
+    return sum(1 for a, b in zip(before, after) if abs(a - b) > threshold) / len(before)
+
+
+def perception_gap(page, before=None, action=None, changed=None):
+    """What the table is missing that a person would see, or None. `before` is the page the
+    last action was taken on, `action` that action, `changed` the share of the screen that
+    changed visually (None when unknown)."""
+    unread = page.get("unread_frames") or []
+    url = page.get("url") or ""
+    captcha = [f for f in unread if f.get("captcha")]
+    if captcha:
+        return {"reason": "captcha", "detail": "A captcha is on the page; it is the user's to answer.", "frames": captcha}
+    if unread:
+        f = unread[0]
+        host = re.sub(r"^\w+://([^/?#]+).*$", r"\1", f.get("url") or "") or "a frame"
+        return {"reason": "unreadable_frame",
+                "detail": f"Part of the page ({host}, {f.get('w')}×{f.get('h')}) shows content Navi cannot read.", "frames": unread}
+    interactive = [a for a in page.get("actions") or [] if a.get("kind") in INTERACTIVE]
+    if page.get("dialog") and interactive and all(CLOSER.search(a.get("label") or "") for a in interactive):
+        return {"reason": "empty_dialog",
+                "detail": f"The dialog “{page['dialog']}” offers nothing to do but close it — its content is not readable."}
+    if (before is not None and action is not None and action.get("kind") in {"click", "fill", "select"}
+            and not action.get("canvas") and not action.get("docs_body")
+            and before.get("fingerprint") == page.get("fingerprint") and before.get("url") == url
+            and changed is not None and changed >= VISUAL_CHANGE_MIN):
+        return {"reason": "unseen_change",
+                "detail": f"‘{(action.get('label') or '')[:60]}’ visibly changed the screen, but nothing Navi reads changed."}
+    return None
 
 
 def is_canvas_action(page, entry):
@@ -3034,6 +3722,7 @@ def main():
             return None
 
         takeover = Takeover()
+        gaps_escalated = set()   # (url, reason) of perception gaps already handed to Claude
         takeover_mark = [0]       # history length when the last takeover ended
 
         def record_step(entry):
@@ -3202,6 +3891,19 @@ def main():
                 why = Coach.flailing(recent) or "Jev answered BLOCKED"
             elif state["status"] == "ready":
                 why = Coach.flailing(recent)
+                # Adaptation 36 → 32: what Jev is offered misses what is on screen (a dialog with
+                # nothing readable, a frame that won't read, a click that only changed pixels) —
+                # Claude looks at the picture instead of Jev guessing from an incomplete table.
+                # Once per page and reason; a captcha is the user's.
+                gap = state["page"].get("perception_gap") if not why else None
+                if gap:
+                    key = (state["page"].get("url"), gap.get("reason"))
+                    if gap.get("reason") == "captcha":
+                        stop = ("blocked", "Stopped: this page wants you to prove you're human — that one's yours.")
+                        verdict = {"verdict": "needs_user", "answer": stop[1], "next_step": ""}
+                    elif key not in gaps_escalated:
+                        gaps_escalated.add(key)
+                        why = f"Jev can't see part of the page ({gap.get('reason')}: {str(gap.get('detail') or '')[:120]})"
             elif state["status"] == "done":
                 # Adaptation 32: an unsure DONE is judged; "not there yet" goes on (takeover) instead of ending.
                 last = state["decisions"][-1] if state["decisions"] else {}

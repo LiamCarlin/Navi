@@ -999,6 +999,8 @@ final class AgentRun: @unchecked Sendable {
 
         /// Claude's takeovers in this step (`CUEscalation.maxTakeovers`).
         var takeovers = 0
+        /// Pages whose perception gap was already handed to the writer (once each).
+        var gapsEscalated: Set<String> = []
         func takeoverAvailable() -> Bool {
             writerAvailable && screenshots && takeovers < CUEscalation.maxTakeovers
                 && UserDefaults.navi.object(forKey: "agentClaudeTakeover") as? Bool ?? true
@@ -1227,6 +1229,14 @@ final class AgentRun: @unchecked Sendable {
             if !run.screenMoved(screen.signature) {
                 handle.emit(.status("The last \(CURunState.maxIdle) actions changed nothing on screen"))
                 if try await handOff(.stalled) { continue } else { return }
+            }
+            // A screen whose content Jev cannot be offered (a sheet with only its close button, a
+            // window nothing reads from): the writer reads the picture and Claude may take over,
+            // once per screen — instead of Jev guessing from an incomplete list.
+            if let gap = screen.perceptionGap, gapsEscalated.insert(screen.signature.page + "|" + gap.detail).inserted {
+                handle.emit(.status("Can't read part of the screen (\(gap.reason.rawValue)) — looking at it instead"))
+                Log.agent.info("Perception gap: \(gap.reason.rawValue, privacy: .public)")
+                if try await handOff(.perceptionGap) { continue } else { return }
             }
             // The user's own next step for this task, on screen once and safe to take: pressed
             // directly, their way — no Jev call (`UserRoute.direct`).

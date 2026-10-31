@@ -177,7 +177,7 @@ print("canvas OK")
 
 # --- click point (adaptation 7) ---
 assert nr.browser_module.browser_operation is nr.browser_operation_navi
-assert "getClientRects" in nr.CLICK_POINT_JS and "e.contains(t)" in nr.CLICK_POINT_JS
+assert "getClientRects" in nr.CLICK_POINT_JS and "if (n===e) return {x,y}" in nr.CLICK_POINT_JS
 print("click point OK")
 
 # --- Google Docs body (adaptation 15) ---
@@ -601,7 +601,7 @@ print("recipient picking ok")
 
 # Adaptation 23: a modal in front is all Jev can click; app-install detours are dropped.
 js = nr.patched_snapshot_js()
-assert "const modals=" in js and "modals.some(m=>m.contains(e))" in js
+assert "const modals=" in js and "modals.some(m=>within(m,e))" in js
 mcd = {"actions": [{"id": "e1", "kind": "click", "label": "Close"},
                    {"id": "e2", "kind": "click", "label": "Order Pickup Scan the code, download the McD’s app & start earning points.*"},
                    {"id": "e3", "kind": "click", "label": "Order Delivery"},
@@ -857,3 +857,54 @@ try:
 finally:
     nr.CLAUDE_CLIENT.post = real_client_post
 print("takeover, typed outcomes and broken pipe ok")
+# Adaptations 33–36 (pure parts; scripts/ultrafast/test_perception_chrome.py runs the fixtures in Chrome).
+js = nr.patched_snapshot_js()
+for needle in ["deepAll(selector)", "deepHit(px,py)", "within(e,t)", "overlayLayer()", "cache.modals=modals",
+               "STYLE|SCRIPT|NOSCRIPT|TEMPLATE", "frame_candidates:", "dialog:modals.length", "modalPass"]:
+    assert needle in js, needle
+assert nr.scrub_label("Build Your Pizza - $11.39 .prism-size-msf7vl > * { --prism-inline-children-spacing: var(--x); }") == "Build Your Pizza - $11.39"
+assert nr.scrub_label("#2 Most Liked .prism-size-msf7vl > * { --prism-inline-children-spacing: var(--") == "#2 Most Liked"
+assert nr.scrub_label("Sizes {S, M, L}") == "Sizes {S, M, L}"          # braces without CSS stay
+top = {"url": "https://www.doordash.com/home", "w": 1120, "h": 780, "text": "Home\nDeals", "dialog": "Sign in or Sign up",
+       "guards": {"1": ["g"]}, "actions": [{"id": "e1", "node": 1, "kind": "click", "label": "Close Sign in or Sign up", "role": "button",
+                                            "rect": {"x": 300, "y": 110, "w": 20, "h": 20}},
+                                           {"id": "wait", "kind": "wait", "label": "Wait for the page to update"}]}
+frame = {"id": "F1", "parent": "TOP", "session": "s", "url": "https://identity.doordash.com/auth"}
+ref = {"x": 280.0, "y": 164.0, "clip": (280.0, 164.0, 840.0, 729.0), "modal": True, "reachable": True}
+snap = {"url": "https://identity.doordash.com/auth", "text": "Sign in or Sign up\nContinue with Google", "page_key": ["pk"],
+        "guards": {"1000001": ["g1"], "1000002": ["g2"]},
+        "actions": [{"id": "e1", "node": 1000001, "kind": "click", "label": "Continue with Google", "role": "button", "rect": {"x": 20, "y": 80, "w": 200, "h": 40}},
+                    {"id": "e2", "node": 1000002, "kind": "click", "label": "Hidden behind", "role": "button", "rect": {"x": 20, "y": 200, "w": 200, "h": 40}},
+                    {"id": "wait", "kind": "wait", "label": "Wait"}]}
+page = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": ref, "info": {"title": "Login/Signup"}, "snapshot": snap, "hits": [True, False]}])
+assert [(a["id"], a["label"]) for a in page["actions"]] == [("e1", "Close Sign in or Sign up"), ("e2", "Continue with Google"), ("wait", "Wait for the page to update")]
+g = page["actions"][1]
+assert g["frame"] == "F1" and g["rect"]["x"] == 300 and g["rect"]["y"] == 244 and page["guards"]["1000001"] == ["g1"]
+assert page["text"].startswith("Sign in or Sign up\nContinue with Google\nHome") and page["frames"]["F1"]["page_key"] == ["pk"]
+assert nr.perception_gap(page) is None
+# Behind the page's dialog: nothing from the frame.
+assert len(nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": dict(ref, modal=False), "info": {}, "snapshot": snap, "hits": [True, True]}])["actions"]) == 2
+# Before the fix: the dialog offered only Close → a gap, named.
+gap = nr.perception_gap(json.loads(json.dumps(top)))
+assert gap["reason"] == "empty_dialog" and "Sign in or Sign up" in gap["detail"], gap
+# A big frame with nothing in it, and a captcha.
+empty = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": frame, "ref": ref, "info": {}, "snapshot": {"actions": [], "text": ""}, "hits": []}])
+assert nr.perception_gap(empty)["reason"] == "unreadable_frame"
+cap = dict(frame, url="https://www.google.com/recaptcha/api2/anchor?k=1&size=normal")
+capped = nr.merge_frames(json.loads(json.dumps(top)), [{"frame": cap, "ref": ref, "info": {}, "snapshot": dict(snap, url=cap["url"]), "hits": [True, True]}])
+assert len(capped["actions"]) == 2 and nr.perception_gap(capped)["reason"] == "captcha"
+badge = dict(frame, url="https://www.google.com/recaptcha/enterprise/anchor?k=1&size=invisible")
+assert "unread_frames" not in nr.merge_frames(json.loads(json.dumps(top)), [{"frame": badge, "ref": ref, "info": {}, "snapshot": None, "hits": []}])
+# A click that changed pixels but not the DOM.
+before = {"fingerprint": "f", "url": "u"}
+after = {"fingerprint": "f", "url": "u", "actions": [{"kind": "click", "label": "Play"}]}
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play"}, 0.4)["reason"] == "unseen_change"
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play", "canvas": True}, 0.4) is None
+assert nr.perception_gap(after, before, {"kind": "click", "label": "Play"}, 0.02) is None
+assert nr.visual_change([0] * 10, [0] * 8 + [200, 200]) == 0.2 and nr.visual_change(None, [1]) is None
+# Unnamed controls: many are clutter, one gets a place.
+pins = {"w": 1000, "h": 600, "actions": [{"id": f"e{i}", "node": i, "kind": "click", "role": "button", "label": "button",
+                                          "rect": {"x": 10 * i, "y": 300, "w": 10, "h": 10}} for i in range(1, 8)]
+        + [{"id": "e9", "node": 9, "kind": "click", "role": "link", "label": "link", "rect": {"x": 950, "y": 10, "w": 30, "h": 30}}]}
+assert [a["label"] for a in nr.tidy_unnamed(pins)["actions"]] == ["link with no label at the top right"] and pins["omitted_unnamed"] == 7
+print("frames, labels, unnamed controls and perception gaps ok")
