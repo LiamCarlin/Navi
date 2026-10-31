@@ -42,6 +42,13 @@ final class PanelViewModel: ObservableObject {
     var hasAgentToShow: Bool { agentRun != nil || (!agentDismissed && !agentEvents.isEmpty) }
     @Published private(set) var agentScreenshot: NSImage?
     @Published private(set) var pendingApproval: (id: UUID, description: String, risk: String)?
+    /// The question the running task is paused on (`AgentEvent.needsAnswer`). While it is up the
+    /// bar is its reply box: typing writes an answer instead of starting a new search.
+    @Published private(set) var pendingQuestion: AgentQuestion?
+    /// 0..<choices.count selects a choice; choices.count selects the typed answer (the bar's text).
+    @Published var questionSelection: Int = 0
+    /// A question arrived while the panel may be hidden: bring it up on the task (set by `PanelController`).
+    var onAttentionNeeded: (() -> Void)?
     @Published private(set) var toast: String?
     @Published private(set) var errorMessage: String?
     /// Account errors (quota, entitlement, signed out) come with one action —
@@ -253,6 +260,12 @@ final class PanelViewModel: ObservableObject {
     private func queryChanged() {
         routeTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A paused task's question is up: what the user types is their answer, never a new query
+        // (typing used to switch to results and leave the question with no way to reply).
+        if mode == .agent, let pq = pendingQuestion {
+            questionSelection = Self.questionSelection(for: q, question: pq)
+            return
+        }
         // A reminder or scheduling request drops its card down at once — no need to wait for Jev.
         // "Remind me to…" wins over the scheduler ("remind me to book lunch with ana").
         let remind = q.isEmpty ? nil : ReminderParser.parse(q)
@@ -347,6 +360,12 @@ final class PanelViewModel: ObservableObject {
     // MARK: - Actions
 
     func moveSelection(_ delta: Int) {
+        if mode == .agent, let q = pendingQuestion {
+            let typed = !query.trimmingCharacters(in: .whitespaces).isEmpty && q.allowsOther
+            let n = q.choices.count + (typed ? 1 : 0)
+            if n > 0 { questionSelection = (questionSelection + delta + n) % n }
+            return
+        }
         if mode == .schedule { scheduler?.cycleSuggestion(delta); return }
         if mode == .remind { reminder?.cycleOption(delta); return }
         if mode == .clarify {
@@ -360,6 +379,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     func performSelected() {
+        if mode == .agent, pendingQuestion != nil { answerSelectedChoice(); return }
         if mode == .clarify { submitClarification(); return }
         if mode == .schedule, let s = scheduler {
             if s.editingVideoLink { s.saveVideoLink(); requestFocus() } else { s.book() }
@@ -445,6 +465,7 @@ final class PanelViewModel: ObservableObject {
         agentTaskTitle = handle.task
         agentDismissed = false
         pendingApproval = nil
+        pendingQuestion = nil
         mode = .agent
         UsageCounters.record(.task)
         // Background mode: nothing activates, so the panel would stay over the
@@ -454,7 +475,7 @@ final class PanelViewModel: ObservableObject {
         if NaviSettings.shared.agentRunInBackground {
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(900))
-                guard let self, self.agentRun === handle, self.pendingApproval == nil else { return }
+                guard let self, self.agentRun === handle, self.pendingApproval == nil, self.pendingQuestion == nil else { return }
                 self.onDismiss?()
             }
         }
@@ -464,11 +485,15 @@ final class PanelViewModel: ObservableObject {
                 switch ev {
                 case .screenshot(let img): self.agentScreenshot = img
                 case .needsApproval(let id, let d, let r): self.pendingApproval = (id, d, r)
+                case .needsAnswer(let q):
+                    self.showQuestion(q)
+                    continue
                 case .completed, .failed, .cancelled:
                     self.agentVerdict = handle.verdict
                     self.agentEvents.append(ev)
                     self.agentRun = nil
                     self.pendingApproval = nil
+                    self.pendingQuestion = nil
                     continue
                 default: break
                 }
@@ -609,6 +634,46 @@ final class PanelViewModel: ObservableObject {
         agentRun?.cancel()
     }
 
+    // MARK: - Questions from a paused task
+
+    private func showQuestion(_ q: AgentQuestion) {
+        Log.panel.info("task paused on a question (\(q.choices.count) choices)")
+        pendingQuestion = q
+        query = ""
+        questionSelection = 0
+        mode = .agent
+        agentDismissed = false
+        onAttentionNeeded?()
+        requestFocus()
+    }
+
+    /// What the bar's text selects: the choice it names ("2", "large"), else the typed answer;
+    /// an empty bar selects the first choice.
+    static func questionSelection(for typed: String, question q: AgentQuestion) -> Int {
+        if typed.isEmpty { return 0 }
+        if let c = q.choice(matching: typed), let i = q.choices.firstIndex(of: c) { return i }
+        return q.allowsOther ? q.choices.count : 0
+    }
+
+    /// Sends the reply (`nil` stops the task) and puts the card away; the run carries on.
+    func answerQuestion(_ reply: String?) {
+        guard let q = pendingQuestion, let run = agentRun else { return }
+        Log.panel.info("question \(reply == nil ? "declined — stopping the task" : "answered", privacy: .public)")
+        pendingQuestion = nil
+        questionSelection = 0
+        if !query.isEmpty { query = "" }
+        if let reply { run.respond(.answer(q.id, reply)) } else { run.respond(.answer(q.id, nil)); run.cancel() }
+    }
+
+    /// ⏎ / ⌘1–4 on the card: the selected (or numbered) choice, or what was typed.
+    func answerSelectedChoice(_ index: Int? = nil) {
+        guard let q = pendingQuestion else { return }
+        let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let i = index ?? questionSelection
+        if q.choices.indices.contains(i) { answerQuestion(q.choices[i]) }
+        else if q.allowsOther, !typed.isEmpty { answerQuestion(typed) }
+    }
+
     func showToast(_ text: String) {
         toast = text
         Task { try? await Task.sleep(for: .seconds(1.6)); if self.toast == text { self.toast = nil } }
@@ -630,6 +695,10 @@ final class PanelViewModel: ObservableObject {
             }
             return
         }
+        if mode == .agent, pendingQuestion != nil, !query.isEmpty {
+            query = ""   // ⎋ first clears a half-typed answer; the card stays
+            return
+        }
         if mode != .results {
             answerTask?.cancel()
             isAnswering = false
@@ -646,6 +715,9 @@ final class PanelViewModel: ObservableObject {
 
 #if DEBUG
 extension PanelViewModel {
+    /// Tests: the live run the panel answers questions for.
+    func replaceRunForTesting(_ handle: AgentRunHandle) { agentRun = handle }
+
     /// Builds a view model with canned state for SwiftUI previews. Uses the
     /// placeholder services so nothing touches the network.
     static func preview(query: String = "",
@@ -658,6 +730,7 @@ extension PanelViewModel {
                         agentEvents: [AgentEvent] = [],
                         agentScreenshot: NSImage? = nil,
                         pendingApproval: (id: UUID, description: String, risk: String)? = nil,
+                        pendingQuestion: AgentQuestion? = nil,
                         clarification: ClarificationPrompt? = nil,
                         isClarifying: Bool = false,
                         toast: String? = nil,
@@ -684,6 +757,7 @@ extension PanelViewModel {
         vm.agentEvents = agentEvents
         vm.agentScreenshot = agentScreenshot
         vm.pendingApproval = pendingApproval
+        vm.pendingQuestion = pendingQuestion
         vm.clarification = clarification
         vm.isClarifying = isClarifying
         vm.toast = toast

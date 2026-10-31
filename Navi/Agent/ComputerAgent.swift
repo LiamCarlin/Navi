@@ -195,6 +195,8 @@ final class AgentRun: @unchecked Sendable {
     private var worker: Task<Void, Never>?
     private var cancelled = false
     private var pending: (id: UUID, cont: CheckedContinuation<Bool, Never>)?
+    /// The question the run is paused on (`ask`), answered through `respond(.answer…)`.
+    private var pendingQuestion: (id: UUID, cont: CheckedContinuation<String?, Never>)?
     /// Terminal event of the run, for the overlay's lingering outcome.
     private var ending: (AgentOverlay.Outcome, String)?
 
@@ -236,6 +238,7 @@ final class AgentRun: @unchecked Sendable {
         // Integration hook (account workstream): every Jev/Claude call in this run
         // is billed under one `X-Navi-Run` — the query's id — as `task` or `voice`.
         let run = CloudRun(feature: context.spoken ? .voice : .task, runID: context.runID)
+        letAsk(handle)
         let t = Task.detached(priority: .userInitiated) { [self] in
             await CloudRun.$current.withValue(run) { await self.main(handle) }
         }
@@ -248,18 +251,22 @@ final class AgentRun: @unchecked Sendable {
         let t = worker
         let p = pending
         pending = nil
+        let q = pendingQuestion
+        pendingQuestion = nil
         lock.unlock()
         t?.cancel()
         p?.cont.resume(returning: false)
+        q?.cont.resume(returning: nil)
     }
 
     func respond(_ a: AgentApproval) {
+        if case .answer(let id, let reply) = a { answer(id, reply); return }
         lock.lock()
         guard let p = pending else { lock.unlock(); return }
         let (approved, id): (Bool, UUID) = {
             switch a {
             case .approve(let id): return (true, id)
-            case .deny(let id): return (false, id)
+            case .deny(let id), .answer(let id, _): return (false, id)
             }
         }()
         guard id == p.id else { lock.unlock(); return }
@@ -275,6 +282,63 @@ final class AgentRun: @unchecked Sendable {
 
     private func checkCancelled() throws {
         if isCancelled { throw CancellationError() }
+    }
+
+    /// How long a question waits for the user before the run ends as needs-user.
+    static let questionTimeout: Duration = .seconds(15 * 60)
+    /// Questions one run may ask (the writer is told never to ask again what the user answered).
+    static let maxQuestions = 3
+
+    /// The one answer to "do this yourself, then keep going".
+    static let didItChoice = "I did it — keep going"
+
+    /// "Stopped: the site wants you to sign in." → "The site wants you to sign in. Let me know when it's done."
+    static func yourTurn(_ told: String) -> String {
+        var t = told.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.lowercased().hasPrefix("stopped:") { t = String(t.dropFirst(8)).trimmingCharacters(in: .whitespaces) }
+        guard !t.isEmpty else { return "This step needs you. Do it on screen, then tell Navi to keep going." }
+        t = t.prefix(1).uppercased() + t.dropFirst()
+        if !".!?".contains(t.last!) { t += "." }
+        return t + " Do it on screen, then tell Navi to keep going."
+    }
+
+    /// Puts `q` to the user on `handle` and waits for the reply; nil ⇒ stopped, cancelled or
+    /// unanswered within `questionTimeout`. The overlay pill shows the run is waiting.
+    func ask(_ q: AgentQuestion, on handle: AgentRunHandle) async -> String? {
+        handle.emit(.needsAnswer(q))
+        await MainActor.run { overlay?.setWaitingForAnswer() }
+        let timeout = Task { [weak self] in
+            try? await Task.sleep(for: Self.questionTimeout)
+            if !Task.isCancelled { self?.answer(q.id, nil) }
+        }
+        defer { timeout.cancel() }
+        let reply: String? = await withCheckedContinuation { cont in
+            lock.lock()
+            if cancelled { lock.unlock(); cont.resume(returning: nil); return }
+            let previous = pendingQuestion
+            pendingQuestion = (q.id, cont)
+            lock.unlock()
+            previous?.cont.resume(returning: nil)
+        }
+        let r = reply?.trimmingCharacters(in: .whitespacesAndNewlines)
+        Log.agent.info("Question \(r == nil ? "unanswered" : "answered", privacy: .public)")
+        return r?.isEmpty == false ? r : nil
+    }
+
+    private func answer(_ id: UUID, _ reply: String?) {
+        lock.lock()
+        guard let q = pendingQuestion, q.id == id else { lock.unlock(); return }
+        pendingQuestion = nil
+        lock.unlock()
+        q.cont.resume(returning: reply)
+    }
+
+    /// Lets whatever drives `handle` (the native loop, the browser runner) pause on a question.
+    private func letAsk(_ handle: AgentRunHandle) {
+        handle.asker = { [weak self, weak handle] q in
+            guard let self, let handle else { return nil }
+            return await self.ask(q, on: handle)
+        }
     }
 
     private func awaitApproval(id: UUID) async -> Bool {
@@ -709,6 +773,7 @@ final class AgentRun: @unchecked Sendable {
     private func runChild(goal: String, stepBase: Int, parent: AgentRunHandle,
                           _ body: @escaping @Sendable (AgentRunHandle) async -> Void) async -> StepOutcome {
         let child = AgentRunHandle(task: goal, cancel: { [weak self] in self?.cancel() }, respond: { [weak self] in self?.respond($0) })
+        letAsk(child)
         let forwarder = Task { [self] () -> StepOutcome in
             var outcome: StepOutcome = .failed("The step ended without reporting a result")
             var maxIndex = stepBase
@@ -1021,7 +1086,8 @@ final class AgentRun: @unchecked Sendable {
         func startReview(_ outcome: CURunState.Outcome, mayResume: Bool) -> Task<Review, Never> {
             let packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
                                                earlier: run.earlierScreens(final: screen.signature), guidance: run.guidance,
-                                               earlierStops: run.earlierStops, canAsk: mayResume, spoken: context.spoken,
+                                               earlierStops: run.earlierStops,
+                                               canAsk: mayResume && run.guidance.exchanges.count < Self.maxQuestions, spoken: context.spoken,
                                                conversation: context.conversation)
             let (snapshot, target, claude, model) = (screen.snapshot, target, claude, config.model)
             return Task.detached(priority: .userInitiated) {
@@ -1142,14 +1208,24 @@ final class AgentRun: @unchecked Sendable {
                 conclude(answer, outcome: outcome)
                 return false
             case .askUser:
-                // Navi has no reply box mid-run: a question ends the run and is put to the user, whose
-                // answer comes back as the next request (the conversation carries this one). Not done ⇒
-                // never "completed": the verdict says the user is needed.
-                writerAnswer = answer.text
-                writeRun("question")
-                handle.verdict = .needsUser
-                handle.emit(.failed([answer.text, answer.question].filter { !$0.isEmpty }.joined(separator: "\n")))
-                return false
+                // The run pauses on the question (clickable answers in the panel / island) and goes on
+                // with the reply: the writer reads the screen again knowing what the user said.
+                let q = AgentQuestion(question: answer.question, detail: answer.text, choices: answer.choices)
+                folder.write(CURunFolder.name(step, "question.json"), json: ["question": q.question, "choices": q.choices])
+                guard let reply = await handle.ask(q) else {
+                    try checkCancelled()
+                    // Stopped from the card, or never answered: not done ⇒ never "completed".
+                    writerAnswer = answer.text
+                    writeRun("question")
+                    handle.verdict = .needsUser
+                    handle.emit(.failed([answer.text, answer.question].filter { !$0.isEmpty }.joined(separator: "\n")))
+                    return false
+                }
+                try checkCancelled()
+                run.afterReply(question: q.question, reply: reply)
+                handle.emit(.status("You said: \(reply)"))
+                screen = await observe()
+                return try await handOff(stopped)
             case .resumeJev(let focus):
                 run.refocus(.init(step: step, outcome: outcome, focus: focus, actions: run.history.count))
                 handle.emit(.status("Read the screen in \(ms) ms: \(answer.text)"))
@@ -1161,11 +1237,25 @@ final class AgentRun: @unchecked Sendable {
                     // Claude says it is done: the writer checks the screen it left.
                     return try await handOff(.done)
                 case .needsUser(let what):
+                    // Only the user can do the next bit (sign in, allow something): wait while they do it
+                    // on screen, then carry on from wherever they left it.
+                    let told = what.isEmpty ? answer.text : what
+                    if run.guidance.exchanges.count < Self.maxQuestions,
+                       let reply = await handle.ask(AgentQuestion(question: Self.yourTurn(told),
+                                                                  choices: [Self.didItChoice], allowsOther: false)) {
+                        try checkCancelled()
+                        run.afterReply(question: told, reply: reply)
+                        run.afterTakeover("The user did it themself: \(told)")
+                        handle.emit(.status("Carrying on from here"))
+                        screen = await observe()
+                        return true
+                    }
+                    try checkCancelled()
                     writerAnswer = what
                     writeRun("needs user")
                     noteRoute(worked: false)
                     handle.verdict = .needsUser
-                    handle.emit(.failed(what.isEmpty ? answer.text : what))
+                    handle.emit(.failed(told))
                     return false
                 case .resume:
                     // Out of Jev's steps: one more read decides (and may take over once more).
@@ -2406,6 +2496,7 @@ final class AgentRunLog: @unchecked Sendable {
         case .step(let i, let d): line = "step \(i): \(d)"
         case .status(let s): line = "status: \(s)"
         case .needsApproval(_, let d, let r): line = "needsApproval: \(d) [\(r)]"
+        case .needsAnswer(let q): line = "needsAnswer: \(q.question) [\(q.choices.joined(separator: " | "))]"
         case .completed(let s): line = "completed: \(s)"
         case .failed(let m): line = "failed: \(m)"
         case .cancelled: line = "cancelled"

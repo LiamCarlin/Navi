@@ -49,6 +49,8 @@ final class VoiceSession: ObservableObject {
     @Published private(set) var answerText = ""
     @Published private(set) var isAnswering = false
     @Published private(set) var approval: (description: String, risk: String)?
+    /// The running task's question, with its answers as buttons (say one, or click it).
+    @Published private(set) var question: AgentQuestion?
     @Published private(set) var queueCount = 0
     @Published private(set) var lastOutcome: (text: String, ok: Bool)?
     /// Why Navi is waiting ("waiting for the rest…"), or empty.
@@ -143,7 +145,7 @@ final class VoiceSession: ObservableObject {
         phase = .starting
         hint = "Starting…"
         segmenter.reset()
-        committed = []; pendingText = ""; lastOutcome = nil; answerText = ""; isAnswering = false; activity = nil; approval = nil
+        committed = []; pendingText = ""; lastOutcome = nil; answerText = ""; isAnswering = false; activity = nil; approval = nil; question = nil
         jevStatus = ""
         restarts = 0
         lastLoudAt = .distantPast; heardSpeech = false; activityDetector.reset(); spokeSinceFlush = false
@@ -207,6 +209,12 @@ final class VoiceSession: ObservableObject {
     func approve(_ yes: Bool) {
         guard executor.pendingApproval != nil else { return }
         executor.respondToApproval(yes)
+    }
+
+    /// The island's answer buttons (nil = "Stop"); a spoken answer arrives through `decideNow`.
+    func answerQuestion(_ reply: String?) {
+        guard executor.pendingQuestion != nil else { return }
+        executor.answerQuestion(reply)
     }
 
     func togglePause() {
@@ -492,6 +500,31 @@ final class VoiceSession: ObservableObject {
             #endif
         }
         let silence = silenceMs
+        // The running task is paused on a question: what the user says now is the answer.
+        if echoDecision == nil, let q = executor.pendingQuestion {
+            switch VoiceDecider.questionReply(head: heardClause.head, silenceMs: silence, question: q) {
+            case .answer(let reply):
+                Log.voice.info("answer to the task's question: “\(reply, privacy: .private)”")
+                segmenter.commit(heardClause)
+                pendingText = segmenter.pendingText
+                hint = ""
+                committed.append(heardClause.head)
+                if committed.count > Self.maxCommittedShown { committed.removeFirst(committed.count - Self.maxCommittedShown) }
+                VoiceSounds.play(.commit)
+                executor.answerQuestion(reply)
+                if segmenter.pending() != nil { scheduleDecision(after: 60) }
+                return
+            case .wait(let ms):
+                hint = "…"
+                scheduleDecision(after: ms)
+                return
+            case .notAReply:
+                // Only the listed answer would do and the user moved on: the task stops waiting
+                // (it ends as needing them) and what they said is handled as usual.
+                let plain = heardClause.head.lowercased().trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+                if !q.allowsOther, !VoiceDecider.instantStops.contains(plain) { executor.answerQuestion(nil) }
+            }
+        }
         var input = VoiceDecider.Input(clause: heardClause, silenceMs: silence, context: context(for: heardClause))
         var decision: VoiceDecider.Decision
         let key = [heardClause.head, clause.connector, clause.following, clause.soft ? "soft" : "", executor.busyLabel ?? ""].joined(separator: "|")
@@ -681,9 +714,15 @@ final class VoiceSession: ObservableObject {
             VoiceSounds.play(.attention)
         case .approvalResolved:
             approval = nil
+        case .question(_, let q):
+            question = q
+            VoiceSounds.play(.attention)
+        case .questionResolved:
+            question = nil
         case .finished(let item, let outcome):
             activity = nil
             approval = nil
+            question = nil
             isAnswering = false
             #if DEBUG
             DebugTrace.log("voice finished | “\(item.command.spoken)” → \(outcome)")

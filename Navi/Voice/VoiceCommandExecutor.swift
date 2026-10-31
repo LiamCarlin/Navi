@@ -36,6 +36,9 @@ final class VoiceCommandExecutor {
         case answer(Item, delta: String)
         case needsApproval(Item, description: String, risk: String)
         case approvalResolved(Item)
+        /// The running task paused on a question (clickable answers on the island, or say one).
+        case question(Item, AgentQuestion)
+        case questionResolved(Item)
         case finished(Item, Outcome)
         case queueChanged
     }
@@ -56,6 +59,9 @@ final class VoiceCommandExecutor {
     private var lastRunEventAt = Date()
     /// Approval the current command is waiting for: the agent's or a system action's.
     private(set) var pendingApproval: (description: String, risk: String, respond: (Bool) -> Void)?
+    /// The question the running task is paused on, and how to answer it (nil reply ⇒ stop).
+    private(set) var pendingQuestion: AgentQuestion?
+    private var questionRespond: ((String?) -> Void)?
     /// The app the last command opened or worked in, for follow-up clauses.
     private(set) var lastApp: (bundleID: String?, name: String)?
     /// The last command was on the web (opened a URL, searched, ran a browser
@@ -102,6 +108,7 @@ final class VoiceCommandExecutor {
     /// Abort only what is running now; the queue continues.
     func stopCurrent() {
         if let p = pendingApproval { pendingApproval = nil; p.respond(false) }
+        if pendingQuestion != nil { answerQuestion(nil) }
         currentRun?.cancel()
         currentTask?.cancel()
     }
@@ -149,6 +156,16 @@ final class VoiceCommandExecutor {
         if let current { onEvent?(.approvalResolved(current)) }
     }
 
+    /// The reply to the paused task's question (a choice's words or the user's own); nil stops the task.
+    func answerQuestion(_ reply: String?) {
+        guard pendingQuestion != nil, let respond = questionRespond else { return }
+        pendingQuestion = nil
+        questionRespond = nil
+        lastRunEventAt = Date()
+        respond(reply)
+        if let current { onEvent?(.questionResolved(current)) }
+    }
+
     /// ⌘Z in whatever app is in front.
     func undo() async {
         await input.press(KeyCombo(keyCode: 6, flags: .maskCommand, keyName: "z"))
@@ -173,6 +190,8 @@ final class VoiceCommandExecutor {
         currentRun = nil
         currentTask = nil
         pendingApproval = nil
+        pendingQuestion = nil
+        questionRespond = nil
         remember(item, outcome)
         if case .done = outcome { recordPlace(item.command) }
         onEvent?(.finished(item, outcome))
@@ -492,7 +511,8 @@ final class VoiceCommandExecutor {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled, let self else { return }
                 let idle = Int(Date().timeIntervalSince(self.lastRunEventAt) * 1000)
-                guard idle >= Self.taskIdleMs else { continue }
+                // Waiting on the user's answer is not a stall: the run times its own question out.
+                guard idle >= Self.taskIdleMs, self.pendingQuestion == nil else { continue }
                 Log.voice.warning("voice task silent for \(idle) ms — cancelling: \(task.prefix(80), privacy: .private)")
                 self.timedOutRun = handle.id
                 handle.cancel()
@@ -510,6 +530,13 @@ final class VoiceCommandExecutor {
             case .needsApproval(let id, let d, let r):
                 pendingApproval = (d, r, { approve in handle.respond(approve ? .approve(id) : .deny(id)) })
                 onEvent?(.needsApproval(item, description: d, risk: r))
+            case .needsAnswer(let q):
+                pendingQuestion = q
+                questionRespond = { reply in
+                    handle.respond(.answer(q.id, reply))
+                    if reply == nil { handle.cancel() }
+                }
+                onEvent?(.question(item, q))
             case .completed(let s): outcome = .done(s)
             case .failed(let m): outcome = handle.verdict == .needsUser ? .needsYou(m) : .failed(m)
             case .cancelled: outcome = timedOutRun == handle.id ? .failed("Stalled with no progress for \(Self.taskIdleMs / 1000) s and was stopped") : .cancelled

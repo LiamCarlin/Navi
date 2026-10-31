@@ -208,6 +208,78 @@ final class AgentRunHandle: @unchecked Sendable {
     func finish() { continuation.finish() }
     func cancel() { cancelAction() }
     func respond(_ a: AgentApproval) { respondAction(a) }
+
+    // Integration hook (pause-and-ask workstream): the run puts a multiple-choice question to the
+    // user and waits (`.needsAnswer`; answered with `respond(.answer(id, reply))`). Set by the agent
+    // on every handle it drives; nil reply ⇒ the user stopped the task (or never answered).
+    var asker: (@Sendable (AgentQuestion) async -> String?)?
+    func ask(_ q: AgentQuestion) async -> String? { await asker?(q) }
+}
+
+/// A question a paused run puts to the user: what the screen shows, the question, and the answers
+/// they can click (the likeliest first). They may also type their own, or stop the task.
+struct AgentQuestion: Sendable, Equatable, Identifiable {
+    let id: UUID
+    /// The question itself, one short sentence ("Which size do you want?").
+    var question: String
+    /// What the run saw that led to it ("The menu has the Big Mac in small, medium and large."); may be empty.
+    var detail: String
+    /// 1–4 clickable answers, the likeliest first.
+    var choices: [String]
+    /// A typed answer is welcome too (false for "do this on screen, then keep going").
+    var allowsOther: Bool
+
+    static let maxChoices = 4
+    static let goAheads: Set<String> = ["done", "did", "finished", "continue", "keep", "go", "ok", "okay", "yes", "yeah", "yep",
+                                        "ready", "signed", "logged", "proceed", "carry", "next"]
+
+    init(id: UUID = UUID(), question: String, detail: String = "", choices: [String], allowsOther: Bool = true) {
+        self.id = id
+        self.question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.detail = d == self.question ? "" : d
+        self.choices = Self.tidy(choices)
+        self.allowsOther = allowsOther
+    }
+
+    /// Distinct, non-empty, short, at most `maxChoices`.
+    static func tidy(_ choices: [String]) -> [String] {
+        var seen = Set<String>(), out: [String] = []
+        for c in choices {
+            let t = c.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "•-–")))
+            guard !t.isEmpty, t.count <= 80, seen.insert(t.lowercased()).inserted else { continue }
+            out.append(t)
+            if out.count == maxChoices { break }
+        }
+        return out
+    }
+
+    /// The choice a reply names: its number ("2", "the second one"), or its own words, or a reply
+    /// that is mostly one choice's words ("the large one" → "Large"). nil ⇒ the reply is its own answer.
+    func choice(matching reply: String) -> String? {
+        let r = reply.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard !r.isEmpty, !choices.isEmpty else { return nil }
+        let ordinals = [["1", "one", "first", "the first", "the first one", "option one", "option 1"],
+                        ["2", "two", "second", "the second", "the second one", "option two", "option 2"],
+                        ["3", "three", "third", "the third", "the third one", "option three", "option 3"],
+                        ["4", "four", "fourth", "the fourth", "the fourth one", "option four", "option 4"]]
+        for (i, words) in ordinals.enumerated() where i < choices.count && words.contains(r) { return choices[i] }
+        // "Do it, then keep going": any go-ahead picks the one answer ("ok done", "I signed in").
+        if choices.count == 1, !allowsOther,
+           !Set(r.split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: Self.goAheads) { return choices[0] }
+        if let exact = choices.first(where: { $0.lowercased() == r }) { return exact }
+        func words(_ s: String) -> Set<String> {
+            Set(s.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+                .subtracting(["the", "a", "an", "one", "please", "i", "want", "go", "with", "use", "pick", "that", "it"])
+        }
+        let said = words(r)
+        guard !said.isEmpty else { return nil }
+        let scored = choices.map { c -> (String, Int) in (c, words(c).intersection(said).count) }
+        let best = scored.max { $0.1 < $1.1 }!
+        // One choice names everything the reply says, and no other choice ties with it.
+        guard best.1 > 0, best.1 == said.count, scored.filter({ $0.1 == best.1 }).count == 1 else { return nil }
+        return best.0
+    }
 }
 
 enum AgentEvent: Sendable {
@@ -215,6 +287,8 @@ enum AgentEvent: Sendable {
     case step(index: Int, description: String) // "Clicking 'Sign in'"
     case screenshot(NSImage)                   // latest frame (downscaled)
     case needsApproval(id: UUID, description: String, risk: String)
+    /// The run is paused on a question only the user can answer (`AgentRunHandle.ask`).
+    case needsAnswer(AgentQuestion)
     case status(String)
     case completed(summary: String)
     case failed(String)
@@ -248,6 +322,8 @@ enum RunVerdict: String, Sendable, Equatable {
 enum AgentApproval: Sendable {
     case approve(UUID)
     case deny(UUID)
+    /// The reply to `AgentEvent.needsAnswer` (a choice's words or the user's own); nil ⇒ stop the task.
+    case answer(UUID, String?)
 }
 
 // MARK: - Memory

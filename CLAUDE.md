@@ -306,6 +306,18 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     achieved, ~20 s. The coach's "[Errno 32] Broken pipe" was a dead pooled HTTP/2 connection:
     Claude calls use `claude_post` (own HTTP/1.1 client, retries transport errors). Off switch:
     `agentClaudeTakeover` = false (both drivers; `NAVI_TAKEOVER=0`, `NAVI_JUDGE=0` in the runner).
+  - **Paused questions — multiple choice** (Liam, 2026-10-31: questions used to end the run, and typing
+    a reply wiped the task). The writer's `question` comes with `question_choices` (2–4 clickable
+    answers); `AgentRunHandle.ask` emits `.needsAnswer(AgentQuestion)` and the run *waits*
+    (`AgentRun.ask`, ≤ 15 min, ≤ 3 per run), answered by `respond(.answer(id, reply))` (nil = stop).
+    The reply joins `user_said` (`CURunState.afterReply`: stalls reset) and the writer reads again.
+    A takeover's "Stopped: sign in…" pauses too, with one answer ("I did it — keep going"), then Jev
+    resumes on that screen. Panel: the card drops down under the bar (`QuestionCard`; the panel
+    shows itself via `onAttentionNeeded`), ↑↓ ⏎ / ⌘1–4 / click, and while it is up the bar is the
+    reply box — typing never switches to results. Island: the question + answer chips; a spoken
+    reply answers without Jev (`VoiceDecider.questionReply`: a named choice at once, own words after
+    the pause), the voice idle watchdog ignores a run waiting on the user. Not yet: the Chrome CDP
+    runner still ends a needs-user stop instead of pausing.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the

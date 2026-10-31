@@ -81,6 +81,12 @@ final class AgentOverlay {
         model.text = "Waiting for your approval in Navi"
     }
 
+    /// The run is paused on a question (the panel or the island shows its answers).
+    func setWaitingForAnswer() {
+        model.waitingForApproval = true
+        model.text = "Navi has a question for you"
+    }
+
     func hide() {
         hideTask?.cancel()
         hideTask = nil

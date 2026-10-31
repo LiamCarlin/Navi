@@ -44,6 +44,11 @@ final class PanelController {
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         viewModel.onDismiss = { [weak self] in self?.hide() }
+        // A running task paused on a question: drop the panel down on it, wherever the user is.
+        viewModel.onAttentionNeeded = { [weak self] in
+            guard let self, !self.isVisible else { return }
+            self.show()
+        }
         viewModel.onContentHeightChange = { [weak self] h in self?.contentHeight = max(PanelStyle.barHeight, h) }
         panel.onResignKey = { [weak self] in self?.hide() }
         panel.cardRect = { [weak self] in self?.cardRectInWindow() ?? .zero }
@@ -165,6 +170,8 @@ final class PanelController {
                 return nil
             case 51 where cmd && vm.pendingApproval != nil:                // ⌘⌫: deny
                 vm.approvePending(false); return nil
+            case 18...21 where cmd && vm.mode == .agent && vm.pendingQuestion != nil:   // ⌘1–4: that answer
+                vm.answerSelectedChoice([18: 0, 19: 1, 20: 2, 21: 3][ev.keyCode]); return nil
             case 33 where cmd && vm.mode == .schedule:                     // ⌘[ / ⌘]: previous / next day
                 vm.scheduler?.shiftDay(-1); return nil
             case 30 where cmd && vm.mode == .schedule:
