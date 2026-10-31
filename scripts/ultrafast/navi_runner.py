@@ -116,6 +116,16 @@ Reliability adaptations (from failed runs, see git log):
      whole way rides in the state as `this_users_way` (✓ done, → next), and a
      click or fill on a step's element moves the route on. Same matching as
      the native driver's `UserRoute`.
+ 32. Stuck → Claude takes the wheel; outcomes are judged, not assumed. When Jev
+     circles, changes nothing, answers BLOCKED, or says DONE unsure (< 85 %),
+     Claude first judges the page (achieved / partial / not_achieved /
+     impossible / needs_user + answer + next step). Met → done; impossible or
+     needs the user → an honest stop; otherwise Claude computer use drives this
+     tab (CDP screenshots + input, ≤ 8 rounds, ≤ 3 takeovers a run, Jev's
+     irreversible gate per turn, never pays, never types a secret) and hands
+     back to Jev once the page moved on. The done event carries `outcome` and
+     `answer`. Claude calls retry a dead pooled connection (the "[Errno 32]
+     Broken pipe" that killed the coach). Details at the section comment.
 """
 
 import argparse
@@ -381,6 +391,11 @@ def field_text_claude(context):
                     "messages": [{"role": "user", "content": json.dumps(context)}],
                 },
             )
+        except httpx.TransportError:
+            # A pooled connection the server closed while idle ([Errno 32] Broken pipe): a fresh one works.
+            if attempt < 2:
+                continue
+            raise RuntimeError("Text helper connection failed; nothing typed.") from None
         except httpx.HTTPError:
             raise RuntimeError("Text helper connection failed; nothing typed.") from None
         refusal = cloud_error(response) if response.is_error and navi_cloud() else None
@@ -705,7 +720,7 @@ class Coach:
     def circling(history):
         """The same few actions over and over (Order Now → Order Delivery → Yes, Continue, 30×):
         every step changed the page, so the no-change rule never fired."""
-        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll", "check"}]
+        acts = [(h.get("kind"), (h.get("action") or "")[:80]) for h in history if h.get("kind") not in {"wait", "coach", "scroll", "check", "takeover"}]
         for period in (2, 3, 4):
             if len(acts) >= 2 * period and acts[-period:] == acts[-2 * period:-period] and len(set(acts[-period:])) == period:
                 return "going in circles (%s)" % " → ".join(a[1].split("\n")[0][:30] for a in acts[-period:])
@@ -714,10 +729,8 @@ class Coach:
     playbook = None   # set by main(): the Playbook, so the coach reads the same site knowledge
 
     def ask(self, goal, page, history, why, screenshot_b64=None):
-        endpoint = claude_endpoint()
-        if endpoint is None:
+        if claude_endpoint() is None:
             raise ValueError("no Anthropic key")
-        url, headers = endpoint
         model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
         from jev_ultrafast.model import action_space
 
@@ -737,22 +750,9 @@ class Coach:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
         content.append({"type": "text", "text": json.dumps(state, sort_keys=True)})
         started = time.perf_counter()
-        response = jev_model.CLIENT.post(
-            url,
-            headers=headers,
-            json={"model": model, "max_tokens": 700, "system": COACH_SYSTEM, "messages": [{"role": "user", "content": content}]},
-            timeout=60,
-        )
-        if response.is_error:
-            refusal = cloud_error(response) if navi_cloud() else None
-            if refusal is not None:
-                raise refusal
-            raise RuntimeError(f"Claude returned HTTP {response.status_code}")
-        text = "".join(b.get("text", "") for b in response.json().get("content", []) if b.get("type") == "text").strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            text = text[text.find("{"):text.rfind("}") + 1]
-        out = json.loads(text)
+        result = claude_post({"model": model, "max_tokens": 700, "system": COACH_SYSTEM,
+                              "messages": [{"role": "user", "content": content}]}, timeout=60, what="Claude's diagnosis")
+        out = json_object(message_text(result))
         guidance = str(out.get("guidance", "")).strip()
         if not guidance:
             raise ValueError("no guidance")
@@ -784,6 +784,607 @@ class Coach:
             return inner(url, key, body)
 
         jev_model.post_json = post_json
+
+
+# --- Adaptation 32: a stuck run is finished by Claude, and its outcome is judged ----
+#
+# Liam's policy (2026-10-30): when Jev is stuck — circling (DoorDash: Sign In ↔ Close 4×), changing
+# nothing, BLOCKED on a page that should work, or an unsure "done" — Navi hands the next steps to the
+# slower Claude computer-use loop on the same tab, then gives control back to Jev once the page has
+# moved on. Success matters more than speed on the hard tenth of tasks.
+#
+# Why in the runner (screenshots + CDP input) and not the native Claude loop on Chrome's window: the
+# tab may be a background tab (NAVI_BACKGROUND_TAB) that is not on screen at all; CDP captures exactly
+# this tab's viewport and posts input to it in CSS coordinates, with no cursor, focus or other window
+# in the way; and the runner already owns the tab, its history and the stuck rules, so Jev resumes
+# from the very page Claude left, with Claude's actions in its recent_actions. A modal Jev cannot read
+# (DoorDash's sign-in lives in a cross-origin iframe) is pixels like any other to Claude.
+#
+# Every stop is first a typed judgment (`judge`): achieved / partial / not_achieved / impossible /
+# needs_user, with the answer and the one next step. "achieved" ends the run as done (Chipotle's cart
+# was full while Jev re-saved a name field); impossible and needs_user end it honestly; the rest go to
+# the takeover while budget remains. The done event carries `outcome`, so Navi never calls a run
+# completed whose own answer says "I couldn't…". Navi still never pays (27), never types a secret,
+# and Jev's irreversible gate still guards every Claude turn that would change something.
+#
+# The diagnosis that failed with "[Errno 32] Broken pipe": the coach posted its screenshot on the
+# HTTP/2 connection warmed for the text helper at start-up; the server had closed it while idle and
+# httpx raised on the write instead of reconnecting. Claude calls now go through `claude_post` on
+# their own HTTP/1.1 client, which retries a transport error on a fresh connection, and screenshots
+# are captured at ≤ 1280 px wide (`viewport_shot`) instead of the Retina full size.
+
+CLAUDE_CLIENT = httpx.Client(http2=False, timeout=90)
+CLAUDE_RETRY_STATUS = {429, 500, 502, 503, 529}
+
+
+def claude_post(body, timeout=90, what="Claude"):
+    """POST a Messages body to Claude (Navi Cloud or Anthropic). A transport error — a pooled
+    connection the server closed ("[Errno 32] Broken pipe"), a reset, a timeout — is retried on a
+    fresh connection; busy answers back off. Navi Cloud's refusals raise CloudError."""
+    endpoint = claude_endpoint()
+    if endpoint is None:
+        raise ValueError("no Anthropic key")
+    url, headers = endpoint
+    last = None
+    for attempt in range(3):
+        try:
+            response = CLAUDE_CLIENT.post(url, headers=headers, json=body, timeout=timeout)
+        except httpx.TransportError as exc:
+            last = exc
+            try:
+                CLAUDE_CLIENT._transport._pool.close()   # drop the dead pooled connections
+            except Exception:  # noqa: BLE001 — private API; the next request reconnects anyway
+                pass
+            time.sleep(0.3 * (attempt + 1))
+            continue
+        refusal = cloud_error(response) if response.is_error and navi_cloud() else None
+        if refusal is not None and refusal.fields.get("code") != "rate_limited":
+            raise refusal
+        if response.status_code in CLAUDE_RETRY_STATUS and attempt < 2:
+            time.sleep(0.6 * 2**attempt)
+            continue
+        if refusal is not None:
+            raise refusal
+        if response.is_error:
+            raise RuntimeError(f"{what} returned HTTP {response.status_code}")
+        return response.json()
+    raise RuntimeError(f"{what} unreachable ({last or 'busy'})")
+
+
+def message_text(result):
+    return "".join(b.get("text", "") for b in (result or {}).get("content", []) if b.get("type") == "text").strip()
+
+
+def json_object(text):
+    """The JSON object in a model's reply, fenced or not."""
+    text = (text or "").strip()
+    if not text.startswith("{"):
+        a, b = text.find("{"), text.rfind("}")
+        if a < 0 or b <= a:
+            raise ValueError("no JSON object in the reply")
+        text = text[a:b + 1]
+    out = json.loads(text)
+    if not isinstance(out, dict):
+        raise ValueError("the reply is not a JSON object")
+    return out
+
+
+def jpeg_size(data):
+    """(width, height) of a JPEG from its SOF marker, else None."""
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            return (data[i + 7] << 8 | data[i + 8], data[i + 5] << 8 | data[i + 6])
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        i += 2 + (data[i + 2] << 8 | data[i + 3])
+    return None
+
+
+SHOT_MAX_WIDTH = 1280
+
+
+def viewport_shot(browser, max_width=SHOT_MAX_WIDTH, region=None, quality=70):
+    """The tab's viewport (or `region` = (x, y, w, h) in CSS px of it) as a JPEG at most
+    `max_width` px wide. Returns (base64, css_px_per_image_px). Clip coordinates are
+    document-relative, so the scroll offset is added; devicePixelRatio is divided out (the
+    runner sets no device-metrics override, so a Retina tab captures at 2×)."""
+    import base64
+    vw, vh, sx, sy, dpr = browser.evaluate(
+        "[innerWidth, innerHeight, visualViewport ? visualViewport.pageLeft : scrollX,"
+        " visualViewport ? visualViewport.pageTop : scrollY, devicePixelRatio || 1]")
+    x, y, w, h = region or (0, 0, vw, vh)
+    w, h = max(1, min(w, vw - x)), max(1, min(h, vh - y))
+    scale = max_width / (w * dpr) if w * dpr > max_width else 1.0
+    data = browser.call("Page.captureScreenshot", format="jpeg", quality=quality,
+                        clip={"x": sx + x, "y": sy + y, "width": w, "height": h, "scale": scale})["data"]
+    head = data[:8192]
+    size = jpeg_size(base64.b64decode(head[:len(head) - len(head) % 4]))
+    width = size[0] if size else round(w * scale * dpr)
+    return data, w / max(1, width)
+
+
+# --- the typed judgment -----------------------------------------------------------
+
+VERDICTS = ("achieved", "partial", "not_achieved", "impossible", "needs_user")
+
+JUDGE_SYSTEM = """You check where a web task stands for Navi, an assistant that works in the user's browser. You get the user's goal, a screenshot of the browser tab now (when available), the page's URL, title and visible text, the actions taken so far, and why you were asked.
+
+Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user"}
+
+- achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag or checkout is reached — Navi never pays; the user places the order. For a sign-in, the account is signed in.
+- partial: some parts are done, others not yet.
+- not_achieved: not done yet, but doable from here or on this site.
+- impossible: it cannot be done on this site at all (say why).
+- needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, a payment, a choice the goal leaves open.
+answer: one to three plain sentences for the user, true to the screen. Never claim something was done that the screen does not show, and never talk about what you yourself can or cannot do.
+next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details."""
+
+COULD_NOT = re.compile(r"\b(i (could ?n[o']t|can ?n[o']t|cannot|was(n't| not) able|am unable|did ?n[o']t manage)|unable to|"
+                       r"(is|was|has|have)(n't| not) (been |yet )?(confirmed|created|added|sent|found|done|completed|opened|saved)|"
+                       r"i (do|did) ?n[o']t see|not (yet )?(been )?(done|complete|completed|created|added|sent|saved)|still (needs|has) to)\b", re.I)
+
+
+def says_could_not(text):
+    """The answer itself says the task was not done ("I couldn't open DoorDash", "isn't confirmed")."""
+    return bool(COULD_NOT.search(text or ""))
+
+
+def normalize_verdict(out):
+    """A judge reply as {verdict, answer, next_step}: an unknown verdict reads as not_achieved, and
+    an "achieved" whose own words say it was not done is not believed."""
+    verdict = str(out.get("verdict") or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if verdict not in VERDICTS:
+        verdict = "not_achieved"
+    answer = str(out.get("answer") or "").strip()
+    if verdict == "achieved" and says_could_not(answer):
+        verdict = "partial"
+    return {"verdict": verdict, "answer": answer[:800], "next_step": str(out.get("next_step") or "").strip()[:300]}
+
+
+def judge(goal, page, history, why, screenshot_b64=None):
+    """One typed judgment of the run as it stands (raises when Claude is unreachable)."""
+    state = {
+        "goal": goal,
+        "why_asked": why,
+        "page": {"url": page.get("url"), "title": page.get("title"), "text": (page.get("text") or "")[:5000]},
+        "actions_taken": [{k: h.get(k) for k in ("action", "kind", "text", "page_changed")}
+                          for h in history if h.get("kind") != "check"][-14:],
+    }
+    content = []
+    if screenshot_b64:
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
+    content.append({"type": "text", "text": json.dumps(state, sort_keys=True, ensure_ascii=False)})
+    model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
+    result = claude_post({"model": model, "max_tokens": 600, "system": JUDGE_SYSTEM,
+                          "messages": [{"role": "user", "content": content}]}, timeout=60, what="Claude's check")
+    return normalize_verdict(json_object(message_text(result)))
+
+
+JUDGE_DONE_BELOW = 0.85
+JUDGE_SETTLE_S = 0.6        # a beat for a dialog that just opened before the judge looks
+
+
+def should_judge_done(confidence):
+    """Jev's own DONE stands when it is sure; an unsure one (KFC's 63 %) is checked by the judge."""
+    if os.environ.get("NAVI_JUDGE") == "0" or claude_endpoint() is None:
+        return False
+    return (confidence if confidence is not None else 0.0) < JUDGE_DONE_BELOW
+
+
+# --- the takeover ------------------------------------------------------------------
+
+TAKEOVER_TURNS = 8          # Claude rounds per takeover (each may hold several actions)
+MAX_TAKEOVERS = 3           # per run
+TAKEOVER_MAX_S = 150        # wall clock per takeover
+KEEP_SCREENSHOTS = 3
+
+TAKEOVER_SYSTEM = """You are finishing a task in one Chrome tab for the user of Navi, a Mac assistant. A fast driver that reads the page's element list got stuck, so you take over; once you have moved the task forward it may take back over.
+
+You see the tab through screenshots: only the web page, no address bar, tabs or other windows. Act with the computer tool (coordinates are in the latest screenshot's pixels); `go_to_url` opens an https address in this tab and `go_back` goes back. Take a screenshot again after any action that changes the page.
+
+Rules:
+- Navi never pays: never click Place order, Pay, Buy now, Confirm purchase or the like. A purchase or order is finished when the item is in the cart/bag or the checkout page shows it; then stop with Done.
+- Never type passwords, one-time codes, card or bank numbers. You may press "Continue with Google" or "Sign in" buttons, but when the next step needs the user's password, a code, an account choice in a sign-in window, a payment, or a choice the goal leaves open, stop.
+- Do not send, post, delete or submit anything the goal does not ask for.
+- Dismiss pop-ups, cookie banners and app-download prompts that are in the way, unless they are the goal.
+- Be quick: a few actions per turn.
+
+When you stop, reply with one line and no tool call, and always begin it with Done:, Stopped: or Did: — also when you find the goal already done without acting:
+"Done: <what the screen now shows>" when every part of the goal is done on screen;
+"Stopped: <what the user needs to do>" when only the user can continue;
+"Did: <what you did>" when you made progress but are not finished."""
+
+TAKEOVER_TOOLS = [
+    {"type": "computer_toolset_20260801"},
+    {"name": "go_to_url", "description": "Open an https URL in this tab.",
+     "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+    {"name": "go_back", "description": "Go back one page in this tab.", "input_schema": {"type": "object", "properties": {}}},
+]
+CUSTOM_TOOLS = {"go_to_url", "go_back"}
+READ_ONLY_TOOLS = {"screenshot", "zoom", "cursor_position", "mouse_move", "wait"}
+
+KEYS = {
+    "return": ("Enter", "Enter", 13, "\r"), "enter": ("Enter", "Enter", 13, "\r"), "kp_enter": ("Enter", "NumpadEnter", 13, "\r"),
+    "tab": ("Tab", "Tab", 9, None), "escape": ("Escape", "Escape", 27, None), "esc": ("Escape", "Escape", 27, None),
+    "backspace": ("Backspace", "Backspace", 8, None), "delete": ("Delete", "Delete", 46, None),
+    "space": (" ", "Space", 32, " "), "up": ("ArrowUp", "ArrowUp", 38, None), "down": ("ArrowDown", "ArrowDown", 40, None),
+    "left": ("ArrowLeft", "ArrowLeft", 37, None), "right": ("ArrowRight", "ArrowRight", 39, None),
+    "home": ("Home", "Home", 36, None), "end": ("End", "End", 35, None),
+    "page_up": ("PageUp", "PageUp", 33, None), "pageup": ("PageUp", "PageUp", 33, None),
+    "page_down": ("PageDown", "PageDown", 34, None), "pagedown": ("PageDown", "PageDown", 34, None),
+}
+MODIFIERS = {"alt": 1, "option": 1, "ctrl": 2, "control": 2, "cmd": 4, "command": 4, "meta": 4, "super": 4, "shift": 8}
+EDIT_COMMANDS = {"a": "selectAll", "c": "copy", "v": "paste", "x": "cut", "z": "undo"}
+
+
+def parse_key(text):
+    """xdotool-style "ctrl+a" / "Return" / "shift+Tab" → (key, code, keyCode, text, modifiers, commands)."""
+    parts = [p for p in re.split(r"\s*\+\s*", (text or "").strip()) if p]
+    if not parts:
+        raise ValueError("empty key")
+    mods = 0
+    for p in parts[:-1]:
+        if p.lower() not in MODIFIERS:
+            raise ValueError(f"unknown modifier {p}")
+        mods |= MODIFIERS[p.lower()]
+    name = parts[-1]
+    low = name.lower()
+    if low in KEYS:
+        key, code, kc, txt = KEYS[low]
+    elif len(name) == 1:
+        key, kc = name, ord(name.upper())
+        code = ("Key" + name.upper()) if name.isalpha() else ("Digit" + name) if name.isdigit() else ""
+        txt = name if not mods & (2 | 4) else None
+    elif re.fullmatch(r"f([1-9]|1[0-2])", low):
+        key = code = name.upper()
+        kc, txt = 111 + int(low[1:]), None
+    else:
+        raise ValueError(f"unknown key {name}")
+    primary = 4 if sys.platform == "darwin" else 2
+    commands = [EDIT_COMMANDS[low]] if mods & primary and low in EDIT_COMMANDS else []
+    return key, code, kc, txt, mods, commands
+
+
+AT_POINT_JS = """((x,y) => {
+  const e=document.elementFromPoint(x,y); if (!e) return null;
+  const c=e.closest('button,a,[role=button],[role=link],[role=menuitem],[role=option],input,select,textarea,label,summary,[onclick]')||e;
+  const t=s=>String(s||'').replace(/\\s+/g,' ').trim();
+  return {label:t(c.getAttribute('aria-label')||c.innerText||c.value||c.title||c.getAttribute('alt')).slice(0,160),
+          tag:c.tagName, frame:e.tagName==='IFRAME'};
+})"""
+
+SECRET_FIELD_JS = """(() => { const e=document.activeElement; if (!e) return false;
+  const a=String(e.autocomplete||'')+' '+String(e.name||'')+' '+String(e.id||'');
+  return e.type==='password' || /cc-|card|cvv|cvc|one-time-code|otp|password/i.test(a); })()"""
+
+
+def pays_refusal(label):
+    """The refusal for a click on a control that spends the user's money (adaptation 27), else None."""
+    if label and PAYS.search(label):
+        return (f"Refused: ‘{label[:60]}’ would spend the user's money — Navi never pays. "
+                "If the item is in the cart or checkout is open, reply Done: … ; the user places the order.")
+    return None
+
+
+def describe_call(block):
+    """A tool_use block in words, for the gate and the log."""
+    name, inp = block.get("name"), block.get("input") or {}
+    if name in {"left_click", "double_click", "triple_click", "right_click", "middle_click"}:
+        return f"{name.replace('_', ' ')} at {inp.get('coordinate')}"
+    if name == "type":
+        return f"type “{str(inp.get('text', ''))[:40]}”"
+    if name == "key":
+        return f"press {inp.get('text')}"
+    if name == "scroll":
+        return f"scroll {inp.get('scroll_direction', 'down')}"
+    if name == "go_to_url":
+        return f"open {inp.get('url')}"
+    return name or "?"
+
+
+GATE_QUESTIONS = {
+    "is_irreversible": {"type": "noul", "instructions": "Executing these actions would send a message/email/post, make a purchase or payment, delete or overwrite data, or otherwise be hard to undo"},
+    "is_prohibited": {"type": "noul", "instructions": "These actions enter a password, 2FA code, payment card or bank details, execute a financial transaction, or change security settings"},
+}
+
+RAW_JEV_POST = [None]       # the transport-only Jev call (set by install_adaptations), for the gate
+
+
+def gate_verdict(goal, claude_says, proposed, recent):
+    """Jev's irreversible / prohibited nouls for a takeover turn (JevGate's questions and state).
+    Jev unreachable → (0, 0): the pays and secret-field guards still hold."""
+    post = RAW_JEV_POST[0] or jev_model.post_json
+    state = (f"[TASK] {goal}\n[CLAUDE_SAYS] {claude_says or '(none)'}\n[PROPOSED_ACTIONS]\n"
+             + "".join(f"{i + 1}. {p}\n" for i, p in enumerate(proposed))
+             + "[RECENT_ACTIONS]\n" + ("".join(f"- {r}\n" for r in recent[-6:]) or "(none)\n") + "[SCREEN] browser tab")
+    try:
+        r = post("https://api.typesafe.ai/v1/systemone", os.environ.get("TYPESAFE_API_KEY", ""),
+                 {"state": state, "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"), "questions": GATE_QUESTIONS})
+        a = r.get("answers") or {}
+        return float((a.get("is_irreversible") or {}).get("noul", 0)), float((a.get("is_prohibited") or {}).get("noul", 0))
+    except CloudError:
+        raise
+    except Exception:  # noqa: BLE001 — the gate never breaks the loop
+        return 0.0, 0.0
+
+
+GOAL_SENDS = re.compile(r"\b(send|text|message|email|e-mail|post|reply|tweet|submit|delete|remove|publish|share|comment|rsvp)\b", re.I)
+
+
+def gate_stops(goal, irreversible, prohibited, mode=None):
+    """Why a takeover turn must not run, or None. Prohibited never runs; an irreversible turn runs in
+    autonomous mode, or in ask-for-risky mode when the goal itself asks to send/post/delete. There is no
+    approval channel back to Navi mid-run, so a turn that would need one ends the run as needs_user."""
+    mode = mode or os.environ.get("NAVI_APPROVAL_MODE", "askForRisky")
+    if prohibited > 0.5:
+        return "would enter credentials or payment details or move money"
+    if irreversible > 0.5 and mode != "autonomous" and (mode == "alwaysAsk" or not GOAL_SENDS.search(goal or "")):
+        return "would send, post, buy or delete something the task did not ask for"
+    return None
+
+
+def prune_images(messages, keep=KEEP_SCREENSHOTS):
+    """Older screenshots become a placeholder, newest `keep` kept (request bodies stay small)."""
+    seen = 0
+    for m in reversed(messages):
+        blocks = m.get("content") if isinstance(m.get("content"), list) else []
+        for block in reversed(blocks):
+            parts = block.get("content") if block.get("type") == "tool_result" and isinstance(block.get("content"), list) else [block]
+            for part in parts:
+                if part.get("type") == "image":
+                    seen += 1
+                    if seen > keep:
+                        part.clear()
+                        part.update({"type": "text", "text": "(older screenshot removed)"})
+
+
+class Takeover:
+    """Claude computer use on the runner's tab: a bounded number of rounds, Jev's irreversible gate
+    before every turn that changes something, Navi's never-pay and no-secrets guards before every
+    click and keystroke. The first takeover on a document hands back to Jev as soon as the page has
+    moved to a new document; a second one on the same document runs until Done / Stopped / budget."""
+
+    def __init__(self):
+        self.count = 0
+        self.last_url = None
+        self.ratio = 1.0
+        self.cursor = (0.0, 0.0)
+
+    def available(self):
+        return os.environ.get("NAVI_TAKEOVER", "1") != "0" and claude_endpoint() is not None and self.count < MAX_TAKEOVERS
+
+    def run(self, agent, goal, why, verdict, on_step):
+        """Returns {"result": done|stopped|handback|no_progress, "summary": str, "actions": n}."""
+        browser = agent.state["browser"]
+        page = agent.state["page"]
+        start_url, start_fp = page.get("url"), page.get("fingerprint")
+        hand_back = not (self.last_url is not None and Coach.same_document(self.last_url, start_url))
+        self.count += 1
+        self.last_url = start_url
+        model = os.environ.get("NAVI_TAKEOVER_MODEL") or os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
+        deadline = time.monotonic() + TAKEOVER_MAX_S
+        shot, self.ratio = viewport_shot(browser)
+        recent = [h.get("action", "") for h in agent.state["history"][-8:]]
+        intro = {
+            "goal": goal,
+            "why_the_fast_driver_stopped": why,
+            "where_it_stands": (verdict or {}).get("answer") or None,
+            "suggested_next_step": (verdict or {}).get("next_step") or None,
+            "page": {"url": start_url, "title": page.get("title")},
+            "recent_actions": recent,
+        }
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": json.dumps(intro, ensure_ascii=False)},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": shot}},
+        ]}]
+        actions = 0
+        summary = ""
+        wrap_up_sent = False
+        for _ in range(TAKEOVER_TURNS + 1):
+            result = claude_post({"model": model, "max_tokens": 2048, "system": TAKEOVER_SYSTEM,
+                                  "tools": TAKEOVER_TOOLS, "messages": messages}, timeout=90, what="Claude")
+            content = result.get("content") or []
+            messages.append({"role": "assistant", "content": content})
+            text = message_text(result)
+            calls = [b for b in content if b.get("type") == "tool_use"]
+            if result.get("stop_reason") == "refusal":
+                return {"result": "stopped", "summary": text or "Claude declined to continue.", "actions": actions}
+            if not calls or wrap_up_sent:
+                summary = text.splitlines()[0].strip() if text else ""
+                return {"result": takeover_result(summary, actions), "summary": summary, "actions": actions}
+            if text:
+                emit("status", message=f"Claude: {text.splitlines()[0][:160]}")
+            mutating = [c for c in calls if c.get("name") not in READ_ONLY_TOOLS]
+            if mutating:
+                irr, pro = gate_verdict(goal, text, [describe_call(c) for c in mutating], recent)
+                blocked = gate_stops(goal, irr, pro)
+                if blocked:
+                    what = "; ".join(describe_call(c) for c in mutating)
+                    emit("status", message=f"Stopped Claude before ‘{what[:80]}’: it {blocked}")
+                    return {"result": "stopped", "actions": actions,
+                            "summary": f"Stopped: the next step ({what[:80]}) {blocked} — that one is yours to do or confirm."}
+            results = []
+            for c in calls:
+                out, did = self.execute(browser, c)
+                results.append(out)
+                if did:
+                    actions += 1
+                    recent.append("Claude: " + did)
+                    on_step({"action": "Claude: " + did, "kind": "takeover", "text": None, "url": start_url})
+            rounds_left = TAKEOVER_TURNS - sum(1 for m in messages if m["role"] == "assistant")
+            if rounds_left <= 0 or time.monotonic() > deadline:
+                results.append({"type": "text", "text": "You have used this takeover's budget. Do not call any tool. "
+                                "Reply with one line: Done: …, Stopped: … or Did: …"})
+                wrap_up_sent = True
+            messages.append({"role": "user", "content": results})
+            prune_images(messages)
+            if hand_back and actions and not wrap_up_sent:
+                try:
+                    now = browser.observe(screenshot=False)
+                except Exception:  # noqa: BLE001 — mid-navigation; look again next round
+                    now = None
+                if now is not None and not Coach.same_document(start_url, now.get("url")) and now.get("fingerprint") != start_fp:
+                    return {"result": "handback", "actions": actions,
+                            "summary": f"Did: moved on to {now.get('title') or now.get('url')}"}
+        return {"result": takeover_result(summary, actions), "summary": summary, "actions": actions}
+
+    def point(self, coordinate):
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
+            raise ValueError("coordinate [x, y] is required")
+        return float(coordinate[0]) * self.ratio, float(coordinate[1]) * self.ratio
+
+    @staticmethod
+    def result(block, text=None, image=None, error=False):
+        """A tool_result: computer members echo toolset_name, the custom tools must not."""
+        out = {"type": "tool_result", "tool_use_id": block.get("id")}
+        if block.get("name") not in CUSTOM_TOOLS:
+            out["toolset_name"] = "computer"
+        if image:
+            out["content"] = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image}}]
+        else:
+            out["content"] = [{"type": "text", "text": text or "OK"}]
+        if error:
+            out["is_error"] = True
+        return out
+
+    def execute(self, browser, block):
+        """Runs one tool call on the tab. Returns (tool_result, what-it-did or None)."""
+        name, inp = block.get("name"), block.get("input") or {}
+
+        def mouse(kind, x, y, **kw):
+            browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, **kw)
+
+        try:
+            if name == "screenshot":
+                time.sleep(0.25)
+                shot, self.ratio = viewport_shot(browser)
+                return self.result(block, image=shot), None
+            if name == "zoom":
+                r = inp.get("region") or []
+                if len(r) != 4 or r[2] <= r[0] or r[3] <= r[1]:
+                    raise ValueError("zoom needs region [x0, y0, x1, y1]")
+                (x0, y0), (x1, y1) = self.point(r[:2]), self.point(r[2:])
+                shot, _ = viewport_shot(browser, region=(x0, y0, x1 - x0, y1 - y0))
+                return self.result(block, image=shot), None
+            if name == "cursor_position":
+                return self.result(block, text=f"X={round(self.cursor[0] / self.ratio)}, Y={round(self.cursor[1] / self.ratio)}"), None
+            if name == "wait":
+                time.sleep(max(0.0, min(float(inp.get("duration", 1)), 5.0)))
+                return self.result(block), None
+            if name == "go_back":
+                browser.evaluate("history.back()")
+                time.sleep(0.8)
+                return self.result(block), "go back"
+            if name == "go_to_url":
+                url = str(inp.get("url", "")).strip()
+                if not re.match(r"^https?://", url):
+                    raise ValueError("go_to_url needs an http(s) URL")
+                browser.call("Page.navigate", url=url)
+                time.sleep(1.0)
+                return self.result(block), f"open {url[:80]}"
+            if name == "mouse_move":
+                x, y = self.point(inp.get("coordinate"))
+                mouse("mouseMoved", x, y)
+                self.cursor = (x, y)
+                return self.result(block), None
+            if name in {"left_click", "right_click", "middle_click", "double_click", "triple_click"}:
+                x, y = self.point(inp.get("coordinate")) if inp.get("coordinate") else self.cursor
+                hit = browser.evaluate(f"{AT_POINT_JS}({x},{y})") or {}
+                refusal = pays_refusal(hit.get("label"))
+                if refusal:
+                    emit("status", message=f"Claude went for ‘{hit.get('label', '')[:50]}’ — Navi never pays")
+                    return self.result(block, text=refusal, error=True), None
+                button = {"right_click": "right", "middle_click": "middle"}.get(name, "left")
+                count = {"double_click": 2, "triple_click": 3}.get(name, 1)
+                mouse("mouseMoved", x, y)
+                for n in range(1, count + 1):
+                    mouse("mousePressed", x, y, button=button, clickCount=n)
+                    mouse("mouseReleased", x, y, button=button, clickCount=n)
+                self.cursor = (x, y)
+                time.sleep(0.35)
+                label = (hit.get("label") or "").split("\n")[0][:60]
+                verb = {"left_click": "click", "double_click": "double-click", "triple_click": "triple-click"}.get(name, name.replace("_", " "))
+                return self.result(block), (f"{verb} ‘{label}’" if label else f"{verb} at {inp.get('coordinate')}")
+            if name == "left_click_drag":
+                (ax, ay), (bx, by) = self.point(inp.get("start_coordinate")), self.point(inp.get("coordinate"))
+                mouse("mousePressed", ax, ay, button="left", clickCount=1)
+                mouse("mouseMoved", bx, by, button="left")
+                mouse("mouseReleased", bx, by, button="left", clickCount=1)
+                self.cursor = (bx, by)
+                return self.result(block), "drag"
+            if name == "scroll":
+                x, y = self.point(inp.get("coordinate")) if inp.get("coordinate") else self.cursor
+                amount = max(1, min(int(inp.get("scroll_amount", 3)), 15)) * 100
+                d = inp.get("scroll_direction", "down")
+                dx, dy = {"up": (0, -amount), "down": (0, amount), "left": (-amount, 0), "right": (amount, 0)}.get(d, (0, amount))
+                mouse("mouseWheel", x or 400, y or 400, deltaX=dx, deltaY=dy)
+                time.sleep(0.3)
+                return self.result(block), f"scroll {d}"
+            if name == "type":
+                text = str(inp.get("text", ""))
+                if browser.evaluate(SECRET_FIELD_JS):
+                    return self.result(block, text="Refused: the focused field takes a password, code or card number — "
+                                       "Navi never types those. Reply Stopped: … so the user can.", error=True), None
+                browser.call("Input.insertText", text=text)
+                time.sleep(0.2)
+                return self.result(block), f"type “{text[:40]}”"
+            if name == "key":
+                key, code, kc, txt, mods, commands = parse_key(inp.get("text"))
+                for _ in range(max(1, min(int(inp.get("repeat", 1)), 20))):
+                    down = {"type": "keyDown" if txt else "rawKeyDown", "key": key, "code": code,
+                            "windowsVirtualKeyCode": kc, "modifiers": mods}
+                    if txt:
+                        down["text"] = txt
+                    if commands:
+                        down["commands"] = commands
+                    browser.call("Input.dispatchKeyEvent", **down)
+                    browser.call("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=kc, modifiers=mods)
+                time.sleep(0.3)
+                return self.result(block), f"press {inp.get('text')}"
+            return self.result(block, text=f"Unsupported action: {name}", error=True), None
+        except StalePage:
+            return self.result(block, text="The page changed while acting; take a screenshot.", error=True), None
+        except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+            return self.result(block, text=f"Error: {exc}", error=True), None
+
+
+def takeover_result(summary, actions):
+    """What a takeover's last word means: Done / Stopped are Claude's own verdicts (Done is still
+    checked by the judge); anything else hands back when it acted, else it made no progress."""
+    s = (summary or "").lstrip()
+    if s.startswith("Done"):
+        return "done"
+    if s.startswith("Stopped"):
+        return "stopped"
+    return "handback" if actions else "no_progress"
+
+
+# --- escalation: what a stuck or unsure stop leads to -------------------------------
+
+def escalation(verdict, takeover_available, acted_since_last_takeover=True):
+    """The next move after a typed judgment of a stop (pure; unit-tested):
+    "done" — the goal is met; "end" — it cannot or must not go on (impossible / needs_user, or
+    nothing more to try); "takeover" — not there yet and Claude may drive; "coach" — no takeover
+    left, fall back to Claude's guidance for Jev (or the old stop)."""
+    v = (verdict or {}).get("verdict")
+    if v == "achieved":
+        return "done"
+    if v in {"impossible", "needs_user"}:
+        return "end"
+    if takeover_available and acted_since_last_takeover:
+        return "takeover"
+    return "coach" if verdict is None else "end"
+
+
+def outcome_status(verdict):
+    """The done event's status for a verdict: only "achieved" is done."""
+    return "done" if (verdict or {}).get("verdict") == "achieved" else "blocked"
 
 
 # --- Adaptation 14: web-app playbooks ride in Jev's state -------------------
@@ -2165,6 +2766,8 @@ def install_adaptations():
         jev_model.post_json = post_json_vercel
         # Upstream reads TYPESAFE_API_KEY unconditionally; give it a placeholder.
         os.environ.setdefault("TYPESAFE_API_KEY", "via-vercel-gateway")
+    # The takeover's irreversible gate asks Jev plain nouls: transport only, no playbook/coach layers.
+    RAW_JEV_POST[0] = jev_model.post_json
     import jev_ultrafast.agent as agent_module
 
     use_claude = navi_cloud() is not None or (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"))
@@ -2201,6 +2804,8 @@ def summarize(history, status):
             parts.append(f"typed “{h['text'][:40]}” into {h['action'].split(' → ')[0]}")
         elif h["kind"] == "wait":
             parts.append("waited")
+        elif h["kind"] == "takeover":
+            parts.append(h["action"])
         else:
             parts.append(f"{h['kind']} {h['action'].split(' → ')[0]}")
     verb = "Done: " if status == "done" else "Stopped: "
@@ -2387,6 +2992,100 @@ def main():
             state["status"] = agent.state["status"] = "ready"
             return None
 
+        takeover = Takeover()
+        takeover_mark = [0]       # history length when the last takeover ended
+
+        def record_step(entry):
+            """A step the takeover took: in the history Jev reads, and on Navi's timeline now."""
+            nonlocal seen_steps
+            history = agent.state["history"]
+            elapsed = round((time.perf_counter() - agent.state["started_at"]) * 1000) if agent.state.get("started_at") else 0
+            history.append({"step": len(history) + 1, "page_changed": None, "elapsed_ms": elapsed, **entry})
+            for h in history[seen_steps:]:
+                emit("step", step=h["step"], action=h["action"], kind=h["kind"], text=h.get("text"),
+                     page_changed=h.get("page_changed"), url=h.get("url"), elapsed_ms=h.get("elapsed_ms"), note=h.get("note"))
+            seen_steps = len(history)
+
+        def look(why):
+            """A typed judgment of the page as it is now (None when Claude can't be asked)."""
+            if claude_endpoint() is None:
+                return None
+            shot = None
+            # A dialog that just opened may still be drawing (DoorDash's sign-in read "still loading").
+            time.sleep(JUDGE_SETTLE_S)
+            try:
+                agent.state["page"] = agent.state["browser"].observe(screenshot=False)
+            except Exception:  # noqa: BLE001 — judge the last observation
+                pass
+            try:
+                shot, _ = viewport_shot(agent.state["browser"])
+            except Exception:  # noqa: BLE001 — the judge reads the page text without the picture
+                pass
+            try:
+                verdict = judge(args.goal, agent.state["page"], agent.state["history"], why, shot)
+            except CloudError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                emit("status", message=f"Couldn't check the page with Claude ({exc})")
+                return None
+            emit("status", message=f"Checked the page: {verdict['verdict'].replace('_', ' ')} — {verdict['answer'][:200]}")
+            return verdict
+
+        def resume():
+            agent.state["status"] = "ready"
+            agent.state["decision"] = None
+
+        def escalate(state, why, verdict=None):
+            """Jev stopped short (stuck, BLOCKED, or an unsure DONE): judge where the run stands, then
+            finish it, end it honestly, or let Claude drive. Returns (stop or None, verdict)."""
+            if verdict is None:
+                verdict = look(why)
+            acted = any(h.get("kind") not in {"takeover", "coach", "check", "wait"}
+                        for h in agent.state["history"][takeover_mark[0]:]) or takeover.count == 0
+            move = escalation(verdict, takeover.available(), acted)
+            if move == "done":
+                return ("done", verdict["answer"]), verdict
+            if move == "end":
+                return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
+            if move == "coach":
+                return coach_or_stop(state, why), None
+            emit("status", message=f"Jev is stuck ({why}) — Claude takes over for a few steps")
+            started = time.perf_counter()
+            try:
+                res = takeover.run(agent, args.goal, why, verdict, record_step)
+            except CloudError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                emit("status", message=f"Claude's takeover failed: {exc}")
+                return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
+            takeover_mark[0] = len(agent.state["history"])
+            emit("status", message=f"Claude's takeover ended ({res['result']}, {res['actions']} actions, "
+                                   f"{round(time.perf_counter() - started)} s): {res['summary'][:200]}")
+            try:
+                agent.state["page"] = agent.state["browser"].observe(screenshot=agent.screenshots)
+                settle_page(agent)
+            except Exception:  # noqa: BLE001 — the next tick observes again
+                pass
+            coach.current_url = playbook.current_url = agent.state["page"].get("url")
+            if res["result"] == "stopped":
+                return ("blocked", res["summary"]), {"verdict": "needs_user", "answer": res["summary"], "next_step": ""}
+            if res["result"] in {"done", "no_progress"}:
+                # Claude's "Done" — or a reply with no action, which is its read of the page ("the
+                # Google option is clearly visible") — is checked on a fresh look, never taken on trust.
+                checked = look("Claude, driving, says: " + (res["summary"] or "(nothing)"))
+                if checked is None:
+                    if res["result"] == "done":
+                        return ("done", res["summary"]), {"verdict": "achieved", "answer": res["summary"], "next_step": "", "judged": False}
+                    return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
+                if checked["verdict"] == "achieved":
+                    return ("done", checked["answer"]), checked
+                if checked["verdict"] in {"impossible", "needs_user"} or res["result"] == "no_progress":
+                    return ("blocked", checked["answer"]), checked
+                verdict = checked
+            emit("status", message="Back to Jev from here")
+            resume()
+            return None, verdict
+
         retried_blocked = set()
         early_block_exit = os.environ.get("NAVI_EARLY_BLOCK_EXIT") == "1"
 
@@ -2447,21 +3146,33 @@ def main():
             # Only actions since the last coaching count towards a new failure streak.
             recent = state["history"]
             for i in range(len(recent) - 1, -1, -1):
-                if recent[i].get("kind") == "coach":
+                if recent[i].get("kind") in {"coach", "takeover"}:
                     recent = recent[i + 1:]
                     break
             why = None
+            verdict = None
             if state["status"] == "blocked" and early_block_exit and not acted_on_page(state["history"]):
                 # Nothing for this task on the page it started on (an unrelated tab): Navi starts
                 # over where the task itself starts — no Claude diagnosis of the wrong page.
                 emit("status", message="Nothing to do for this on this page")
                 stop = ("blocked", "Stopped: nothing to do for this on this page.")
+                verdict = {"verdict": "not_achieved", "answer": "", "next_step": ""}
             elif state["status"] == "blocked":
                 why = Coach.flailing(recent) or "Jev answered BLOCKED"
             elif state["status"] == "ready":
                 why = Coach.flailing(recent)
+            elif state["status"] == "done":
+                # Adaptation 32: an unsure DONE is judged; "not there yet" goes on (takeover) instead of ending.
+                last = state["decisions"][-1] if state["decisions"] else {}
+                if should_judge_done(last.get("confidence")):
+                    verdict = look("Jev judged the goal done (%d%% sure)" % round(100 * (last.get("confidence") or 0)))
+                    if verdict and verdict["verdict"] != "achieved":
+                        why = "Jev said done, but " + (verdict["answer"][:160] or "the page does not show it")
+                        if verdict["verdict"] in {"impossible", "needs_user"}:
+                            stop = ("blocked", verdict["answer"])
+                            why = None
             if why:
-                stop = coach_or_stop(state, why)
+                stop, verdict = escalate(state, why, verdict)
                 if stop is None:
                     continue
             if state["status"] in {"done", "blocked"} or stop:
@@ -2469,15 +3180,25 @@ def main():
                 final_status, final_steps = status, len(state["history"])
                 if status == "done" and policy == "reveal":
                     reveal_tab(agent)
+                if verdict is None:
+                    verdict = {"verdict": "achieved" if status == "done" else "not_achieved", "answer": "", "next_step": "", "judged": False}
+                summary = stop[1] if stop and stop[1] else (verdict.get("answer") or summarize(state["history"], status))
+                if status == "done":
+                    summary = purchase_note(args.goal, status) + summary
                 emit(
                     "done",
                     status=status,
-                    elapsed_ms=state["elapsed_ms"],
+                    outcome=verdict["verdict"],
+                    answer=verdict.get("answer") or "",
+                    next_step=verdict.get("next_step") or "",
+                    judged=verdict.get("judged", True),
+                    takeovers=takeover.count,
+                    elapsed_ms=round((time.perf_counter() - agent.state["started_at"]) * 1000) if agent.state.get("started_at") else state["elapsed_ms"],
                     steps=len(state["history"]),
-                    summary=stop[1] if stop else purchase_note(args.goal, status) + summarize(state["history"], state["status"]),
-                    url=state["page"]["url"],
-                    title=state["page"].get("title", ""),
-                    page_text=(state["page"].get("text") or "")[:6000],
+                    summary=summary,
+                    url=agent.state["page"]["url"],
+                    title=agent.state["page"].get("title", ""),
+                    page_text=(agent.state["page"].get("text") or "")[:6000],
                     speculative_text=speculative.stats,
                     coached=coach.used,
                     coachings=coach.count,
