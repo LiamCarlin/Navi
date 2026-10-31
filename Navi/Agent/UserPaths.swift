@@ -203,7 +203,7 @@ enum PathWords {
     /// "the cheapest filament", "a burger", "some flowers": any one, not one they saw before.
     static func wantsAnyOne(_ task: String) -> Bool {
         TaskGrounding.withoutDictation(task).lowercased()
-            .range(of: #"\b(cheapest|cheaper|cheap|best|top[- ]rated|highest[- ]rated|lowest|another|any|some|a few|a couple|random)\b"#, options: .regularExpression) != nil
+            .range(of: #"\b(cheapest|cheaper|cheap|best|top[- ]rated|highest[- ]rated|lowest|another|any|some|a few|a couple|random\w*)\b"#, options: .regularExpression) != nil
     }
 
     /// "email crawford the lab report": a new mail, not a thread that mentions them.

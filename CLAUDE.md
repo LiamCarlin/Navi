@@ -263,7 +263,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     never a start). Place guard for routines: a routine is dropped when the task names (or reaches the
     person in) another place. Never pressed by any route: sign in, add to cart, checkout. Grounding
     (`TaskGrounding`): errands (order/buy/cart) never ground to own work ("random chipotle bowl" ≠ the
-    Onshape "Yarn Bowl"); "conversation/chat with X" is communication and reaches X's chat app. Probe on a
+    Onshape "Yarn Bowl"); "conversation/chat with X" is communication and reaches X's chat app; when some
+    candidate carries every name the task says, candidates carrying none are dropped, and the user's own
+    instance of a named web app counts as it ("canvas" → canvas.olin.edu, not only *.instructure.com).
+    `UserKnowledge.startURL`: never for errands, never when a name of the task is unexplained by the thing
+    ("chipotle" vs the Yarn Bowl), and a project without a page opens its document carrying its name ("hci
+    notes" → the HCI doc). One seam for tests: `ScreenMemory` (knowledge + routines + paths) —
+    `TaskGrounding.ground(task:memory:jev:)`, `UserRoutines.match(task:memory:jev:)`,
+    `UserKnowledge.startURL(for:knowledge:)`, `AgentRun.routineStartPlace` — the task bench calls these on its
+    memory copy (uncached), never copies of them. Probe on a
     `.backup` copy (temporary test, `TEST_RUNNER_NAVI_PROBE_DIR`): 142 places with ≥ 10 steps, 97 with a
     repeated two-step chain; 13/13 unrelated tasks → no routine.
   - **Fewer Claude turns**: a stop costs one writer read, not a vision loop; OCR is tried on a

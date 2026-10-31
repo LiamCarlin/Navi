@@ -372,7 +372,12 @@ final class UserRoutines: @unchecked Sendable {
     }
 
     /// The routine `task` is another instance of, settled once, ≤ `timeout` s.
-    static func match(task: String, timeout: Double = 1.5) async -> Match? {
+    /// `memory`/`jev`: a memory of the caller's (the task bench's copy) instead of the installed one —
+    /// the same code, uncached.
+    static func match(task: String, timeout: Double = 1.5, memory: ScreenMemory? = nil, jev: JevClient? = nil) async -> Match? {
+        if let memory {
+            return await resolve(task: task, routines: memory.routines?.routines() ?? [], jev: jev, memory: memory, cached: false)
+        }
         guard let r = current else { return nil }
         let key = cacheKey(task)
         guard !key.isEmpty else { return nil }
@@ -381,7 +386,7 @@ final class UserRoutines: @unchecked Sendable {
         if let c = cache[key], Date().timeIntervalSince(c.at) < cacheTTL { lock.unlock(); return c.m }
         if let running = inflight[key] { t = running } else {
             let jev = jevClient
-            t = Task(priority: .userInitiated) { await resolve(task: task, routines: r.routines(), jev: jev) }
+            t = Task(priority: .userInitiated) { await resolve(task: task, routines: r.routines(), jev: jev, memory: ScreenMemory.live) }
             inflight[key] = t
         }
         lock.unlock()
@@ -399,26 +404,26 @@ final class UserRoutines: @unchecked Sendable {
 
     /// The places a task implies: the app it names or implies, the app the person it names is
     /// reached in, a site it names.
-    static func places(for task: String) -> Set<String> {
+    static func places(for task: String, memory: ScreenMemory? = ScreenMemory.live) -> Set<String> {
         var out = Set<String>()
         if let s = AppSkills.mentioned(in: task) { out.formUnion(s.bundleIDs); if let h = s.hosts.first { out.insert(h) } }
         for s in AppSkills.inferApps(for: task, frontmostBundleID: nil).prefix(2) { out.formUnion(s.bundleIDs) }
-        if let chat = UserKnowledge.liveChannelApp(for: task) { out.insert(chat) }
+        if let chat = memory?.channelApp(for: task) { out.insert(chat) }
         return out
     }
 
-    private static func resolve(task: String, routines: [Routine], jev: JevClient?) async -> Match? {
-        let paths = UserPaths.current
+    private static func resolve(task: String, routines: [Routine], jev: JevClient?, memory: ScreenMemory?, cached: Bool = true) async -> Match? {
+        let paths = memory?.paths
         let sites = (paths?.graph?.sites ?? []) + routines.compactMap(\.site)
         let named = namedPlaces(for: task, sites: sites)
-        let implied = places(for: task)
+        let implied = places(for: task, memory: memory)
         // The app the person is reached in ("text joão" → WhatsApp) is as good as named, for the path.
-        let reach = named.isEmpty ? UserKnowledge.liveChannelApp(for: task) : nil
+        let reach = named.isEmpty ? memory?.channelApp(for: task) : nil
         // Routines too: "message X" is followed in the app they reach X in, never in Slack on the web
         // because a Slack-web routine shares the words.
         let routinePlaces = reach.map { named.union([$0]) } ?? named
         // What the task points at in the user's own work (usually settled while typing), in parallel.
-        async let grounding = TaskGrounding.ground(task: task, timeout: 1.0)
+        async let grounding = cached ? TaskGrounding.ground(task: task, timeout: 1.0) : TaskGrounding.ground(task: task, memory: memory, jev: jev)
         let cs = candidates(task: task, routines: routines, places: implied, named: routinePlaces)
         var result: Match?
         if !cs.isEmpty {
@@ -442,18 +447,18 @@ final class UserRoutines: @unchecked Sendable {
         // Not grounded, but the task names a thing memory knows ("open the hci notes" → that page, not the
         // Notes app): its page is the target — unless the task reaches someone (then it is what to send).
         if g == nil, !TaskGrounding.isCommunication(task), !TaskGrounding.isErrand(task),
-           let m = UserKnowledge.current?.matches(for: task).first(where: { $0.thing.type != "person" && $0.thing.url(for: task) != nil }) {
+           let m = memory?.knowledge.matches(for: task).first(where: { $0.thing.type != "person" && $0.thing.url(for: task) != nil }) {
             g = (m.thing.url(for: task), nil, m.thing.name)
         }
         if let paths {
             let t0 = Date()
             // The people it names by their full name ("mikey" → "Mikey Ku"): their own chat, not a group listing them.
-            let people = (UserKnowledge.current?.matches(for: task) ?? []).filter { $0.thing.type == "person" }.prefix(2).map(\.thing.name)
+            let people = (memory?.knowledge.matches(for: task) ?? []).filter { $0.thing.type == "person" }.prefix(2).map(\.thing.name)
             let plan = paths.plan(task: task, grounded: g, places: implied, named: reach.map { [$0] } ?? named, people: Array(people))
             if let plan { Log.agent.info("UserPaths: \(plan.source, privacy: .public) path, \(plan.steps.count) steps, support \(plan.support) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms") }
             result = choose(routine: result, path: plan, task: task)
         }
-        store(result, for: task)
+        if cached { store(result, for: task) }
         return result
     }
 

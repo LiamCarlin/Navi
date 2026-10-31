@@ -161,6 +161,8 @@ import AppKit
         var habits: UserHabits
         var profile: UserHabits.Profile
         var routines: [Routine]
+        /// The same knowledge, routines and paths the live entry points read, on this copy.
+        var screen: ScreenMemory
     }
 
     static func openMemory() throws -> Memory? {
@@ -178,8 +180,9 @@ import AppKit
         try FileManager.default.copyItem(at: given, to: dir.appendingPathComponent("memory.sqlite"))
         let store = try MemoryStore(directory: dir)
         let habits = UserHabits(store: store)
-        let routines = UserRoutines(store: store).routines()
-        return Memory(store: store, knowledge: UserKnowledge(store: store), habits: habits, profile: habits.profile(), routines: routines)
+        let screen = ScreenMemory(store: store)
+        return Memory(store: store, knowledge: screen.knowledge, habits: habits, profile: habits.profile(),
+                      routines: screen.routines?.routines() ?? [], screen: screen)
     }
 
     // MARK: Voice loop (UtteranceSegmenter + VoiceDecider, as VoiceSession runs it)
@@ -387,16 +390,15 @@ import AppKit
                 }
             }
             if let match = await routineMatch(goal, memory: m, jev: jev) {
-                r.routine = "\(match.routine.template) (\(Int(match.confidence * 100))%)"
-                if match.confidence >= 0.6, !useCurrentTab, let start = AgentRun.routineStart(match, task: goal) {
+                r.routine = "\(match.routine.template) (\(Int(match.confidence * 100))%)" + (match.path.map { " [path: \($0.source)]" } ?? "")
+                if !useCurrentTab, let start = AgentRun.routineStartPlace(match, task: goal, surface: surface) {
                     switch start {
-                    case .page(let u) where surface != .nativeApp:
+                    case .page(let u):
                         r.surface = "browser"; r.start = u; r.notes.append("started where the routine starts")
                         return r
-                    case .app(let b) where surface != .browser:
+                    case .app(let b):
                         r.surface = "native_app"; r.app = front.bundleID == b ? nil : b; r.notes.append("opened the routine's app")
                         return r
-                    default: break
                     }
                 }
             }
@@ -444,7 +446,7 @@ import AppKit
 
     static func memoryStartURL(_ task: String, _ memory: Memory?) -> String? {
         guard let m = memory else { return nil }
-        return UserKnowledge.startURL(task: task, matches: m.knowledge.matches(for: task))
+        return UserKnowledge.startURL(for: task, knowledge: m.knowledge)
     }
 
     /// `ComputerAgent.inferredApp`, with usage and contacts from the memory copy.
@@ -467,40 +469,15 @@ import AppKit
     static var localMs = 0
 
     static func ground(_ task: String, memory m: Memory, jev: JevClient) async -> TaskGrounding.Grounded? {
-        let now = Date()
-        let snap = m.knowledge.snapshot(now: now)
-        let sc = TaskGrounding.scope(of: task, now: now)
-        let people = UserKnowledge.matches(task: task, in: snap.things.filter { $0.type == "person" })
-        let peopleWords = Set(people.flatMap(\.matched))
-        let recipients = TaskGrounding.recipientWords(task: task, people: peopleWords)
-        let named = UserKnowledge.matches(task: task, in: snap.things.filter { $0.type != "person" }).contains { !$0.matched.isSubset(of: recipients) }
-        localMs += Int(Date().timeIntervalSince(now) * 1000)
-        guard TaskGrounding.shouldGround(task: task, scope: sc, words: TaskGrounding.words(of: task, exclude: recipients), named: named) else { return nil }
-        let cs = TaskGrounding.candidates(task: task, scope: sc, sessions: snap.sessions, pageTitles: snap.pageTitles,
-                                          things: snap.things, people: peopleWords, now: now)
-        guard !cs.isEmpty else { return nil }
-        let (state, questions) = TaskGrounding.request(task: task, candidates: cs, screen: nil, now: now)
-        guard let r = try? await jev.ask(state: JevClient.JSONValue(any: state), questions: questions),
-              let (c, p) = TaskGrounding.pick(r["refers_to"], among: cs) else {
-            return TaskGrounding.localPick(cs, scope: sc).map { TaskGrounding.Grounded(task: task, thing: $0, confidence: 0.6, source: "local", alternatives: []) }
-        }
-        return TaskGrounding.Grounded(task: task, thing: c, confidence: p, source: "jev", alternatives: [])
+        let t0 = Date()
+        _ = m.knowledge.snapshot(now: t0)   // warm (local time reported apart from Jev's)
+        localMs += Int(Date().timeIntervalSince(t0) * 1000)
+        return await TaskGrounding.ground(task: task, memory: m.screen, jev: jev)
     }
 
-    /// `UserRoutines.match`, on the memory copy.
+    /// `UserRoutines.match` — routines, places and the user's paths (`UserPaths`) — on the memory copy.
     static func routineMatch(_ task: String, memory m: Memory, jev: JevClient) async -> UserRoutines.Match? {
-        var places = Set<String>()
-        if let s = AppSkills.mentioned(in: task) { places.formUnion(s.bundleIDs); if let h = s.hosts.first { places.insert(h) } }
-        for s in AppSkills.inferApps(for: task, frontmostBundleID: nil).prefix(2) { places.formUnion(s.bundleIDs) }
-        if let chat = UserKnowledge.channelApp(task: task, matches: m.knowledge.matches(for: task)) { places.insert(chat) }
-        let cs = UserRoutines.candidates(task: task, routines: m.routines, places: places)
-        guard !cs.isEmpty else { return nil }
-        let (state, questions) = UserRoutines.request(task: task, candidates: cs)
-        guard let r = try? await jev.ask(state: JevClient.JSONValue(any: state), questions: questions) else {
-            return UserRoutines.localPick(cs).map { UserRoutines.Match(routine: $0.routine, fills: $0.fills, confidence: 0.6, source: "local") }
-        }
-        guard let (c, p) = UserRoutines.pick(r["same_task"], among: cs) else { return nil }
-        return UserRoutines.Match(routine: c.routine, fills: c.fills, confidence: p, source: "jev")
+        await UserRoutines.match(task: task, memory: m.screen, jev: jev)
     }
 
     // MARK: Checks

@@ -201,9 +201,14 @@ final class UserKnowledge: @unchecked Sendable {
     /// task was grounded to ("the doc I was working on"), else a thing it names.
     static func liveStartURL(for task: String) -> String? {
         guard let k = current else { return nil }
-        if let g = grounded(task), let u = g.thing.url, !TaskGrounding.isCommunication(task),
+        return startURL(for: task, knowledge: k, grounded: grounded(task))
+    }
+
+    /// `liveStartURL` with any knowledge (the task bench passes its copy of memory).
+    static func startURL(for task: String, knowledge k: UserKnowledge, grounded g: TaskGrounding.Grounded? = nil) -> String? {
+        if let g, let u = g.thing.url, !TaskGrounding.isCommunication(task), !TaskGrounding.isErrand(task),
            !tokens(task).contains(where: creationWords.contains) { return u }
-        return startURL(task: task, matches: k.matches(for: task))
+        return startURL(task: task, matches: k.matches(for: task), things: k.things())
     }
 
     /// Pages of the things the task names, for Jev's OPEN_URL head.
@@ -604,10 +609,34 @@ final class UserKnowledge: @unchecked Sendable {
     /// The page a browser task should open: the document or project the task
     /// names (most of its name, and it has a web page), unless the task asks for
     /// something new.
-    static func startURL(task: String, matches: [Match]) -> String? {
-        guard !tokens(task).contains(where: creationWords.contains),
+    static func startURL(task: String, matches: [Match], things: [Thing] = []) -> String? {
+        guard !tokens(task).contains(where: creationWords.contains), !TaskGrounding.isErrand(task),
               !UserHabits.candidates(for: task).contains(where: { ["texting", "email", "calendar", "video calls"].contains($0.kind) }) else { return nil }
-        return matches.first { $0.thing.type != "person" && $0.coverage >= 0.5 }?.thing.url(for: task)
+        let names = nameWords(task)
+        let people = Set(matches.filter { $0.thing.type == "person" }.flatMap(\.matched))
+        for m in matches where m.thing.type != "person" && m.coverage >= 0.5 {
+            // A word of the task the thing does not explain ("chipotle" of "chipotle bowl" against a "Yarn
+            // Bowl" model) means the task is about something else — unless two of its names already match.
+            let placeWords = Set(m.thing.places.flatMap { tokens($0.key + " " + $0.label) })
+            let unexplained = names.subtracting(m.matched).subtracting(people).subtracting(placeWords)
+            guard unexplained.isEmpty || m.matched.intersection(names).count >= 2 else { continue }
+            if let u = m.thing.url(for: task) { return u }
+            // A project with no page of its own ("the hci notes" → HCI): its document that carries its name.
+            if let doc = things.filter({ $0.type != "person" && $0.url != nil && m.matched.isSubset(of: Set($0.tokens)) })
+                .max(by: { $0.sessions != $1.sessions ? $0.sessions < $1.sessions : $0.lastSeen < $1.lastSeen }) {
+                return doc.url(for: task)
+            }
+        }
+        return nil
+    }
+
+    /// The task's words that name something particular: not filler, kinds of things, app names.
+    static func nameWords(_ task: String) -> Set<String> {
+        let kinds = Set(UserHabits.kinds.flatMap(\.words))
+        return Set(tokens(TaskGrounding.withoutDictation(task)).filter { w in
+            w.count >= 4 && !genericWords.contains(w) && !isFiller(w) && !kinds.contains(w) && !RoutineMiner.generic.contains(w)
+                && AppSkills.mentioned(in: "open " + w) == nil
+        })
     }
 
     /// For each kind of contact (texting, email, video calls), the place this user
