@@ -62,7 +62,7 @@ url, h = nr.claude_endpoint()
 assert url == "http://cloud.test/v1/claude" and "x-api-key" not in h and h["anthropic-version"] == "2023-06-01"
 
 nr.install_adaptations()
-assert jev_model.post_json is nr.post_json_navi
+assert nr.RAW_JEV_POST[0] is nr.post_json_navi   # under the adaptation 38 guard
 assert os.environ["TYPESAFE_API_KEY"] == "via-navi-cloud"     # placeholder for upstream; never sent
 
 # --- Jev through /v1/jev ---------------------------------------------------------------

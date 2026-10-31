@@ -144,6 +144,13 @@ Reliability adaptations (from failed runs, see git log):
      the runner on that tab (NAVI_ATTACH_TARGET) with the answers so far
      (NAVI_USER_SAID_JSON) in Jev's state, the judge's and the takeover's as
      `user_said`. Navi's own purchase hand-off is never a question.
+ 38. A failed Jev call is a stop to judge, not the end: the request is cut to
+     fit Jev's input cap (≈ 32.5k tokens; over it Jev answers HTTP 400
+     max_tokens_exceeded — what killed the Uber Eats "Add 1 to order" runs),
+     a failure is logged with its redacted body (`model_error` event, run log
+     only) and retried once, shorter; refused even then, Jev sees the
+     controls likeliest for the goal; still failing, the run judges the page
+     (32) instead of ending on a raw error.
 """
 
 import argparse
@@ -217,7 +224,8 @@ def post_json_vercel(url, key, body):
             time.sleep(0.5 * 2**attempt)
             continue
         if response.is_error:
-            raise RuntimeError(f"Vercel AI Gateway returned HTTP {response.status_code}; no action executed.")
+            raise JevCallFailed(f"Vercel AI Gateway returned HTTP {response.status_code}; no action executed.",
+                                response.status_code, error_detail(response))
         data = response.json()
         break
     else:
@@ -315,7 +323,8 @@ def post_cloud(path, body, what):
         if refusal is not None:
             raise refusal
         if response.is_error:
-            raise RuntimeError(f"Navi returned HTTP {response.status_code} ({what}); no action executed.")
+            raise JevCallFailed(f"Navi returned HTTP {response.status_code} ({what}); no action executed.",
+                                response.status_code, error_detail(response))
         return response.json()
     raise RuntimeError(f"Navi is unavailable ({what}); no action executed.")
 
@@ -340,6 +349,221 @@ def claude_endpoint():
         return None
     base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
     return base + "/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
+
+
+# --- Adaptation 38: a failed Jev call is a stop to judge, not the end --------
+#
+# Two live Uber Eats runs (2026-10-31: "Order Wingstop food under $20", "Red Bull … through Uber
+# Eats") died right after a Quick Add with "Model provider returned HTTP 400; no action executed."
+# Upstream never reads the body, so nobody knew why. Probed: Jev answers a malformed question with
+# 422 (> 255 options, an empty choice) and a request over its input cap (≈ 32.5k tokens) with
+# 400 {"detail": {"error_type": "max_tokens_exceeded"}}. The request carries every element twice
+# (state + target criteria) on top of the playbook, the user's context and the page text, and labels
+# are never cut: a store page is ~7k tokens, but controls named by whole cards or a drawer named by
+# its contents push it past the cap. Now:
+#   - the request is measured before it leaves; over JEV_TOKEN_BUDGET its long strings are cut
+#     (labels, page text, any state string). Choice ids never change, so answers still validate;
+#   - a failed call carries its status and a redacted body (the `model_error` event goes to the run
+#     log only: type/loc/msg/error_type, never the `input` Jev echoes back) and the request's shape;
+#   - it is retried once, cut shorter again after a 400/413; refused even then (250 controls with
+#     60-character labels are still ~33k tokens, measured), Jev sees only the controls likeliest for
+#     the goal (`fewer_actions`, in `install_adaptations`' choose: the answer validates against them);
+#   - still failing → `JevUnavailable`, which `tick` turns into a stop the run judges (32): a cart
+#     already filled ends achieved or partial, otherwise Claude takes over for a few steps.
+
+JEV_TOKEN_BUDGET = 28000      # Jev rejects ≈ 32.5k input tokens
+CHARS_PER_TOKEN = 2.0         # measured 2.1 (short labels: mostly JSON) to 3.8 (long prose labels)
+TRIMMED_ACTIONS = 120         # controls Jev sees when the whole page is too much for one request
+# (label, page text, any other string, list length) per level of cutting
+COMPACT_LEVELS = {1: (160, 3000, 1500, 30), 2: (60, 1200, 400, 12)}
+KEEP_WHOLE = {"goal", "rules", "operation"}   # instructions Jev must read in full
+
+
+class JevCallFailed(RuntimeError):
+    """A Jev request that came back as an error: the status and the redacted body ride along."""
+
+    def __init__(self, message, status=None, detail=None):
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
+
+
+class JevUnavailable(RuntimeError):
+    """Jev could not be asked on this page even after a retry; the run judges where it stands."""
+
+
+class JevTooLarge(JevUnavailable):
+    """Refused as too large even at the hardest cut: fewer controls are the only way left."""
+
+
+def error_detail(response):
+    """What the provider said, without anything it echoes back from the request (page text)."""
+    try:
+        data = response.json()
+    except Exception:  # noqa: BLE001 — not JSON: a proxy page; its head is enough
+        return (getattr(response, "text", "") or "")[:200]
+    detail = data.get("detail", data.get("error", data)) if isinstance(data, dict) else data
+    if isinstance(detail, list):
+        return [{k: d[k] for k in ("type", "loc", "msg") if k in d} for d in detail[:5] if isinstance(d, dict)]
+    if isinstance(detail, dict):
+        return {k: v for k, v in detail.items() if k != "input" and isinstance(v, (str, int, float, bool))}
+    return str(detail)[:200]
+
+
+def post_json_typesafe(url, key, body):
+    """Upstream's `post_json` for api.typesafe.ai, keeping the error's status and body."""
+    if "typesafe.ai" not in url:
+        return _upstream_post_json(url, key, body)
+    for attempt in range(3):
+        try:
+            response = jev_model.CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+        except httpx.HTTPError:
+            raise JevCallFailed("Model connection failed; no action executed.") from None
+        if response.status_code in {429, 529, 503} and attempt < 2:
+            time.sleep(0.5 * 2**attempt)
+            continue
+        if response.is_error:
+            raise JevCallFailed(f"Model provider returned HTTP {response.status_code}; no action executed.",
+                                response.status_code, error_detail(response))
+        return response.json()
+    raise JevCallFailed("Model unavailable")
+
+
+def request_chars(body):
+    return len(json.dumps(body, ensure_ascii=False))
+
+
+def request_shape(body):
+    """Sizes only — never the page's words — so a failure says which part of the request was big."""
+    state = body.get("state") if isinstance(body.get("state"), dict) else {}
+    elements = state.get("elements") if isinstance(state.get("elements"), list) else []
+    labels = [len(str(e.get("label", ""))) for e in elements if isinstance(e, dict)]
+    chars = request_chars(body)
+    return {
+        "chars": chars,
+        "est_tokens": round(chars / CHARS_PER_TOKEN),
+        "elements": len(elements),
+        "longest_label": max(labels, default=0),
+        "state": {k: request_chars(v) for k, v in state.items()},
+        "choices": {name: len(q.get("criteria") or {}) for name, q in (body.get("questions") or {}).items()
+                    if isinstance(q, dict) and q.get("type") == "choice"},
+    }
+
+
+def cut(value, limit, list_limit):
+    """Every string in `value` at most `limit` characters and every list at most `list_limit` long."""
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit - 1] + "…"
+    if isinstance(value, list):
+        return [cut(v, limit, list_limit) for v in value[:list_limit]]
+    if isinstance(value, dict):
+        return {k: cut(v, limit, list_limit) for k, v in value.items()}
+    return value
+
+
+def compact_request(body, level):
+    """The same request with its long strings cut (level 1, then harder at 2). Element indices,
+    criteria keys and the goal/rules stay as they are, so the answer validates against them."""
+    label, text, other, lists = COMPACT_LEVELS[level]
+    body = dict(body)
+    state = body.get("state")
+    if isinstance(state, dict):
+        state = dict(state)
+        for k, v in state.items():
+            if k == "elements" and isinstance(v, list):
+                state[k] = [{**e, **{f: cut(e[f], label, lists) for f in ("label", "value", "options") if f in e}}
+                            if isinstance(e, dict) else e for e in v]
+            elif k == "page" and isinstance(v, dict):
+                state[k] = {**cut({p: x for p, x in v.items() if p != "text"}, other, lists),
+                            **({"text": cut(v["text"], text, lists)} if "text" in v else {})}
+            else:
+                state[k] = cut(v, other, lists)
+        body["state"] = state
+    questions = {}
+    for name, q in (body.get("questions") or {}).items():
+        if isinstance(q, dict):
+            q = dict(q)
+            if isinstance(q.get("criteria"), dict):
+                q["criteria"] = {key: ({f: cut(x, label if f == "element" else other, lists) for f, x in c.items()}
+                                       if isinstance(c, dict) else cut(c, other, lists))
+                                 for key, c in q["criteria"].items()}
+            if isinstance(q.get("instructions"), dict):
+                q["instructions"] = {k: v if k in KEEP_WHOLE else cut(v, other, lists)
+                                     for k, v in q["instructions"].items()}
+        questions[name] = q
+    if questions:
+        body["questions"] = questions
+    return body
+
+
+def too_large(body):
+    return request_chars(body) / CHARS_PER_TOKEN > JEV_TOKEN_BUDGET
+
+
+def guarded_jev(post):
+    """Wraps the Jev transport: fit the request under Jev's cap, log a failure with its body, retry
+    once, and give up as `JevUnavailable` (the run controller judges the page instead)."""
+
+    def post_json(url, key, body):
+        if not (isinstance(body, dict) and "questions" in body):
+            return post(url, key, body)   # the text helper and anything else that isn't a decision
+        original, level = body, 0
+        if too_large(body):
+            level = 1
+            body = compact_request(original, 1)
+            if too_large(body):
+                level, body = 2, compact_request(original, 2)
+            emit("status", message="This page is a lot to read — showing Jev a shorter version")
+        for attempt in (1, 2):
+            try:
+                return post(url, key, body)
+            except CloudError:
+                raise             # signed out / over the plan: Navi words it (adaptation 20)
+            except RuntimeError as exc:
+                status, detail = getattr(exc, "status", None), getattr(exc, "detail", None)
+                emit("model_error", attempt=attempt, message=str(exc), status=status, detail=detail,
+                     compacted=level, request=request_shape(body))
+                refused = status in {400, 413}
+                if attempt == 2 or (refused and level == 2):
+                    reason = f"HTTP {status}" if status else str(exc).split(";")[0]
+                    if isinstance(detail, dict) and detail.get("error_type"):
+                        reason += f": {detail['error_type']}"
+                    raise (JevTooLarge if refused else JevUnavailable)(
+                        f"Jev couldn't decide on this page ({reason})") from None
+                if refused:
+                    level += 1
+                    body = compact_request(original, level)
+                    emit("status", message="Jev couldn't read this page — trying again with a shorter version")
+                else:
+                    time.sleep(0.4)
+
+    return post_json
+
+
+GOAL_FILLER = {"the", "and", "for", "from", "with", "some", "order", "under", "food", "get", "find", "open", "add"}
+
+
+def fewer_actions(page, goal, keep=TRIMMED_ACTIONS):
+    """The page with at most `keep` controls: every field and dropdown, then the controls whose
+    label shares the most words with the goal, then the first on the page. The page itself is
+    unchanged when it already has few enough."""
+    actions = page.get("actions") or []
+    order = {}
+    for a in actions:
+        if a.get("kind") in INTERACTIVE and a.get("node") is not None:
+            order.setdefault(a["node"], (len(order), a.get("label") or ""))
+    if len(order) <= keep:
+        return page
+    words = {w for w in re.findall(r"[a-z0-9$]+", (goal or "").lower()) if len(w) > 2} - GOAL_FILLER
+    fields = {a.get("node") for a in actions if a.get("kind") in {"fill", "select"}}
+
+    def rank(node):
+        index, label = order[node]
+        shared = len(words & set(re.findall(r"[a-z0-9$]+", label.lower())))
+        return (node not in fields, -shared, index)
+
+    kept = set(sorted(order, key=rank)[:keep])
+    return {**page, "actions": [a for a in actions if a.get("kind") not in INTERACTIVE or a.get("node") in kept]}
 
 
 # --- Adaptation 31: today's date and the goal's dates, worked out ------------
@@ -3468,7 +3692,17 @@ def tick(agent, retried, rejected=None):
     (`RejectedClicks.no_text`), not the end of the run."""
     state = agent.state
     try:
-        agent.command("predict", {})
+        try:
+            agent.command("predict", {})
+        except (JevUnavailable, ValueError) as exc:
+            # Adaptation 38: no usable answer from Jev on this page (its request failed after a
+            # retry, or the answer didn't validate) — the run controller judges where it stands.
+            if isinstance(exc, ValueError) and "Invalid TypeSafe response" not in str(exc):
+                raise
+            state["decision"] = None
+            state["status"] = "ready"
+            state["model_error"] = str(exc)
+            return "model_error"
         decision = state["decision"]
         fingerprint = state["page"]["fingerprint"]
         doubt = done_doubt(state, decision)
@@ -3601,8 +3835,12 @@ def install_adaptations():
         jev_model.post_json = post_json_vercel
         # Upstream reads TYPESAFE_API_KEY unconditionally; give it a placeholder.
         os.environ.setdefault("TYPESAFE_API_KEY", "via-vercel-gateway")
+    else:
+        jev_model.post_json = post_json_typesafe
     # The takeover's irreversible gate asks Jev plain nouls: transport only, no playbook/coach layers.
     RAW_JEV_POST[0] = jev_model.post_json
+    # Adaptation 38: innermost layer, so it sizes the request the playbook/context/coach layers built.
+    jev_model.post_json = guarded_jev(jev_model.post_json)
     import jev_ultrafast.agent as agent_module
 
     use_claude = navi_cloud() is not None or (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"))
@@ -3622,7 +3860,15 @@ def install_adaptations():
     def choose(page, goal, history):
         page = drop_payments(drop_app_detours(rejected.filter(page), goal))
         speculative.speculate(goal, page, history)
-        return original_choose(page, goal, history)
+        try:
+            return original_choose(page, goal, history)
+        except JevTooLarge:
+            # Adaptation 38: even the shortest version was refused — fewer controls, once.
+            fewer = fewer_actions(page, goal)
+            if fewer is page:
+                raise
+            emit("status", message=f"Too much on this page for one look — showing Jev the {TRIMMED_ACTIONS} likeliest controls")
+            return original_choose(fewer, goal, history)
 
     agent_module.choose = choose
     return speculative, rejected
@@ -3994,7 +4240,12 @@ def main():
                     break
             why = None
             verdict = None
-            if state["status"] == "blocked" and early_block_exit and not acted_on_page(state["history"]):
+            model_error = agent.state.pop("model_error", None)
+            if model_error:
+                # Adaptation 38: Jev couldn't be asked here. Judge the page (the cart may already be
+                # full) and let Claude drive if it isn't there yet, instead of ending on a raw error.
+                why = model_error
+            elif state["status"] == "blocked" and early_block_exit and not acted_on_page(state["history"]):
                 # Nothing for this task on the page it started on (an unrelated tab): Navi starts
                 # over where the task itself starts — no Claude diagnosis of the wrong page.
                 emit("status", message="Nothing to do for this on this page")
