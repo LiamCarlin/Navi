@@ -92,6 +92,75 @@ struct BrandingTests {
         #expect(PanelWording.userFacing("Opening Google Chrome") == "Opening Google Chrome")
     }
 
+    // MARK: Run timeline
+
+    @Test func stepsSayWhatNaviDid() {
+        #expect(PanelWording.stepText("Click Quick Add — 10 Wings", live: false) == "Clicked Quick Add — 10 Wings")
+        #expect(PanelWording.stepText("Click Add 1 to order", live: true) == "Clicking Add 1 to order")
+        #expect(PanelWording.stepText("Scroll", live: false) == "Scrolled")
+        #expect(PanelWording.stepText("Scroll down", live: true) == "Scrolling down")
+        #expect(PanelWording.stepText("Type ‘hi’ into Message", live: false) == "Typed ‘hi’ into Message")
+        #expect(PanelWording.stepText("Wait for the page", live: true) == "Waiting for the page")
+    }
+
+    @Test func stepsDropTheDriversNotes() {
+        #expect(PanelWording.stepText("Click [26] Add (no change)", live: false) == "Clicked Add")
+        #expect(PanelWording.stepText("Click Sign in (could not be clicked (covered or off-screen); no longer offered)", live: false)
+                == "Clicked Sign in")
+        #expect(PanelWording.stepText("Press Send (off screen)", live: false) == "Pressed Send")
+        #expect(PanelWording.stepText("Claude: click ‘Continue with Google’", live: false) == "Clicked ‘Continue with Google’")
+        #expect(PanelWording.stepText("Click at (512, 384)", live: false) == "Clicked")
+        #expect(PanelWording.stepText("Scroll down 3 at (10, 20)", live: false) == "Scrolled down")
+        #expect(PanelWording.stepText("Open URL https://www.wingstop.com/menu?x=1", live: false) == "Opened wingstop.com")
+        #expect(PanelWording.stepText("Take screenshot", live: true) == "Looking at the screen")
+        #expect(!PanelWording.mentionsVendor(PanelWording.stepText("Jev · CLICK [5] 38% · 181 ms", live: false)))
+    }
+
+    @Test func failuresReadCalmly() {
+        let leaked = "Model provider returned HTTP 400; no action executed."
+        #expect(PanelWording.outcomeText(leaked) == PanelWording.couldNotFinish)
+        #expect(PanelWording.outcomeText("Runner exited (1). Traceback …") == PanelWording.couldNotFinish)
+        #expect(PanelWording.outcomeText("Jev is unavailable (timeout) and there is no vision fallback") == PanelWording.couldNotFinish)
+        #expect(PanelWording.outcomeText("Claude could not take over: HTTP 529") == PanelWording.couldNotFinish)
+        #expect(PanelWording.outcomeText("Element 12 is no longer on screen") == PanelWording.couldNotFinish)
+        #expect(PanelWording.outcomeText("Stopped: the classifier was not confident enough in any next action.")
+                == "Navi couldn’t make progress here, so it stopped.")
+        #expect(PanelWording.outcomeText("Stopped: the agent is stuck: its last actions changed nothing, as they did twice before.")
+                == "Navi couldn’t make progress here, so it stopped.")
+        #expect(PanelWording.outcomeText("Reached the step limit (40) before finishing. Increase it in Settings → Agent or narrow the task.")
+                == "This took more steps than Navi allows. Try asking for one part at a time.")
+        #expect(PanelWording.outcomeText("You declined ‘Click Send’ and Jev proposed it again — stopping.")
+                == "You declined ‘Click Send’, so Navi stopped.")
+        #expect(PanelWording.outcomeText("Step 2 of 3 failed: \(leaked)") == "Step 2 of 3 didn’t work: \(PanelWording.couldNotFinish)")
+        #expect(PanelWording.outcomeText("") == PanelWording.couldNotFinish)
+    }
+
+    @Test func failuresTheUserCanActOnPassThrough() {
+        let grant = "Grant Accessibility access to Navi in System Settings → Privacy & Security → Accessibility"
+        #expect(PanelWording.outcomeText(grant) == grant)
+        #expect(PanelWording.outcomeText("Sign in to Navi to keep going.") == "Sign in to Navi to keep going.")
+        #expect(PanelWording.outcomeText("Tasks are temporarily unavailable. Try again in a little while.")
+                == "Tasks are temporarily unavailable. Try again in a little while.")
+        #expect(PanelWording.outcomeText("I couldn’t find a contact named Mik in Messages.") == "I couldn’t find a contact named Mik in Messages.")
+    }
+
+    @Test func doneLineHasNoStepCountOrTime() {
+        #expect(PanelWording.doneText("Added 10 wings to the cart (10 steps · 12.3s)") == "Added 10 wings to the cart")
+        #expect(PanelWording.doneText("Opened wingstop.com") == "Opened wingstop.com")
+    }
+
+    @Test func engineDetailsNeedDeveloperModeAndTheirOwnSwitch() {
+        let before = (DeveloperMode.isEnabled, UserDefaults.navi.bool(forKey: DeveloperMode.engineDetailsKey))
+        defer { DeveloperMode.isEnabled = before.0; DeveloperMode.showsEngineDetails = before.1 }
+        DeveloperMode.isEnabled = true
+        DeveloperMode.showsEngineDetails = false
+        #expect(!DeveloperMode.showsEngineDetails)
+        DeveloperMode.showsEngineDetails = true
+        #expect(DeveloperMode.showsEngineDetails)
+        DeveloperMode.isEnabled = false
+        #expect(!DeveloperMode.showsEngineDetails)
+    }
+
     @Test func routerRowSubtitlesReadAsNavi() {
         #expect(PanelWording.resultSubtitle("Answer with Claude", developer: false) == "Answer this question")
         #expect(PanelWording.resultSubtitle("Add an Anthropic key in Navi → AI Providers", developer: false) == "Finish setting up Navi first")

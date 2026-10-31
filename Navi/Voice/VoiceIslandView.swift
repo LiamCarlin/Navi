@@ -95,14 +95,12 @@ struct VoiceIslandView: View {
             if case .downloadingModel(let p) = session.phase {
                 ProgressView(value: p).tint(.white).controlSize(.small)
             }
-            #if DEBUG
-            if !session.jevStatus.isEmpty {
+            if DeveloperMode.showsEngineDetails, !session.jevStatus.isEmpty {
                 Text(session.jevStatus)
                     .font(.system(size: 10, weight: .medium)).monospacedDigit()
                     .foregroundStyle(.white.opacity(0.35))
                     .lineLimit(1)
             }
-            #endif
         }
     }
 
@@ -173,7 +171,7 @@ struct VoiceIslandView: View {
             return q.allowsOther ? "Say an answer, or click one" : "Do it, then say “done”"
         }
         if let a = session.activity {
-            var s = a.detail.map { DeveloperMode.isEnabled ? $0 : PanelWording.userFacing($0) } ?? (a.isAnswer ? "" : "Working out each step")
+            var s = a.detail ?? (a.isAnswer ? "" : "Working on it")
             if session.queueCount > 0 { s = (s.isEmpty ? "" : s + " · ") + "\(session.queueCount) more queued" }
             return s
         }

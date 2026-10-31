@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Live computer-use run: task header, step timeline, screenshot thumbnail,
-/// and the approval card when an action looks irreversible. Engine chatter in
-/// the timeline (vendor names, latencies, probabilities) is hidden unless
-/// developer mode is on — see `PanelWording`.
+/// and the approval card when an action looks irreversible. The timeline shows
+/// what Navi did ("Clicked Quick Add — 10 Wings"), nothing about how: the
+/// driver's status lines, vendor names, latencies and probabilities appear only
+/// with `DeveloperMode.showsEngineDetails` — see `PanelWording`.
 struct AgentView: View {
     @EnvironmentObject private var vm: PanelViewModel
     @State private var timelineHeight: CGFloat = 0
@@ -26,13 +27,39 @@ struct AgentView: View {
         }
     }
 
-    private var stepCount: Int {
-        vm.agentEvents.reduce(0) { if case .step = $1 { return $0 + 1 } else { return $0 } }
+    /// The rows the timeline shows: status lines only with engine details, and a
+    /// step that repeats the one before ("Scrolled", "Scrolled") folded into it.
+    /// Steps are numbered as shown.
+    private var rows: [AgentEvent] {
+        let details = DeveloperMode.showsEngineDetails
+        var out: [AgentEvent] = []
+        var shown = 0
+        var lastStep: String?
+        for ev in vm.agentEvents {
+            switch ev {
+            case .step(let index, let d):
+                if details { out.append(ev); continue }
+                let text = PanelWording.stepText(d, live: false)
+                if text == lastStep { continue }
+                lastStep = text
+                shown += 1
+                out.append(.step(index: shown, description: d))
+            case .status:
+                if details { out.append(ev) }
+            case .planned(let plan):
+                if details { out.append(ev) }
+                else if !PanelWording.isDiagnostic(plan) { out.append(.planned(PanelWording.userFacing(plan))) }
+            case .screenshot:
+                continue
+            default:
+                out.append(ev)
+            }
+        }
+        return out
     }
 
-    /// Index (in `agentEvents`) of the most recent `.step`; that row gets the live dot.
-    private var lastStepIndex: Int? {
-        vm.agentEvents.lastIndex { if case .step = $0 { return true } else { return false } }
+    private func stepCount(_ rows: [AgentEvent]) -> Int {
+        rows.reduce(0) { if case .step = $1 { return $0 + 1 } else { return $0 } }
     }
 
     var body: some View {
@@ -52,7 +79,7 @@ struct AgentView: View {
             }
             if let p = vm.pendingApproval {
                 ApprovalCard(description: p.description,
-                             risk: DeveloperMode.isEnabled ? p.risk : PanelWording.userFacing(p.risk),
+                             risk: DeveloperMode.showsEngineDetails ? p.risk : PanelWording.userFacing(p.risk),
                              approve: { vm.approvePending(true) },
                              deny: { vm.approvePending(false) })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -78,8 +105,9 @@ struct AgentView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 8)
-            if stepCount > 0 {
-                Text("\(stepCount) step\(stepCount == 1 ? "" : "s")")
+            let steps = stepCount(rows)
+            if steps > 0 {
+                Text("\(steps) step\(steps == 1 ? "" : "s")")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
@@ -109,11 +137,13 @@ struct AgentView: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(vm.agentEvents.enumerated()), id: \.offset) { idx, ev in
+                    let shown = rows
+                    let lastStepIndex = shown.lastIndex { if case .step = $0 { return true } else { return false } }
+                    ForEach(Array(shown.enumerated()), id: \.offset) { idx, ev in
                         AgentEventRow(event: ev,
                                       isLatest: idx == lastStepIndex && outcome == nil,
                                       isRunning: isRunning,
-                                      isLast: idx == vm.agentEvents.count - 1,
+                                      isLast: idx == shown.count - 1,
                                       needsUser: vm.agentVerdict == .needsUser)
                     }
                     if vm.agentEvents.isEmpty {
@@ -209,7 +239,8 @@ struct AgentEventRow: View {
                     }
                 }
                 .frame(width: 22)
-                Text(description)
+                Text(DeveloperMode.showsEngineDetails ? description
+                     : PanelWording.stepText(description, live: isLatest && isRunning))
                     .font(.system(size: 13))
                     .foregroundStyle(isLatest && isRunning ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                     .lineSpacing(2)
@@ -218,11 +249,8 @@ struct AgentEventRow: View {
             }
             .fixedSize(horizontal: false, vertical: true)
         case .status(let s):
-            if DeveloperMode.isEnabled {
-                statusRow(s)
-            } else if !PanelWording.isDiagnostic(s) {
-                statusRow(PanelWording.userFacing(s))
-            }
+            // Only reaches here with engine details on (`AgentView.rows`).
+            statusRow(s)
         case .needsApproval(_, let description, _):
             HStack(spacing: 8) {
                 Image(systemName: "hand.raised.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(.orange)
@@ -235,22 +263,23 @@ struct AgentEventRow: View {
             card(tint: .green, icon: "checkmark.circle.fill") {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Done").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.green)
-                    Text(summary).font(.system(size: 13)).lineSpacing(2.5)
+                    Text(DeveloperMode.showsEngineDetails ? summary : PanelWording.doneText(summary))
+                        .font(.system(size: 13)).lineSpacing(2.5)
                 }
             }
         case .failed(let message) where needsUser:
             card(tint: .orange, icon: "questionmark.circle.fill") {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Needs you").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.orange)
-                    Text(DeveloperMode.isEnabled ? message : PanelWording.userFacing(message))
+                    Text(DeveloperMode.showsEngineDetails ? message : PanelWording.outcomeText(message))
                         .font(.system(size: 13)).lineSpacing(2.5)
                 }
             }
         case .failed(let message):
             card(tint: .red, icon: "exclamationmark.triangle.fill") {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Failed").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.red)
-                    Text(DeveloperMode.isEnabled ? message : PanelWording.userFacing(message))
+                    Text("Couldn’t finish").font(.system(size: 10.5, weight: .semibold, design: .rounded)).foregroundStyle(.red)
+                    Text(DeveloperMode.showsEngineDetails ? message : PanelWording.outcomeText(message))
                         .font(.system(size: 13)).lineSpacing(2.5)
                 }
             }

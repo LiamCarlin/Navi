@@ -45,14 +45,17 @@ final class AgentOverlay {
     func update(step: Int, maxSteps: Int, status: String? = nil) {
         model.waitingForApproval = false
         model.outcome = nil
-        // The panel hides engine diagnostics from users (`PanelWording`); so does the pill.
-        let shown = status.flatMap { s -> String? in
-            if s.isEmpty { return nil }
-            if DeveloperMode.isEnabled { return s }
-            return PanelWording.isDiagnostic(s) ? nil : PanelWording.userFacing(s)
+        // Users read what Navi is doing ("Clicking Add to order"), never how far it is
+        // into its step budget or what the engine thinks (`PanelWording`).
+        guard DeveloperMode.showsEngineDetails else {
+            let shown = status.flatMap { s -> String? in
+                s.isEmpty || PanelWording.isDiagnostic(s) ? nil : PanelWording.stepText(s, live: true)
+            }
+            model.text = shown ?? working
+            return
         }
-        if let shown {
-            model.text = "\(shown) · \(step)/\(maxSteps)"
+        if let status, !status.isEmpty {
+            model.text = "\(status) · \(step)/\(maxSteps)"
         } else {
             model.text = "\(working) step \(step)/\(maxSteps)"
         }
@@ -66,7 +69,9 @@ final class AgentOverlay {
         model.waitingForApproval = false
         model.outcome = outcome
         var one = text.replacingOccurrences(of: "\n", with: " ")
-        if !DeveloperMode.isEnabled { one = PanelWording.userFacing(one) }
+        if !DeveloperMode.showsEngineDetails {
+            one = outcome == .completed ? PanelWording.doneText(one) : PanelWording.outcomeText(one)
+        }
         model.text = one.count > 90 ? String(one.prefix(90)) + "…" : one
         hideTask?.cancel()
         hideTask = Task { [weak self] in

@@ -652,7 +652,7 @@ final class AgentRun: @unchecked Sendable {
                 }
                 pageText = text
                 if case .failed(let msg) = outcome, NativeBrowser.isRunnerUnavailable(msg) {
-                    handle.emit(.status(DeveloperMode.isEnabled
+                    handle.emit(.status(DeveloperMode.showsEngineDetails
                         ? "Chrome runner unavailable (\(AgentAction.short(msg, 80))) — driving \(NativeBrowser.displayName(bb)) directly instead"
                         : "Working in \(NativeBrowser.displayName(bb)) directly"))
                     ranRunner = false
@@ -789,7 +789,7 @@ final class AgentRun: @unchecked Sendable {
                     await updateOverlay(step: n, status: d)
                 case .status(let s):
                     parent.emit(ev)
-                    await updateOverlay(step: max(1, maxIndex), status: s)
+                    await updateOverlay(step: max(1, maxIndex), status: DeveloperMode.showsEngineDetails ? s : nil)
                 default:
                     parent.emit(ev)
                 }
@@ -1229,7 +1229,7 @@ final class AgentRun: @unchecked Sendable {
             case .resumeJev(let focus):
                 run.refocus(.init(step: step, outcome: outcome, focus: focus, actions: run.history.count))
                 handle.emit(.status("Read the screen in \(ms) ms: \(answer.text)"))
-                handle.emit(DeveloperMode.isEnabled ? .planned("Next for Jev: \(focus)") : .status("Next: \(focus)"))
+                handle.emit(DeveloperMode.showsEngineDetails ? .planned("Next for Jev: \(focus)") : .status("Next: \(focus)"))
                 return true
             case .takeover:
                 switch try await takeOver(outcome, answer) {
