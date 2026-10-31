@@ -157,7 +157,8 @@ final class VoiceSession: ObservableObject {
         services.claude.warm()
         // And the Chrome bridge: the first spoken web task used to spend 2–5 s "Connecting to Chrome…".
         UltrafastBridge.prewarm()
-        listener.contextualStrings = ["Navi", "Jev"] + AppIndex.shared.entries.prefix(300).map(\.name)
+        // The user's own people, projects and sites first: the recognizer has never heard "Canvas" or "Onshape".
+        listener.contextualStrings = ["Navi", "Jev"] + VoiceVocabulary.recognizerHints(limit: 150) + AppIndex.shared.entries.prefix(240).map(\.name)
         listener.echoCancellation = settings.voiceEchoCancellation
         speakerGate.reload(enabled: settings.voiceOnlyMyVoice)
         listener.recordsVoice = speakerGate.isActive
@@ -723,6 +724,9 @@ final class VoiceSession: ObservableObject {
         ctx.runningApps = WindowControls.runningAppNames()
         ctx.userUsuallyUses = UserHabits.current?.cachedProfile().flatMap { UserHabits.surfaceHint(task: clause.head, profile: $0) }
         ctx.headMayContinueAppName = !clause.hasBoundary && VoiceAppMatcher.mayContinueAppName(clause.head, index: AppIndex.shared)
+        // Where the last tasks worked (a follow-up continues there) and the user's own words HEAD may have misheard.
+        ctx.recentWork = WorkingSurface.Store.shared.recent()
+        ctx.soundAlikes = VoiceVocabulary.soundAlikes(in: clause.head, terms: VoiceVocabulary.liveTerms())
         return ctx
     }
 
