@@ -192,6 +192,18 @@ final class AgentRunHandle: @unchecked Sendable {
     /// Optional side channel (run log, overlay); called on the emitting thread.
     var onEmit: (@Sendable (AgentEvent) -> Void)?
 
+    // Integration hook (agent outcome workstream): how the run really ended, set by the agent
+    // before it emits `.completed`/`.failed`. `.completed` is emitted only for `.achieved`; a
+    // question for the user, a step only they can take, or "not done" arrive as `.failed`
+    // with this telling them apart. nil ⇒ the run ended without a typed judgment (cancelled,
+    // an error before any judgment).
+    private let verdictLock = NSLock()
+    private var _verdict: RunVerdict?
+    var verdict: RunVerdict? {
+        get { verdictLock.lock(); defer { verdictLock.unlock() }; return _verdict }
+        set { verdictLock.lock(); _verdict = newValue; verdictLock.unlock() }
+    }
+
     func emit(_ e: AgentEvent) { onEmit?(e); continuation.yield(e) }
     func finish() { continuation.finish() }
     func cancel() { cancelAction() }
@@ -207,6 +219,30 @@ enum AgentEvent: Sendable {
     case completed(summary: String)
     case failed(String)
     case cancelled
+}
+
+/// A run's typed outcome (`AgentRunHandle.verdict`), from the screen reader's judgment — never
+/// from which code path happened to end the run.
+enum RunVerdict: String, Sendable, Equatable {
+    /// The screen shows every part of the goal done (or the answer to a lookup).
+    case achieved
+    /// Some of it is done, not all.
+    case partial
+    /// Not done; the run ran out of moves or budget.
+    case notAchieved = "not_achieved"
+    /// It cannot be done here (the app/site has no such thing).
+    case impossible
+    /// Only the user can go on: a question, a login, a payment, an approval.
+    case needsUser = "needs_user"
+
+    /// The runner's / writer's spelling ("not achieved", "needs-user"…); unknown ⇒ nil.
+    init?(loose: String) {
+        let s = loose.lowercased().trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
+        self.init(rawValue: s == "notachieved" ? "not_achieved" : s == "needsuser" ? "needs_user" : s)
+    }
+
+    var isSuccess: Bool { self == .achieved }
 }
 
 enum AgentApproval: Sendable {

@@ -287,8 +287,12 @@ enum UltrafastBridge {
         // Anthropic key). Developers can instead export TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL /
         // TEXT_MODEL (upstream's OpenAI-compatible helper) before launching Navi.
         env["NAVI_TEXT_MODEL"] = UserDefaults.navi.string(forKey: "ultrafastTextModel") ?? "claude-haiku-4-5"
-        // Coach (Claude diagnoses a failing run once): the agent model from Settings.
+        // Claude's judge, coach and takeover of a stuck run (adaptation 32): the agent model from Settings.
         env["NAVI_AGENT_MODEL"] = UserDefaults.navi.string(forKey: "agentModel") ?? "claude-sonnet-5"
+        // The takeover's irreversible gate follows the user's approval mode (no approval channel
+        // mid-run: a turn that would need one ends the run as needs-user instead).
+        env["NAVI_APPROVAL_MODE"] = UserDefaults.navi.string(forKey: "agentApprovalMode") ?? "askForRisky"
+        if UserDefaults.navi.object(forKey: "agentClaudeTakeover") as? Bool == false { env["NAVI_TAKEOVER"] = "0" }
         // Web-app playbooks (`AppSkills`): the runner adds the one matching each page to Jev's state.
         env["NAVI_PLAYBOOKS_JSON"] = AppSkills.webPlaybooksJSON()
         if let rt = runtime {
@@ -406,6 +410,17 @@ enum UltrafastBridge {
     }
 
     enum RunOutcome: Equatable { case completed, failed, cancelled, blockedBeforeActing }
+
+    /// The runner's done event as a typed verdict: its `outcome` when it sent one (adaptation 32 —
+    /// "done" only when the judge said achieved), else what the status implies. A "done" status
+    /// never maps to anything but achieved, and a blocked one never to achieved.
+    static func verdict(status: String, outcome: String?) -> RunVerdict? {
+        if status == "cancelled" { return nil }
+        let typed = outcome.flatMap(RunVerdict.init(loose:))
+        if status == "done" { return .achieved }
+        if let typed, typed != .achieved { return typed }
+        return .notAchieved
+    }
 
     /// Is the task satisfied by opening its page — nothing to do once there?
     /// "go to youtube", "open the youtube website and open it", "pull up
@@ -575,6 +590,7 @@ enum UltrafastBridge {
                     case "SELECT": desc = "Select \(action)"
                     case "SCROLL": desc = "Scroll"
                     case "WAIT": desc = "Wait for the page"
+                    case "TAKEOVER": desc = action      // "Claude: click ‘Continue with Google’" (adaptation 32)
                     default: desc = "\(kind.capitalized) \(action)"
                     }
                     if let note = json["note"] as? String, !note.isEmpty {
@@ -591,6 +607,8 @@ enum UltrafastBridge {
                     finished = true
                     let status = json["status"] as? String ?? "done"
                     let summary = json["summary"] as? String ?? ""
+                    // The runner's typed outcome (adaptation 32); older runners: done ⇒ achieved.
+                    handle.verdict = Self.verdict(status: status, outcome: json["outcome"] as? String)
                     let ms = json["elapsed_ms"] as? Int ?? 0
                     let opened = "Opened \(URL(string: json["url"] as? String ?? url)?.host ?? url)"
                     switch status {
@@ -606,6 +624,7 @@ enum UltrafastBridge {
                         if stepIndex == 0, openedIsDone {
                             // The page is open; that was the task.
                             outcome = .completed
+                            handle.verdict = .achieved
                             finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
                                 .joined(separator: "\n")
                             handle.emit(.completed(summary: opened))
@@ -620,6 +639,7 @@ enum UltrafastBridge {
                 case "error":
                     finished = true
                     outcome = .failed
+                    handle.verdict = .notAchieved
                     handle.emit(.failed(runnerErrorMessage(json)))
                 default: break
                 }

@@ -86,8 +86,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     answers `kind` + speculative targets (`CUDecide`); `ActionExecutor` acts. Keep the action set
     **mutually exclusive** (Return/Escape/Back are kinds, never also shortcuts). When Jev stops
     (done, none, confidence < 0.4, 3 idle / 2 repeated actions, step limit) the writer
-    (`CUWriter`, Claude) reads the screen and answers or hands back one move (`focus`); it
-    never picks an action, and a third stall with no new page is final. Browser steps on
+    (`CUWriter`, Claude) reads the screen and answers with a typed `verdict` or hands back one
+    move (`focus`); it never picks an action. A stuck run (third stall, a focus Jev could not use,
+    no hand-offs/steps left with a next move) goes to the Claude takeover (see "Stuck → Claude
+    takeover" below), not to the end. Browser steps on
     Chromium still go to vendored jev-ultrafast on the DOM. `TaskPlanner` splits a task into
     single-surface steps (prefetched while typing). Run folders: `~/Library/Logs/Navi/runs/`.
     Keep connections warm; a cold Jev call costs ~2× (see docs/JEV_INTEGRATION.md).
@@ -234,7 +236,34 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     screen Jev stopped on before the writer is asked; Jev's own `done` ≥ 0.9 after work on an
     effect goal ends the run without a review (`AgentRun.acceptDoneConfidence`); the writer's
     field text is started speculatively on the obvious field while Jev decides. Voice runs allow
-    2 hand-backs (`maxClaudeFallbacks`). Claude drives only when Jev is unreachable.
+    2 hand-backs (`maxClaudeFallbacks`). Claude drives when Jev is unreachable, and — new policy,
+    2026-10-30 — for a few steps when Jev is stuck (below).
+  - **Stuck → Claude takeover; typed outcomes** (Liam, 2026-10-30: success over speed on the hard
+    ~10 %). Every stop is judged by a typed verdict — `RunVerdict`: achieved / partial / not_achieved
+    / impossible / needs_user — and **only achieved is `.completed`**; the rest arrive as `.failed`
+    with `AgentRunHandle.verdict` telling them apart (a question for the user = needs_user; an
+    answer whose own words say "I couldn't…/isn't confirmed" is never achieved: `CUWriter.saysNotDone`,
+    the runner's `says_could_not`). Callers (voice island, panel) read `handle.verdict`.
+    Native: `CUEscalation.next` (pure) turns the writer's answer into complete / ask the user /
+    Jev with a focus / takeover / end; the takeover is `AgentRun.claudeAssist` — the
+    `computer_toolset_20260801` loop, bounded (`CUEscalation.takeoverTurns` = 6 rounds, ≤ 2 a step),
+    on the same pinned `AgentTarget` (background rules hold), `JevGate` on every turn, clicks on
+    pay controls refused (`JevGate.paysKeyword` on the AX element under the point); its last word
+    (`CUEscalation.handback`): "Done:" → the writer re-reads, "Stopped:" → needs_user, moved the
+    screen → Jev resumes with the stall counters reset (`CURunState.afterTakeover`), else the
+    writer's answer stands. Browser (runner adaptation 32): circling / no change / BLOCKED / a DONE
+    under 85 % → `judge` (Claude, screenshot + page text → verdict JSON) → achieved ends done,
+    impossible/needs_user end honestly, else `Takeover` drives the same tab by CDP (viewport JPEG ≤
+    1280 px, `Input.dispatch*`, `go_to_url`/`go_back`; ≤ 8 rounds, ≤ 3 a run; Jev's irreversible/
+    prohibited nouls per turn — no approval channel mid-run, so an unasked send/delete ends as
+    needs_user unless `autonomous`; never pays; never types into password/code/card fields) and
+    hands back on a new document; its "Done:" is judged again. The done event carries `outcome`,
+    `answer`, `takeovers`. Run in the runner, not on Chrome's window: the tab may be a background
+    tab, CDP is exact per tab, and Jev resumes on the same history. Live replay (DoorDash, the
+    Sign In ↔ Close circle whose iframe Jev cannot read): takeover typed into the dialog, judged
+    achieved, ~20 s. The coach's "[Errno 32] Broken pipe" was a dead pooled HTTP/2 connection:
+    Claude calls use `claude_post` (own HTTP/1.1 client, retries transport errors). Off switch:
+    `agentClaudeTakeover` = false (both drivers; `NAVI_TAKEOVER=0`, `NAVI_JUDGE=0` in the runner).
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
@@ -277,6 +306,8 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     builder on screen); 31 — every Jev request carries `facts` (today, the goal's relative
     dates resolved: "next friday" → Friday, November 6, 2026). Replays: McDonald's → 2 items
     in cart with no coach; Flights picks the right Friday; Chipotle false "done" now refused.
+    32 — a stuck or unsure stop is judged and, when not there yet, finished by a Claude takeover
+    on the same tab (see "Stuck → Claude takeover; typed outcomes").
   - **Background mode** (`NaviSettings.agentRunInBackground`, default on): the user
     keeps working while a task runs. Each native step pins an `AgentTarget` (the app
     it opened, else the app Navi was invoked over); `AXSnapshotter` walks *that* app,
