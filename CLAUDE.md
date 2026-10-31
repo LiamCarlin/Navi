@@ -46,11 +46,11 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
-| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice) |
+| `Navi/Voice` | live voice control (the notch island) | `SpeechListener` (on-device `SpeechAnalyzer`), `UtteranceSegmenter` (clauses), `VoiceDecider` (Jev: complete? what kind?), `VoiceCommandExecutor` (serial), `VoiceSession` (timing + UI state), `VoiceIslandController`/`VoiceIslandView`, `VoicePrint`/`SpeakerGate`/`VoiceFbank` (only the user's voice), `VoiceEnrollment` (teach Navi your voice), `VoiceVocabulary` (the user's own words: recognizer hints + Jev-confirmed sound-alikes) |
 | `Navi/Settings` | the visible "app" | `SettingsRootView` + section views, `Permissions`, `LoginItem`, `SpotlightShortcutFix` |
 
 `NaviServices.bootstrap()` wires concrete types. **Do not rename** `QueryRouter`,
@@ -409,7 +409,29 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     locally — each used to cost a 2 s agent run. A spoken task may run for as long
     as it keeps reporting steps (minutes); only one silent for 2 min is stopped.
     Goals are normalised first (`VoiceDecider.normalizedGoal`: "can you", "please",
-    "navi", a leftover "you" stripped). ⌥Space (`voiceHotKey*`) starts/stops listening
+    "navi", a leftover "you" stripped, an abandoned lead "with... " / "Wait, " dropped).
+    **Working surface** (`Agent/WorkingSurface`): every run records where it worked (the runner's
+    final tab URL/title via `UltrafastBridge`, the app a native step drove, the page/app a voice
+    command opened) and, when it ends, the task + outcome (in memory, 20 min, one per place). The
+    voice call asks Jev `work_where` (replaces `start_from`/`continues_previous`): `here` (the screen
+    in front — folded with a recent place it shows), `last_N` (a recent place), `new_place`. ≥ 0.5 ⇒
+    `last_N` runs with `RunOptions.continueOn` (its tab, re-attached by URL — `NAVI_ATTACH_URL` —, or
+    its app; grounding and routine starts skipped), `here` on the open tab / app in front (also
+    `continueOn` when the last task worked there), `new_place` never on the open tab. Unsure/offline:
+    the open tab only for page actions or when the last task worked on that very tab. ⌘Space: the
+    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. Live (2026-10-30):
+    14/14 sensible picks ("I meant in DoorDash where we just were" → the DoorDash tab at 0.99, "order
+    me a burger" on a Canvas tab → new place 1.0); Haiku planned "open my cart…" after the order on
+    doordash.com. **Fragments never run**: `whole_instruction` noul (< 0.25 — logged fragments scored
+    0.05–0.15, a correction 0.32) plus a local rule (a preposition/conjunction start with no verb:
+    "to my cart") ⇒ merge with following words, join the still-queued previous instruction
+    (`Decision.amend`, ≤ 8 s), wait for the pause, then "Didn't catch…". A long sentence Jev files
+    under control/stop that is no control phrase is an instruction. **Misheard own words**
+    (`VoiceVocabulary`): the user's people/projects/sites go to the recognizer as contextual strings;
+    a word that sounds like one (consonant-skeleton edit distance, near sounds cheap) is offered to
+    Jev as `misheard_i` with `users_own_words` in the state and replaced only at ≥ 0.6 ("cannabis" →
+    Canvas 0.78; "order cannabis gummies" 0.25). Live tests: `VoiceWorkingSurfaceLiveTests`,
+    `PlannerWorkingSurfaceTests` (`.needsNetwork`). ⌥Space (`voiceHotKey*`) starts/stops listening
     from anywhere; `voiceStartsAtLaunch` makes it hands-free from login.
     **Only my voice** (`Voice/VoicePrint`, toggle `voiceOnlyMyVoice`): once the user taught Navi
     their voice (`VoiceEnrollment`: six command-like lines, ~1 min, in setup, Settings → Voice,
