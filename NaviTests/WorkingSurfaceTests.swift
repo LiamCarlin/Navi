@@ -713,6 +713,27 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         guard case .commit(.openApp) = VoiceDecider.decide(v, input: justNotes) else { Issue.record("open the notes app"); return }
     }
 
+    @Test func anAppNamedOutrightWinsOverJevsNearMiss() {
+        // Bench native-03: "press play in music" → Messages in 1 of 3.
+        let music = VoiceAppMatcher.Candidate(id: "a1", entry: AppEntry(name: "Music", path: "/System/Applications/Music.app", bundleID: "com.apple.Music"), score: 1, phrase: "music")
+        let messages = VoiceAppMatcher.Candidate(id: "a2", entry: AppEntry(name: "Messages", path: "/System/Applications/Messages.app", bundleID: "com.apple.MobileSMS"), score: 0.7, phrase: "music")
+        var inp = input("press play in music")
+        inp.context.appCandidates = [music, messages]
+        var v = verdict(kind: "open_app")
+        v.appTarget = .init(choice: "a2", probabilities: ["a2": 0.6, "a1": 0.3], confidence: 0.6)
+        #expect(VoiceDecider.appChoice(v, input: inp)?.entry.bundleID == "com.apple.Music")
+        // Jev's pick stands when it is the app named.
+        v.appTarget = .init(choice: "a1", probabilities: ["a1": 0.9], confidence: 0.9)
+        #expect(VoiceDecider.appChoice(v, input: inp)?.entry.bundleID == "com.apple.Music")
+    }
+
+    @Test func aDroppedGoDestinationIsNeverChatter() {
+        let v = verdict(kind: "do_in_app", whole: 0.05, boundary: ["complete": 0.2, "continues": 0.4, "not_a_command": 0.4])
+        guard case .commit(.task) = VoiceDecider.decide(v, input: input("to my most recent cannabis assignment", silence: 2500)) else {
+            Issue.record("dropped"); return
+        }
+    }
+
     @Test func continuingInABrowserAppIsItsTabInFront() {
         let chromeApp = WorkingSurface(kind: .app, task: "open chrome", outcome: .completed, bundleID: "com.google.Chrome", appName: "Google Chrome", at: Date())
         let p = VoiceCommandExecutor.placement(goal: "write some random phrase into it", surface: .unsure, useCurrentTab: false, place: .previous,
@@ -747,6 +768,26 @@ private func chromeFront(_ url: String, title: String = "") -> FrontmostProbe.In
         let page = "<meta http-equiv='refresh' content='0; url=/l/?uddg=https%3A%2F%2Fwww.kfc.com%2F&rut=eff74f'>"
         #expect(TaskPlanner.landing(inRedirectPage: page) == "https://www.kfc.com/")
         #expect(TaskPlanner.landing(inRedirectPage: "<html>no redirect</html>") == nil)
+    }
+
+    @Test func aBusinessNamedWithoutFromIsFoundByASiteThatIsItsName() {
+        // Bench errand-03: no "from X" — the word a site's name *is* marks the business.
+        let task = "order me a randome chipotle bowl"
+        #expect(TaskPlanner.errandQuery(for: task) == nil)
+        #expect(TaskPlanner.unnamedErrandQuery(for: task) == "chipotle bowl order online")
+        #expect(TaskPlanner.errandStartURL(for: task, sites: ["canvas.olin.edu", "chipotle.com"]) == "https://chipotle.com")
+        #expect(TaskPlanner.landingNamesTask("https://www.chipotle.com/", task: task))
+        // A product word that only starts a site's name is not a business.
+        #expect(!TaskPlanner.landingNamesTask("https://www.burgervillage.com/", task: "order me a burger"))
+        #expect(TaskPlanner.errandStartURL(for: "order me a burger", sites: ["burgervillage.com"]) == nil)
+        #expect(TaskPlanner.unnamedErrandQuery(for: "search for chipotle recipes") == nil)
+    }
+
+    @Test(.needsNetwork) func anUnnamedBusinessIsResolvedOnlyWhenTheTopResultIsIt() async {
+        await TaskPlanner.resolveErrandLanding(for: "order me a randome chipotle bowl")
+        #expect(TaskPlanner.errandStartURL(for: "order me a randome chipotle bowl", sites: [])?.contains("chipotle.com") == true)
+        await TaskPlanner.resolveErrandLanding(for: "order me a burger")
+        #expect(TaskPlanner.errandStartURL(for: "order me a burger", sites: []) == nil)
     }
 
     @Test(.needsNetwork) func theTopResultRedirectLandsOnTheBusinessesSite() async throws {

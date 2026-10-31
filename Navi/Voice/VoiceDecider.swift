@@ -338,6 +338,8 @@ enum VoiceDecider {
         // "text mom I'm at the store and I'll be home soon": a message dictated to someone is an
         // instruction whatever the text itself sounds like (bench msg-02 was dropped as chatter 1 in 3).
         if isDictatedMessage(c.head, people: input.context.knownPeople) { pComplete += pNoise; pNoise = 0 }
+        // …nor is a destination whose "go" the recognizer lost (school-04 dropped as chatter at 40 %).
+        if recoveringDroppedGo(normalizedGoal(c.head)) != nil { pComplete += pNoise; pNoise = 0 }
         let silence = input.silenceMs
         // "and" alone may still be joining the object ("cats and dogs"); "and then" / "then" / "after that" never do.
         let bareConnector = c.hasBoundary && c.following.isEmpty && !c.connector.isEmpty && !Self.isSentenceMark(c.connector)
@@ -765,11 +767,21 @@ enum VoiceDecider {
         let cands = input.context.appCandidates
         guard !cands.isEmpty else { return nil }
         if let h = v.appTarget, h.choice != "none", h.confidence >= appTargetP, let c = cands.first(where: { $0.id == h.choice }) {
+            // An app the head names outright wins over a near-miss Jev picked ("press play in music" →
+            // Messages, 1 in 3 on the bench): only when Jev's pick is not itself named word for word.
+            if !namesOutright(c, input.clause.head), let named = cands.first(where: { namesOutright($0, input.clause.head) }) { return named }
             return c
         }
         // Jev didn't name one: a single strong local match wins for an obvious "open X".
         if v.appTarget == nil, cands.count == 1, cands[0].score >= 0.95 { return cands[0] }
         return nil
+    }
+
+    /// The head says the app's whole name as words ("in music" → Music, "open google chrome" → Google Chrome).
+    static func namesOutright(_ c: VoiceAppMatcher.Candidate, _ head: String) -> Bool {
+        let h = " " + head.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ") + " "
+        let name = c.entry.name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ")
+        return !name.isEmpty && h.contains(" " + name + " ")
     }
 
     // MARK: Small parsers

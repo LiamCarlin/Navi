@@ -239,11 +239,55 @@ enum TaskPlanner {
     ///      dominos.com/en, tatte → tattebakery.com, chipotle → chipotle.com).
     /// nil when the task is no errand at a named business.
     static func errandStartURL(for task: String, sites: [String]) -> String? {
-        guard let q = errandQuery(for: task), let name = errandName(for: task) else { return nil }
+        guard let q = errandQuery(for: task), let name = errandName(for: task) else {
+            // "order me a random chipotle bowl": no "from X", so which word is the business is not known
+            // from the words alone — a word of the task that a site's name carries is: one the user
+            // visits, else the top result found ahead (`resolveErrandLanding` keeps it only then).
+            let words = errandWords(task)
+            if !words.isEmpty, let site = sites.first(where: { s in words.contains { siteIsNamed(s, name: $0) } }) { return "https://" + site }
+            if let q = unnamedErrandQuery(for: task), let landing = cachedLanding(for: q) { return landing }
+            return nil
+        }
         let letters = name.filter { $0.isLetter || $0.isNumber }
         if let site = sites.first(where: { siteCarries($0, name: letters) }) { return "https://" + site }
         if let landing = cachedLanding(for: q) { return landing }
         return luckyURL(q)
+    }
+
+    /// An errand that names no "from X" ("order me a randome chipotle bowl"): what is being ordered,
+    /// as a search ("randome chipotle bowl order online"). nil when it is no errand or names a place.
+    static func unnamedErrandQuery(for task: String) -> String? {
+        guard errandQuery(for: task) == nil else { return nil }
+        let lower = task.lowercased()
+        guard let verb = lower.range(of: #"\b(order|buy|purchase|get me|grab me|deliver)\b"#, options: .regularExpression) else { return nil }
+        let words = errandWords(String(lower[verb.upperBound...]))
+        guard !words.isEmpty else { return nil }
+        return words.joined(separator: " ") + " order online"
+    }
+
+    /// The words of an errand that could name a business: letters only, ≥ 3 long, no filler, no amounts.
+    static func errandWords(_ text: String) -> [String] {
+        let filler: Set<String> = ["order", "buy", "purchase", "get", "grab", "deliver", "delivery", "me", "us", "some", "the", "and", "for",
+                                   "one", "two", "three", "few", "please", "now", "tonight", "today", "with", "online", "food", "lunch",
+                                   "dinner", "breakfast", "under", "dollars", "bucks", "cheap", "cheapest", "large", "small", "medium", "big",
+                                   "extra", "new", "random", "randome", "any", "something", "thing", "anything", "can", "you", "could", "would"]
+        return text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)
+            .filter { $0.count >= 3 && !filler.contains($0) }
+    }
+
+    /// The landing names one of the task's words ("chipotle.com" for "…random chipotle bowl"): the task
+    /// named that business. A top result that names none of them ("order me a burger" → an aggregator)
+    /// is not the task's business.
+    static func landingNamesTask(_ landing: String, task: String) -> Bool {
+        guard let host = URL(string: landing)?.host else { return false }
+        return errandWords(task).contains { siteIsNamed(host, name: $0) }
+    }
+
+    /// The site's own name *is* the word ("chipotle.com" for "chipotle") — stricter than `siteCarries`:
+    /// without "from X" a word that merely starts a site's name ("burger" → burgervillage.com) is a product.
+    static func siteIsNamed(_ site: String, name: String) -> Bool {
+        guard let label = site.lowercased().split(separator: "/").first?.split(separator: ".").first(where: { $0 != "www" && $0 != "order" }) else { return false }
+        return String(label).filter { $0.isLetter || $0.isNumber } == name
     }
 
     /// The business in an errand ("kfc", "domino's"), as `errandQuery` reads it.
@@ -295,8 +339,11 @@ enum TaskPlanner {
     /// Finds the errand's official page ahead of the run (≤ `timeoutMs`) so its start is the business's
     /// own site, not a redirect. Cheap to call for any task: nothing happens unless it is such an errand.
     static func resolveErrandLanding(for task: String, timeoutMs: Int = 1500) async {
-        guard let q = errandQuery(for: task), cachedLanding(for: q) == nil else { return }
+        let named = errandQuery(for: task)
+        guard let q = named ?? unnamedErrandQuery(for: task), cachedLanding(for: q) == nil else { return }
         guard let l = await luckyLanding(luckyURL(q), timeout: Double(timeoutMs) / 1000) else { return }
+        // Without "from X" only a landing on a site the task itself names counts.
+        if named == nil, !landingNamesTask(l, task: task) { return }
         landingLock.lock(); landings[q] = (l, Date()); landingLock.unlock()
     }
 
