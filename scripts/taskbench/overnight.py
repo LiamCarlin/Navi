@@ -74,6 +74,11 @@ ap.add_argument("--limit", type=int, default=0)
 ap.add_argument("--dry-run", action="store_true")
 ap.add_argument("--shot-every", type=float, default=4.0)
 ap.add_argument("--start-timeout", type=int, default=15)
+ap.add_argument("--trigger", choices=["hotkey", "url"], default="hotkey",
+                help="hotkey: ⌘Space, paste the prompt, ⏎ after routing — what a person does (the app in front stays in "
+                     "front). url: navi://run?q=… (activates Navi, so Navi is 'the app in front')")
+ap.add_argument("--route-wait", type=float, default=1.5, help="seconds between pasting the prompt and ⏎ (hotkey)")
+ap.add_argument("--first-not-in", default="", help="a results.jsonl: scenarios not in it run first")
 a = ap.parse_args()
 
 data = json.loads(Path(a.tasks).read_text())
@@ -91,6 +96,22 @@ def skip_reason(t):
 def time_limit(t):
     return {1: 90, 2: 120, 3: 150, 4: 180, 5: 240}.get(t.get("tier", 3), 150)
 
+def as_applescript(text):
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+def submit_hotkey(text, since):
+    """⌘Space, paste, wait for routing, ⏎. Returns False if the panel never showed (then the caller uses navi://)."""
+    osa(f'set the clipboard to {as_applescript(text)}')
+    osa('tell application "System Events" to keystroke " " using command down')
+    time.sleep(0.7)
+    osa('tell application "System Events" to keystroke "v" using command down')
+    time.sleep(a.route_wait)
+    shown = "show(prefill" in sh("/usr/bin/log", "show", "--start", since, "--predicate",
+                                 'subsystem == "com.liamcarlin.navi" and category == "panel"', "--info", "--style", "compact", timeout=30)
+    if shown:
+        osa('tell application "System Events" to key code 36')
+    return shown
+
 def ordered(tasks):
     """Round-robin over families, easy first inside each, so a cut-off night still covers everything."""
     fams = {}
@@ -100,6 +121,9 @@ def ordered(tasks):
     while any(fams.values()):
         for f in list(fams):
             if fams[f]: out.append(fams[f].pop(0))
+    if a.first_not_in and os.path.exists(a.first_not_in):
+        seen = {json.loads(l)["id"] for l in open(a.first_not_in) if l.strip()}
+        out = [t for t in out if t["id"] not in seen] + [t for t in out if t["id"] in seen]
     return out
 
 def sh(*cmd, timeout=20):
@@ -236,7 +260,7 @@ def summary():
         g = [r for r in rows if r["family"] == fam]
         c = lambda *o: sum(r["outcome"] in o for r in g)
         med = sorted(r["wall_s"] for r in g)[len(g) // 2]
-        L.append(f"| {fam} | {len(g)} | {c('success')} | {c('failed', 'false done')} | {c('cancelled', 'timeout', 'stopped_guard')} | {c('no_agent_run')} | {med} |")
+        L.append(f"| {fam} | {len(g)} | {c('success')} | {c('failed', 'false_done')} | {c('cancelled', 'timeout', 'stopped_guard')} | {c('no_agent_run')} | {med} |")
     L += ["", "| id | tier | outcome | s | prompt | Navi's last word |", "|---|---:|---|---:|---|---|"]
     for r in rows:
         L.append(f"| {r['id']} | {r['tier']} | {r['outcome']} | {r['wall_s']} | {r['utterance'][:70]} | {(r.get('final') or '')[:140].replace('|', '/')} |")
@@ -257,7 +281,11 @@ for i, (t, _) in enumerate(plan, 1):
     runs_before = set(os.listdir(RUNS)) if RUNS.exists() else set()
     ultra_m = ULTRA.stat().st_mtime if ULTRA.exists() else 0
     t0 = time.time()
-    sh("open", "navi://run?q=" + urllib.parse.quote(t["utterance"]))
+    trigger = a.trigger
+    if trigger == "hotkey" and not submit_hotkey(t["utterance"], since):
+        trigger = "url (hotkey panel did not show)"
+    if trigger.startswith("url"):
+        sh("open", "navi://run?q=" + urllib.parse.quote(t["utterance"]))
     limit, n_shot, last_shot = time_limit(t), 0, 0.0
     run, status, guard_hit, paused = None, None, None, False
     while True:
@@ -311,9 +339,9 @@ for i, (t, _) in enumerate(plan, 1):
     row = {"id": t["id"], "family": t["family"], "tier": t.get("tier"), "context": t.get("context"),
            "utterance": t["utterance"], "expected": t.get("ending"), "wall_s": wall, "screens": n_shot,
            "paused_for_user": paused, "front_app_after": front_app(), "runs_in_scenario": len(runs),
-           "navi_build": commit0, "navi_restarted": navi_pid() != pid0}
+           "navi_build": commit0, "navi_restarted": navi_pid() != pid0, "trigger": trigger}
     if status == "no_run":
-        row.update(outcome="no_agent_run", reason="handled without an agent run (app / answer / card / system) or never started")
+        row.update(outcome="no_agent_run", final=None, reason="handled without an agent run (app / answer / card / system) or never started")
     elif run is None:
         row.update(outcome="timeout" if status == "timeout" else "unknown", reason=status)
     else:
