@@ -242,16 +242,79 @@ struct AgentQuestion: Sendable, Equatable, Identifiable {
         self.allowsOther = allowsOther
     }
 
-    /// Distinct, non-empty, short, at most `maxChoices`.
-    static func tidy(_ choices: [String]) -> [String] {
+    /// Distinct, non-empty, short, at most `maxChoices` — and never an answer naming a date that has
+    /// already gone by (bench 2026-11-01: "Did you mean December 5, 2025?" offered on November 1, 2026).
+    static func tidy(_ choices: [String], today: Date = Date()) -> [String] {
         var seen = Set<String>(), out: [String] = []
         for c in choices {
             let t = c.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "•-–")))
-            guard !t.isEmpty, t.count <= 80, seen.insert(t.lowercased()).inserted else { continue }
+            guard !t.isEmpty, t.count <= 80, !namesPastDate(t, today: today), seen.insert(t.lowercased()).inserted else { continue }
             out.append(t)
             if out.count == maxChoices { break }
         }
         return out
+    }
+
+    private static let monthNumbers: [String: Int] = [
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3, "apr": 4, "april": 4, "may": 5,
+        "jun": 6, "june": 6, "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+    ]
+
+    /// The calendar days a short answer names *with a year*: "December 5, 2025", "Fri, Dec 5th 2025",
+    /// "5 December 2025", "2025-12-05", "12/05/2025" (US order); a month alone ("December 2025") counts
+    /// as its last day. A date without a year names nothing here — it is not known to be past.
+    static func datesNamed(in text: String, calendar: Calendar = Calendar(identifier: .gregorian)) -> [Date] {
+        let lower = text.lowercased()
+        let ns = lower as NSString
+        let month = "(" + monthNumbers.keys.sorted { $0.count > $1.count }.joined(separator: "|") + ")\\.?"
+        func matches(_ pattern: String) -> [(groups: [String], range: NSRange)] {
+            guard let rx = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+            return rx.matches(in: lower, range: NSRange(location: 0, length: ns.length)).map { m -> (groups: [String], range: NSRange) in
+                let groups = (0..<m.numberOfRanges).map { i -> String in
+                    let r = m.range(at: i)
+                    return r.location == NSNotFound ? "" : ns.substring(with: r)
+                }
+                return (groups, m.range)
+            }
+        }
+        func day(_ y: String, _ m: Int?, _ d: String) -> Date? {
+            guard let year = Int(y), let m, (1...12).contains(m), let dd = Int(d), dd >= 1 else { return nil }
+            var c = DateComponents()
+            c.year = year; c.month = m; c.day = dd
+            guard let date = calendar.date(from: c), calendar.component(.day, from: date) == dd,
+                  calendar.component(.month, from: date) == m else { return nil }
+            return date
+        }
+        var found: [Date] = [], spans: [NSRange] = []
+        for m in matches("\\b" + month + "\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b") {
+            if let d = day(m.groups[3], monthNumbers[m.groups[1]], m.groups[2]) { found.append(d) }
+            spans.append(m.range)
+        }
+        for m in matches("\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?" + month + ",?\\s+(\\d{4})\\b") {
+            if let d = day(m.groups[3], monthNumbers[m.groups[2]], m.groups[1]) { found.append(d) }
+            spans.append(m.range)
+        }
+        for m in matches("\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})\\b") {
+            if let d = day(m.groups[1], Int(m.groups[2]), m.groups[3]) { found.append(d) }
+        }
+        for m in matches("\\b(\\d{1,2})/(\\d{1,2})/(\\d{4})\\b") {
+            if let d = day(m.groups[3], Int(m.groups[1]), m.groups[2]) { found.append(d) }
+        }
+        for m in matches("\\b" + month + ",?\\s+(\\d{4})\\b")
+        where !spans.contains(where: { NSLocationInRange(m.range.location, $0) }) {
+            guard let first = day(m.groups[2], monthNumbers[m.groups[1]], "1"),
+                  let days = calendar.range(of: .day, in: .month, for: first)?.count,
+                  let last = day(m.groups[2], monthNumbers[m.groups[1]], String(days)) else { continue }
+            found.append(last)
+        }
+        return found
+    }
+
+    /// Does this answer name a day before `today`?
+    static func namesPastDate(_ text: String, today: Date = Date(), calendar: Calendar = Calendar(identifier: .gregorian)) -> Bool {
+        let start = calendar.startOfDay(for: today)
+        return datesNamed(in: text, calendar: calendar).contains { $0 < start }
     }
 
     /// The choice a reply names: its number ("2", "the second one"), or its own words, or a reply

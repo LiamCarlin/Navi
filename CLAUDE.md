@@ -335,6 +335,18 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     redacted body + request sizes, run log only), retries once shorter, then `fewer_actions` (the ~120 controls
     likeliest for the goal); still failing, `tick` returns `model_error` and the run goes to judge → takeover.
     `scripts/ultrafast/test_model_errors.py`.
+    **Never the user's sign-in, checkout or a partner site** (runner adaptation 39, bench 2026-11-01: Jev typed
+    Liam's email + first name into Desmos's sign-up; "Continue with Google" ×3 at DoorDash checkout; Kayak's
+    "Compare vs. Booking.com"): unless the goal is to sign in/up, sign-in / sign-up / "Continue with …" controls
+    and an account form's identity fields are not offered to Jev (`account_form` in the state says close it or
+    BLOCKED), the text helper gets no `about_the_user` for them, and the takeover refuses them, never types into
+    such a form, never enters checkout (a click that lands there is undone) and stops on a sign-in page. A
+    needs-user sign-in is a question even on a purchase; a purchase whose item is in the cart is achieved
+    (`cart_is_the_end`). Partner-compare toggles are not offered or pressed. An unsure DONE (< 85 %) and a
+    takeover's last word without Done:/Did:/Stopped: ("unclear") go to the judge. The judge has 1200 tokens,
+    `salvage_json` for cut-off replies, one retry, `facts` in its state; past-dated choices are dropped (runner
+    and `AgentQuestion.tidy`). Adaptation 40: "Document is navigating" / "Inspected target navigated or closed"
+    is a stale page, never fatal. `scripts/ultrafast/test_takeover_safety.py`.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the

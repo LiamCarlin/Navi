@@ -743,7 +743,8 @@ class FakeTab:
             return [1280, 800, 0, 120, 2]
         if js.startswith(nr.AT_POINT_JS):
             x = float(js[len(nr.AT_POINT_JS) + 1:].split(",")[0])
-            return {"label": "Place Order" if x > 1000 else "Continue with Google", "tag": "BUTTON", "frame": False}
+            label = "Place Order" if x > 1000 else "Continue with Google" if x > 500 else "7th Street Burger"
+            return {"label": label, "tag": "BUTTON", "frame": False}
         if js == nr.SECRET_FIELD_JS:
             return self.secret
         return None
