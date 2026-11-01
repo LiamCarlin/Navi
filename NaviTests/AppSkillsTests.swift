@@ -300,6 +300,8 @@ struct AppSkillsTests {
         #expect(AgentCustomTools.bestAppMatch(names: apps, wanted: "chrome") == 3)
         #expect(AgentCustomTools.bestAppMatch(names: apps, wanted: "Mesages") == 4)             // one typo
         #expect(AgentCustomTools.bestAppMatch(names: apps, wanted: "settings") == 6)
+        // Jev's "Outlook" is Microsoft Outlook: after open_app the agent pins it by this match, not by name equality.
+        #expect(AgentCustomTools.bestAppMatch(names: apps + ["Microsoft Outlook"], wanted: "Outlook") == apps.count)
         #expect(AgentCustomTools.bestAppMatch(names: apps, wanted: "Xcode") == nil)
         #expect(AgentCustomTools.bestAppMatch(names: apps, wanted: "a") == nil)
         #expect(AgentCustomTools.editDistance("kitten", "sitting") == 3)

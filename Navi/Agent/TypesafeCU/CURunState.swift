@@ -26,6 +26,8 @@ struct CURunState: Sendable {
         /// What Jev is offered misses what is on screen (`CUScreen.perceptionGap`).
         case perceptionGap = "perception gap"
         case stepLimit = "step limit"
+        /// A message was just sent (`CUSend`), or Jev tried to send one again.
+        case sent
 
         /// The words the writer is handed (runner.py `STOPPED`).
         var told: String {
@@ -37,6 +39,7 @@ struct CURunState: Sendable {
             case .stuck: return "the agent is stuck: its last actions changed nothing, as they did twice before on these same pages, and the focus given each time did not help, so the run ends with this answer"
             case .perceptionGap: return "part of the screen cannot be read from the accessibility tree (a dialog with nothing readable in it, or a window nothing can be read from), so the classifier cannot act on it"
             case .stepLimit: return "the run used every step it was allowed"
+            case .sent: return "a message was just sent (see previous_actions); judge from the screen whether the goal is now achieved. It is never sent again: if more is needed, the focus must be something other than sending the same message"
             }
         }
     }

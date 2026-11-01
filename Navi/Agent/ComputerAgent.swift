@@ -826,10 +826,21 @@ final class AgentRun: @unchecked Sendable {
     /// Also points the Claude-path `InputController` at that process.
     private func pinTarget(opened: String?) async {
         let context = self.context
-        let t: AgentTarget? = await MainActor.run {
-            if let opened, let t = AgentTarget.running(bundleIDOrName: opened) { return t }
-            return AgentTarget.default(context: context)
+        // A just-launched app takes a moment to be listed as running. Falling back to the app Navi
+        // was invoked over then pinned Claude after "Open Outlook", and Jev opened Outlook ten times.
+        var t: AgentTarget?
+        if let opened {
+            for attempt in 0..<15 {
+                if attempt > 0 { try? await Task.sleep(for: .milliseconds(200)) }
+                t = await MainActor.run { AgentTarget.running(bundleIDOrName: opened) }
+                if t != nil { break }
+            }
+            if t == nil {
+                Log.agent.warning("Background target: ‘\(opened, privacy: .public)’ is not running after open — keeping the current target")
+                t = target
+            }
         }
+        if t == nil { t = await MainActor.run { AgentTarget.default(context: context) } }
         target = t
         screenshotWindow = nil
         if let t {
@@ -940,6 +951,10 @@ final class AgentRun: @unchecked Sendable {
         /// What worked here, for the experience store (labels only — never typed text).
         var redactedLog: [String] = []
         var typedTexts: [String] = []
+        /// Messages this run sent (`CUSend`): never typed again.
+        var sentTexts: [String] = []
+        /// Typed into a message field and not yet sent: a Return next sends it.
+        var typedUnsent: String?
         var announcedSkill: String?
         var lastActedFrame: CGRect?
         /// The label of the item clicked last: `UserMoves` says what this user clicks after it.
@@ -1525,6 +1540,8 @@ final class AgentRun: @unchecked Sendable {
             // type_text: Jev chose the field; the text comes from the goal (one quoted phrase) or the writer.
             var text: String?
             var submit = false
+            var repeatRefused = false
+            var sentNow = false
             if case .typeText(let id)? = action, let field = screen.snapshot.element(id) {
                 if let o = obvious, !typedTexts.contains(o) {
                     text = o
@@ -1549,6 +1566,11 @@ final class AgentRun: @unchecked Sendable {
                 if text == nil {
                     what = "type_text refused: nothing to type into \(CUFacts.quoted(field.displayName.trimmingCharacters(in: CharacterSet(charactersIn: "‘’"))))"
                     action = nil
+                } else if let t = text, CUSend.repeats(t, sent: sentTexts) {
+                    // The composer is empty again after a send: the same message must not go twice.
+                    what = "type_text refused: this message was already sent in this run — it is never sent again"
+                    action = nil
+                    repeatRefused = true
                 }
                 // An email's To/Cc for someone the user has mailed before: their address, the one
                 // their own mail showed ("Meera" → mb128@wellesley.edu) — no guessing between
@@ -1655,11 +1677,15 @@ final class AgentRun: @unchecked Sendable {
                         line += outcome.note(typed: typed)
                         handle.emit(.status("Recipient: " + outcome.note(typed: typed).dropFirst(3)))
                     } else if case .typeText(let id) = action, let field = screen.snapshot.element(id), let typed = text {
+                        let composer = CUSend.isTypedSend(role: field.role, label: field.label, placeholder: field.placeholder,
+                                                          bundleID: screen.snapshot.bundleID, irreversible: verdict.isIrreversible)
                         if submit {
                             // Return usually takes the field away (a search runs, a dialog closes): the next screen is the check.
                             try await executor.perform(.key("Return"), text: nil, snapshot: screen.snapshot)
                             line += " and pressed Return"
+                            if composer { line += " — the message was sent"; sentTexts.append(typed); sentNow = true }
                         } else {
+                            if composer { typedUnsent = typed }
                             // actions.py `_type_text`: Jev checks the field now holds a sensible value;
                             // under 0.5 only our own write is undone, through the same element.
                             // Code decides facts first: the field holding exactly what was typed is
@@ -1715,6 +1741,23 @@ final class AgentRun: @unchecked Sendable {
                 literalLanded = literalHit && !failed
                 if literalLanded { literalTried = true }
                 actionRan = !failed
+                // A Return (or a Send button) after typing into a message field sends what was typed.
+                if actionRan {
+                    let sends: Bool
+                    switch action {
+                    case .key(let k): sends = typedUnsent != nil && ["return", "kp_enter", "cmd+return", "cmd+enter"].contains(k.lowercased())
+                    case .click(let id), .press(let id):
+                        sends = CUSend.isSendControl(label: screen.snapshot.element(id)?.label ?? "", irreversible: verdict.isIrreversible)
+                    case .clickPoint(_, _, let label): sends = CUSend.isSendControl(label: label, irreversible: verdict.isIrreversible)
+                    default: sends = false
+                    }
+                    if sends {
+                        if let t = typedUnsent { sentTexts.append(t) }
+                        typedUnsent = nil
+                        line += " — the message was sent"
+                        sentNow = true
+                    }
+                }
                 if let f = action.elementID.flatMap({ screen.snapshot.element($0)?.frame }) { lastActedFrame = f }
                 switch action {
                 case .click(let id), .press(let id): lastClickedLabel = screen.snapshot.element(id)?.label
@@ -1748,6 +1791,7 @@ final class AgentRun: @unchecked Sendable {
                 if var r = route {
                     let before = r.done.count
                     r.observe(action, on: acted)
+                    if sentNow { r.observeSend() }
                     if r.done.count > before, answered, config.approvalMode != .alwaysAsk { followRoute = true }
                     route = r
                 }
@@ -1764,7 +1808,14 @@ final class AgentRun: @unchecked Sendable {
                 return
             }
             if step % 3 == 0 { emitThumbnailIfEnabled(handle) }   // never in Jev's path; just for the panel
-            if run.recordAction(what ?? "nothing happened", waiting: waiting) {
+            let repeated = run.recordAction(what ?? "nothing happened", waiting: waiting)
+            // A message went out (or Jev reached for sending it again): the writer reads the
+            // conversation now — sent is usually the goal, whole.
+            if sentNow || repeatRefused {
+                handle.emit(.status(sentNow ? "Sent — checking the conversation" : "That message was already sent — not sending it again"))
+                if try await handOff(.sent) { continue } else { return }
+            }
+            if repeated {
                 handle.emit(.status("\(CURunState.maxRepeats) actions in a row were already taken on this same screen"))
                 if try await handOff(.stalled) { continue } else { return }
             }
