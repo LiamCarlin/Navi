@@ -4,6 +4,7 @@ import Foundation
 
 /// ⏎ does what Jev routed (taskbench overnight-20261101): an action intent must never
 /// fall through to the "Ask Navi" answer row, which can only say "I can't open apps".
+@MainActor
 struct RouteFallthroughTests {
     let router = RouterFakes.router()
 
