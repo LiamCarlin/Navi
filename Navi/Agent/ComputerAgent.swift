@@ -397,6 +397,15 @@ final class AgentRun: @unchecked Sendable {
                 handle.emit(.completed(summary: done))
                 return
             }
+            // "Make this full screen", "minimize this": the front window's own attribute (`WindowControls`, as
+            // voice does) — never a run on the page. Bench native-020: over a YouTube video the runner found
+            // nothing to press, Googled "make the Rick Astley video full screen", reopened the video in a
+            // second tab and pressed its full-screen button in a background tab, then said "Done".
+            if config.planWithClaude, let done = await windowControl(handle) {
+                handle.verdict = .achieved
+                handle.emit(.completed(summary: done))
+                return
+            }
             // What the task refers to in the user's own work ("the doc I was working on" → that
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
             // …and whether it is something they have done before, their way (in parallel).
@@ -636,6 +645,39 @@ final class AgentRun: @unchecked Sendable {
             handle.emit(.step(index: 1, description: "\(command.title) in \(name)"))
             guard let did = await BrowserControls.perform(command, input: input, in: browser) else { return nil }
             return "\(did) in \(name)"
+        }.value
+    }
+
+    /// Window instructions a typed task carries out directly: nothing is lost by them (quitting and
+    /// closing stay with the agent and its gate).
+    static let typedWindowVerbs: Set<WindowControls.Verb> = [.fullScreen, .minimize, .hide]
+
+    /// The window command a typed task is, when it is one of `typedWindowVerbs` and nothing more
+    /// ("make this full screen", "minimize this", "hide Slack"). Pure: unit-tested.
+    static func typedWindowCommand(_ task: String, runningApps: [String]) -> WindowControls.Command? {
+        guard let command = WindowControls.match(task, resolveApp: { WindowControls.bestName($0, in: runningApps) }),
+              typedWindowVerbs.contains(command.verb) else { return nil }
+        return command
+    }
+
+    /// "Make this full screen", "minimize this", "hide Music" typed into ⌘Space: done on the window of the
+    /// app the user is looking at (`UserFront`: never Navi). nil when the task is no such instruction or
+    /// it could not be done (then it is planned as usual).
+    private func windowControl(_ handle: AgentRunHandle) async -> String? {
+        let task = originalTask
+        let input = self.input
+        return await Task { @MainActor () -> String? in
+            guard let command = Self.typedWindowCommand(task, runningApps: WindowControls.runningAppNames()) else { return nil }
+            let front = UserFront.app()
+            Log.agent.info("WindowControls: ‘\(command.title, privacy: .public)’ for a typed task")
+            handle.emit(.step(index: 1, description: command.title))
+            switch await WindowControls.perform(command, fallbackApp: front?.bundleIdentifier, input: input) {
+            case .success(let did):
+                return did
+            case .failure(let error):
+                handle.emit(.status("\(error.localizedDescription) — trying it as a task"))
+                return nil
+            }
         }.value
     }
 

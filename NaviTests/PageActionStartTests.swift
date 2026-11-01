@@ -36,4 +36,20 @@ struct PageActionStartTests {
         #expect(!UltrafastBridge.staysOnAttachedTab(task: "turn on captions and make it 1.5x", attachURL: nil))
         #expect(!UltrafastBridge.staysOnAttachedTab(task: "turn on captions and make it 1.5x", attachURL: "about:blank"))
     }
+
+    // MARK: Typed window instructions never become a run on the page
+
+    @Test func typedWindowCommands() {
+        let apps = ["Google Chrome", "Music", "Slack", "TextEdit"]
+        #expect(AgentRun.typedWindowCommand("make this full screen", runningApps: apps) == WindowControls.Command(verb: .fullScreen, target: .front))
+        #expect(AgentRun.typedWindowCommand("make it full screen", runningApps: apps)?.verb == .fullScreen)
+        #expect(AgentRun.typedWindowCommand("minimize this", runningApps: apps)?.verb == .minimize)
+        #expect(AgentRun.typedWindowCommand("hide music", runningApps: apps) == WindowControls.Command(verb: .hide, target: .app("Music")))
+        // Quitting and closing lose something: those stay with the agent and its gate.
+        #expect(AgentRun.typedWindowCommand("quit slack", runningApps: apps) == nil)
+        #expect(AgentRun.typedWindowCommand("close this", runningApps: apps) == nil)
+        // More than a window instruction.
+        #expect(AgentRun.typedWindowCommand("make this full screen and turn on captions", runningApps: apps) == nil)
+        #expect(AgentRun.typedWindowCommand("turn on captions and make it 1.5x", runningApps: apps) == nil)
+    }
 }
