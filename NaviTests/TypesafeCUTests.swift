@@ -396,6 +396,28 @@ struct TypesafeCUTests {
         #expect(AXSnapshot.limitToModal([behind], scopes: [nil], parents: [nil], top: 0, webModal: false, isBrowser: false).count == 1)
     }
 
+    /// Preview's Sign popover / a Save sheet (bench 2026-11-01): the walk's unlabelled indices point
+    /// into `raw` before the modal limit shrinks it — naming after the limit trapped "Index out of range".
+    @Test func unlabelledControlsAreNamedBeforeALayerLimitsThem() {
+        let menu = AXElement(role: "AXMenuBarItem", label: "File", frame: .zero)
+        let behind = AXElement(role: "AXButton", label: "Markup", frame: CGRect(x: 10, y: 10, width: 50, height: 20))
+        let cancel = AXElement(role: "AXButton", label: "Cancel", frame: CGRect(x: 300, y: 300, width: 50, height: 20))
+        let blank = AXElement(role: "AXButton", label: "", frame: CGRect(x: 300, y: 340, width: 200, height: 40))
+        let walked = [menu, behind, behind, cancel, blank]
+        let unlabelled: [(index: Int, identifier: String, roleDescription: String)] = [(4, "", "button")]
+        let texts: [(String, CGRect)] = [("Create Signature", CGRect(x: 310, y: 350, width: 120, height: 16))]
+        let named = AXSnapshot.namingUnlabelled(walked, unlabelled: unlabelled, texts: texts)
+        #expect(named[4].label == "Create Signature")
+        // Scopes are aligned with raw (the menu bar title outside every layer); the limit drops what
+        // is behind the popover, and the named control survives with its name.
+        let kept = AXSnapshot.limitToModal(named, scopes: [nil, nil, nil, 0, 0], parents: [nil], top: 0, webModal: false, isBrowser: false)
+        #expect(kept.map(\.label) == ["File", "Cancel", "Create Signature"])
+        // An index the array no longer has (the AX tree changed, or someone filtered first) is skipped.
+        let stale = AXSnapshot.namingUnlabelled(kept, unlabelled: unlabelled + [(-1, "x", "button"), (99, "x", "button")], texts: texts)
+        #expect(stale.map(\.label) == kept.map(\.label))
+        #expect(AXSnapshot.namingUnlabelled([], unlabelled: unlabelled, texts: texts).isEmpty)
+    }
+
     @Test func focusOnTheWindowClearsEveryCellsFocusFlag() {
         let cells = (0..<3).map { AXElement(role: "AXCell", label: "Row \($0)", frame: CGRect(x: 0, y: CGFloat($0) * 30, width: 200, height: 24), isFocused: true) }
         let cleared = AXSnapshot.withAppFocus(cells, focusedIndex: nil, extra: nil, elsewhere: true).map(\.isFocused)

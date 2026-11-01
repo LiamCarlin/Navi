@@ -255,6 +255,19 @@ struct AXSnapshot: @unchecked Sendable {
         return rd.lowercased() == el.role.dropFirst(2).lowercased() ? "" : rd
     }
 
+    /// `raw` with each unlabelled candidate named by `inferredLabel`. `unlabelled[k].index` is an index
+    /// into `raw` as the walk appended it: call this before `raw` is filtered or reordered. An index
+    /// that is not in `raw` is skipped, never trapped on.
+    static func namingUnlabelled(_ raw: [AXElement], unlabelled: [(index: Int, identifier: String, roleDescription: String)],
+                                 texts: [(String, CGRect)]) -> [AXElement] {
+        var out = raw
+        for u in unlabelled where out.indices.contains(u.index) {
+            let named = inferredLabel(for: out[u.index], texts: texts, identifier: u.identifier, roleDescription: u.roleDescription)
+            if !named.isEmpty { out[u.index].label = named }
+        }
+        return out
+    }
+
     // MARK: Browser chrome (pure, testable)
 
     /// Browser controls Jev must never be offered from the tree: window buttons,
@@ -624,7 +637,10 @@ final class AXSnapshotter: @unchecked Sendable {
                           kAXIdentifierAttribute, kAXRoleDescriptionAttribute, kAXSelectedAttribute, "AXModal"] as [String]
         /// Popovers and modal groups met on the way (sheets are handled above): id → (parent, name, in web content).
         var modals: [(parent: Int?, name: String, web: Bool)] = []
-        var scopes: [Int?] = []          // per raw element: the innermost modal it is inside
+        // Per raw element: the innermost modal it is inside. Kept index-aligned with `raw`: the menu
+        // bar titles already in it sit outside every layer. (Starting empty shifted every scope by the
+        // menu bar's count, so `limitToModal` dropped the last walked controls — a sheet's own.)
+        var scopes: [Int?] = Array(repeating: nil, count: raw.count)
         /// Every static text with its frame, so an unlabelled cell/row/button can be
         /// named after the text drawn inside it ("the cell" → "Mikey Ku · 9:12 PM").
         var texts: [(String, CGRect)] = []
@@ -762,17 +778,17 @@ final class AXSnapshotter: @unchecked Sendable {
             }
         }
 
+        // Name what has no name: the text inside it, else its identifier, else its role description.
+        // `unlabelled` holds indices into `raw` as the walk built it, so this runs before anything
+        // filters `raw` (the modal limit below once ran first and Navi crashed with "Index out of
+        // range" as Preview's Sign popover / a Save sheet opened, 2026-11-01).
+        raw = AXSnapshot.namingUnlabelled(raw, unlabelled: unlabelled, texts: texts)
+
         // A popover or modal dialog in front: only what is inside it can be clicked.
         if !modals.isEmpty {
             raw = AXSnapshot.limitToModal(raw, scopes: scopes, parents: modals.map(\.parent), top: modals.count - 1,
                                           webModal: modals[modals.count - 1].web, isBrowser: isBrowser)
             snap.modalScope = modals[modals.count - 1].name
-        }
-
-        // Name what has no name: the text inside it, else its identifier, else its role description.
-        for u in unlabelled {
-            let named = AXSnapshot.inferredLabel(for: raw[u.index], texts: texts, identifier: u.identifier, roleDescription: u.roleDescription)
-            if !named.isEmpty { raw[u.index].label = named }
         }
 
         // The app's own keyboard focus. The depth-first walk runs out of its time box before the
