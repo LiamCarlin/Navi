@@ -86,8 +86,9 @@ stopped by the send guard ("type … and press Return"), replays ending "done" o
 pickers and Canvas Dashboard↔Calendar loops, runs that end in a question waiting out the time limit.
 
 **Side effects of the rerun:** a 25-min Clock timer, two stray Notes ("New…" blank, "- milk / - bread"), a Google
-Slides deck "HCI Final" (4 slides) in Drive, an Amazon/DoorDash cart unchanged or +items from errand reruns, Chrome
-"Leave site?" dialogs. No calendar events, reminders, sends or orders.
+Slides deck "HCI Final" (4 slides) in Drive, a new note with the Celtics score (multi-001), carts: Amazon +2 (Seventh
+Generation toilet paper $2.07, KODAK AA 24-pack), Chipotle bag 1 bowl (+ an open "name this meal" dialog), Sweetgreen bag 2 Autumn
+Harvest Bowls, Chrome "Leave site?" dialogs. No calendar events, reminders, sends or orders.
 
 ## Result
 
