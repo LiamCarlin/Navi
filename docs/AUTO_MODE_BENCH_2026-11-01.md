@@ -11,6 +11,84 @@ Everything is in `build/taskbench/overnight-20261101-hotkey/` (472 MB, git-ignor
 evidence), `grades/all.json`. An earlier pass triggered by `navi://run` (107 scenarios, Navi in front: distorted) is in
 `build/taskbench/overnight-20261101/`.
 
+## Morning rerun on the PR #86 build (1a4c4a7)
+
+PR #86 (the bench fixes) was installed without merging (`ultrafastRepoRoot` pointed at its worktree so the runner
+fixes ran too) and a **1-hour subset** was rerun the same way (⌘Space over the same context): 89 graded scenarios —
+the first 25 in file order (unbiased), then the crash/guard failures, 8 earlier passes, 4 wrong starts, 5 false
+"done"s and 52 of the 96 routing failures. The subset leans on what the fixes target, so the pass rate here is not
+comparable with the full night's 16 %; the per-scenario change is. 4 scenarios that ran while two runners overlapped
+for ~3 minutes were dropped. Data: `build/taskbench/overnight-20261101-pr86/` (grades carry `before` and `change`).
+Rebuild the tables with `scripts/taskbench/compare_grades.py <first-night dir> <rerun dir>`.
+
+Same 89 scenarios, first night vs PR #86 build:
+
+| | pass | partial | fail | invalid | pass rate (testable) |
+|---|---|---|---|---|---|
+| first night (ba3262d) | 11 | 22 | 56 | 0 | 12% of 89 |
+| PR #86 (1a4c4a7) | 32 | 17 | 39 | 1 | 36% of 88 |
+
+| change | n | ids |
+|---|---|---|
+| better | 30 | calendar-003, calendar-007, edge-004, edge-006, errand-001, errand-004, errand-009, errand-017, memory-001, memory-003, memory-006, memory-012, memory-016, native-003, native-021, native-022, native-036, native-039, schoolwork-001, schoolwork-003, schoolwork-015, schoolwork-016, schoolwork-022, schoolwork-027, web-001, web-002, web-008, web-014, web-020, web-026 |
+| worse | 6 | calendar-001, errand-030, memory-002, memory-029, memory-035, native-008 |
+| same pass | 10 | errand-003, multi-001, native-001, native-006, native-007, native-010, native-031, schoolwork-013, web-006, web-024 |
+| same partial | 9 | errand-020, errand-037, native-002, native-037, schoolwork-002, schoolwork-029, web-003, web-028, web-033 |
+| same fail | 33 | calendar-004, calendar-028, calendar-033, edge-003, edge-011, edge-017, errand-002, errand-013, errand-015, errand-024, errand-029, errand-038, memory-008, memory-013, memory-017, memory-020, messaging-003, multi-002, multi-003, multi-015, multi-030, native-013, native-024, native-025, native-026, native-040, schoolwork-031, web-011, web-015, web-021, web-031, web-035, web-040 |
+| invalid either night | 1 | native-005 |
+
+| family | first night pass | PR #86 pass | of |
+|---|---|---|---|
+| calendar | 0 | 2 | 6 |
+| edge | 0 | 0 | 5 |
+| errand | 1 | 4 | 14 |
+| memory | 1 | 4 | 12 |
+| messaging | 0 | 0 | 1 |
+| multi | 1 | 1 | 5 |
+| native | 5 | 9 | 19 |
+| schoolwork | 1 | 6 | 10 |
+| web | 2 | 6 | 17 |
+
+| failure class (fail+partial) | first night | PR #86 |
+|---|---|---|
+| routing | 53 | 22 |
+| wrong_start | 7 | 6 |
+| false_done | 4 | 9 |
+| wrong_target | 3 | 7 |
+| loop_or_stuck | 2 | 6 |
+| approval_or_guard | 5 | 2 |
+| perception | 1 | 1 |
+| honesty | 2 | 0 |
+| None | 0 | 1 |
+| no_run | 0 | 1 |
+| crash_or_harness | 1 | 0 |
+| fixture | 0 | 1 |
+
+**Better (30):** ⏎ now does the routed thing — "open youtube/canvas/my calendar", Calculator tasks actually typed into
+Calculator (native-036, -039), errands that stay on the open page (errand-001/-004/-009), the Canvas/Docs openings,
+"go to next week". The scheduler card no longer grabs "meeting… then put it on my calendar" (multi-030: no junk
+event). The hacking prompt (edge-006) now ends "impossible" — but only after opening instagram.com and searching.
+
+**Worse (6) — new bugs from the fixes or exposed by them:**
+- **memory-002, memory-035** — a screen-memory question (`recallMemory`/`askQuestion` with memory) now performs a raw
+  memory hit (`perform memory`) on ⏎: the panel hides and no answer streams. Night 1 answered. Follow-up in
+  `PanelViewModel.merge`/`submitIndex` + `QueryRouter` (the "Ask about this" row must lead for memory questions).
+- **native-008** "calc 2 to the 20th" — now a computer task (background Calculator clicks don't land) instead of
+  the local answer. "calc …" should stay `Calculator`.
+- **memory-029** — grounding opened yesterday's Onshape doc for a time when memory was paused (must_not).
+- **calendar-001** — Outlook read as "no events" for a day that has several (calendar questions should read EventKit).
+- **errand-030** — "Ready for you to place the order" on a signed-out guest cart filled by earlier bench runs.
+
+**Still failing the same way (33):** routing that is still an answer or web search for errands/comparisons ("cheapest
+monitor on Best Buy", flights on a Flights tab, NYT top story, "save the batteries for later"), "stop" matching
+"Stop caffeinate", "close this tab" → web search, "take a screenshot" → interactive crosshair, Outlook mail search
+stopped by the send guard ("type … and press Return"), replays ending "done" on the wrong state (native-013), date
+pickers and Canvas Dashboard↔Calendar loops, runs that end in a question waiting out the time limit.
+
+**Side effects of the rerun:** a 25-min Clock timer, two stray Notes ("New…" blank, "- milk / - bread"), a Google
+Slides deck "HCI Final" (4 slides) in Drive, an Amazon/DoorDash cart unchanged or +items from errand reruns, Chrome
+"Leave site?" dialogs. No calendar events, reminders, sends or orders.
+
 ## Result
 
 **245 run, 155 not run** (anything needing approval: send / delete / share / submit / settings, or caught by the
