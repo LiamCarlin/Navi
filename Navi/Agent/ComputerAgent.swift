@@ -389,6 +389,14 @@ final class AgentRun: @unchecked Sendable {
         defer { endActivity() }
 
         do {
+            // "Reload this page", "go back", "next tab" with a browser in front — Safari as much as Chrome:
+            // one key press in that browser (`BrowserControls`, as voice does), never a run that Googles
+            // the sentence in another browser.
+            if config.planWithClaude, let done = await browserControl(handle) {
+                handle.verdict = .achieved
+                handle.emit(.completed(summary: done))
+                return
+            }
             // What the task refers to in the user's own work ("the doc I was working on" → that
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
             // …and whether it is something they have done before, their way (in parallel).
@@ -437,7 +445,13 @@ final class AgentRun: @unchecked Sendable {
         if !config.planWithClaude { return await resolvePlanWithoutPlanner() }
         if claude.isConfigured {
             let (front, plan) = await TaskPlanner.planUsingPrefetch(task: originalTask, claude: claude)
-            if let plan { return (front, plan) }
+            if let plan {
+                // The screen in front wins when the task points at it ("add 2 of these", "pause the video",
+                // "open my cart" on a store, "the scores on page 2" over a PDF) — not the last run's tab.
+                let anchored = ScreenInFront.anchor(plan, task: originalTask, frontmost: front)
+                if anchored != plan { Log.agent.info("ScreenInFront: first step moved onto \(front.appName ?? front.bundleID ?? "?", privacy: .public)") }
+                return (front, anchored)
+            }
             Log.agent.warning("TaskPlanner returned no usable plan; classifying the surface with Jev")
         }
         guard ComputerAgent.browserRunner != nil, jev.isConfigured else {
@@ -607,6 +621,22 @@ final class AgentRun: @unchecked Sendable {
             return chat
         }
         return hit.bundleID
+    }
+
+    /// A browser-level instruction (`BrowserControls`: reload, back, next tab, scroll, zoom…) typed while
+    /// a browser is the app the user is looking at: done with one key press in *that* browser. nil when
+    /// the task is no such instruction or no browser is in front (then it is planned as usual).
+    private func browserControl(_ handle: AgentRunHandle) async -> String? {
+        guard let command = BrowserControls.match(originalTask) else { return nil }
+        let input = self.input
+        return await Task { @MainActor () -> String? in
+            guard let browser = BrowserControls.frontBrowser() else { return nil }
+            let name = browser.localizedName ?? "the browser"
+            Log.agent.info("BrowserControls: ‘\(command.title, privacy: .public)’ in \(name, privacy: .public) for a typed task")
+            handle.emit(.step(index: 1, description: "\(command.title) in \(name)"))
+            guard let did = await BrowserControls.perform(command, input: input, in: browser) else { return nil }
+            return "\(did) in \(name)"
+        }.value
     }
 
     private enum StepOutcome { case completed(summary: String), failed(String), cancelled }

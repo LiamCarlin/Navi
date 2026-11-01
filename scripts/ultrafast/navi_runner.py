@@ -853,18 +853,42 @@ def same_page(a, b):
     return bool(norm(a)) and norm(a) == norm(b)
 
 
-def find_open_tab(url, targets=None):
-    """The id of an open Chrome tab showing `url`, or None."""
+def find_open_tab(url, targets=None, is_visible=None):
+    """The id of an open Chrome tab showing `url`, or None. Several tabs on the same page (the same
+    video opened twice, a store page left over from an earlier run): the one the user is looking at —
+    the active tab of a window, whose document is "visible" — not merely the first Chrome lists
+    (bench 2026-11-01: "pause the video" paused another YouTube tab)."""
     if targets is None:
         try:
             from browser_harness.helpers import cdp
             targets = cdp("Target.getTargets").get("targetInfos", [])
         except Exception:  # noqa: BLE001 — no daemon yet: open our own tab
             return None
-    for t in targets:
-        if t.get("type") == "page" and same_page(t.get("url"), url):
-            return t.get("targetId")
-    return None
+    matches = [t.get("targetId") for t in targets if t.get("type") == "page" and same_page(t.get("url"), url)]
+    if len(matches) > 1:
+        check = is_visible or tab_is_visible
+        for target_id in matches:
+            try:
+                if check(target_id):
+                    return target_id
+            except Exception:  # noqa: BLE001 — unknown: try the next one
+                continue
+    return matches[0] if matches else None
+
+
+def tab_is_visible(target_id):
+    """Is this tab the one shown in its window (`document.visibilityState` is "visible")? One short
+    CDP session; the tab is left exactly as it was."""
+    from browser_harness.helpers import cdp
+    session = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    try:
+        r = cdp("Runtime.evaluate", session_id=session, expression="document.visibilityState", returnByValue=True)
+        return ((r or {}).get("result") or {}).get("value") == "visible"
+    finally:
+        try:
+            cdp("Target.detachFromTarget", sessionId=session)
+        except Exception:  # noqa: BLE001 — the daemon drops it with the run anyway
+            pass
 
 
 def find_target(target_id, targets=None):
@@ -1366,11 +1390,23 @@ JUDGE_DONE_BELOW = 0.85
 JUDGE_SETTLE_S = 0.6        # a beat for a dialog that just opened before the judge looks
 
 
-def should_judge_done(confidence):
-    """Jev's own DONE stands when it is sure; an unsure one (KFC's 63 %) is checked by the judge."""
+def should_judge_done(confidence, acted=True):
+    """Jev's own DONE stands when it is sure; an unsure one (KFC's 63 %) is checked by the judge.
+    A DONE before anything was done on the page is always checked, however sure: the start page may
+    be the goal ("open my amazon cart" → the judge reads the cart), but "Nothing to do. (0 steps)"
+    is never an answer (bench 2026-11-01, errand-001 / multi-001)."""
     if os.environ.get("NAVI_JUDGE") == "0" or claude_endpoint() is None:
         return False
+    if not acted:
+        return True
     return (confidence if confidence is not None else 0.0) < JUDGE_DONE_BELOW
+
+
+def unconfirmed_zero_step_done(title):
+    """A DONE with no action on the page that no judge confirmed: a stop the user sees, not a success."""
+    where = f"“{title}”" if title else "the page"
+    return (("blocked", f"Stopped: opened {where} but did nothing on it — Navi couldn't confirm that's what you asked for."),
+            {"verdict": "partial", "answer": "", "next_step": "", "judged": False})
 
 
 # --- the takeover ------------------------------------------------------------------
@@ -4271,13 +4307,18 @@ def main():
             elif state["status"] == "done":
                 # Adaptation 32: an unsure DONE is judged; "not there yet" goes on (takeover) instead of ending.
                 last = state["decisions"][-1] if state["decisions"] else {}
-                if should_judge_done(last.get("confidence")):
-                    verdict = look("Jev judged the goal done (%d%% sure)" % round(100 * (last.get("confidence") or 0)))
+                acted = acted_on_page(state["history"])
+                if should_judge_done(last.get("confidence"), acted=acted):
+                    verdict = look("Jev judged the goal done (%d%% sure)" % round(100 * (last.get("confidence") or 0))
+                                   + ("" if acted else " before doing anything on this page"))
                     if verdict and verdict["verdict"] != "achieved":
                         why = "Jev said done, but " + (verdict["answer"][:160] or "the page does not show it")
                         if verdict["verdict"] in {"impossible", "needs_user"}:
                             stop = ("blocked", verdict["answer"])
                             why = None
+                if not acted and verdict is None and not why and not stop:
+                    # No judge to read the page (NAVI_JUDGE=0, no Claude): nothing done, nothing confirmed.
+                    stop, verdict = unconfirmed_zero_step_done(state["page"].get("title", ""))
             if why:
                 stop, verdict = escalate(state, why, verdict)
                 if stop is None:

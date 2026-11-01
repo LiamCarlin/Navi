@@ -112,6 +112,61 @@ enum ScreenCapture {
     }
 }
 
+/// The app the user is looking at: the frontmost app — unless that is Navi itself. A `navi://` link
+/// (Shortcuts, Raycast, the CLI, the task bench), the Settings window or a notification click
+/// activates Navi, and every "what is in front" question then answered "Navi": the planner never saw
+/// the open tab, so "add 2 of these to my cart" on an Amazon product went to the last run's toilet
+/// paper and "reload this page" with Safari in front Googled the sentence in Chrome (bench
+/// 2026-11-01: not one ⌘Space-typed run started on the tab in front). Then it is the app that was
+/// active before Navi (an activation observer), else the owner of the topmost normal window.
+enum UserFront {
+    nonisolated(unsafe) private static var lastOther: NSRunningApplication?
+    private static let selfPID = ProcessInfo.processInfo.processIdentifier
+
+    /// Starts remembering the last app that was active before Navi. Idempotent; called at launch
+    /// (and on first use, so a missed launch hook only costs the window-list fallback).
+    static func install() { _ = observer }
+
+    private static let observer: NSObjectProtocol = {
+        if let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != selfPID { lastOther = f }
+        return NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                                 object: nil, queue: .main) { note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != selfPID, app.activationPolicy == .regular else { return }
+            lastOther = app
+        }
+    }()
+
+    /// The app the user is looking at (never Navi while another app is running).
+    @MainActor
+    static func app() -> NSRunningApplication? {
+        install()
+        let front = NSWorkspace.shared.frontmostApplication
+        if let front, front.processIdentifier != selfPID { return front }
+        if let l = lastOther, !l.isTerminated { return l }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        if let pid = topWindowOwner(list, excluding: selfPID), let a = NSRunningApplication(processIdentifier: pid) { return a }
+        return front
+    }
+
+    /// The owner of the frontmost normal-layer, visible, window-sized window that is not `excluding`'s.
+    /// `windows` is `CGWindowListCopyWindowInfo` output (front to back). Pure: testable.
+    static func topWindowOwner(_ windows: [[String: Any]], excluding pid: pid_t) -> pid_t? {
+        for w in windows {
+            guard let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? (w[kCGWindowOwnerPID as String] as? pid_t),
+                  owner != pid else { continue }
+            let layer = (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? (w[kCGWindowLayer as String] as? Int) ?? 0
+            guard layer == 0 else { continue }
+            if let alpha = (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue, alpha < 0.05 { continue }
+            var bounds = CGRect.zero
+            if let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) { bounds = r }
+            guard bounds.width >= 80, bounds.height >= 60 else { continue }
+            return owner
+        }
+        return nil
+    }
+}
+
 /// Frontmost app / window / URL probe shared by memory + agent.
 enum FrontmostProbe {
     struct Info: Sendable {
@@ -122,8 +177,10 @@ enum FrontmostProbe {
     }
 
     @MainActor
-    static func current(includeURL: Bool = true) -> Info {
-        let app = NSWorkspace.shared.frontmostApplication
+    /// `userFront`: the app the user is looking at (`UserFront`) — never Navi when a navi:// link or its own
+    /// window activated it. Screen memory passes false: a frame with Navi in front is not captured at all.
+    static func current(includeURL: Bool = true, userFront: Bool = true) -> Info {
+        let app = userFront ? UserFront.app() : NSWorkspace.shared.frontmostApplication
         var info = Info(bundleID: app?.bundleIdentifier, appName: app?.localizedName)
         if let pid = app?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)

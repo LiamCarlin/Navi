@@ -144,7 +144,7 @@ final class CaptureScheduler: @unchecked Sendable {
             lock.withLock { capturedWhileIdle = false }
         }
 
-        let front = await MainActor.run { FrontmostProbe.current(includeURL: false) }
+        let front = await MainActor.run { FrontmostProbe.current(includeURL: false, userFront: false) }
         guard let bundleID = front.bundleID, bundleID != Bundle.main.bundleIdentifier else { return .noFrontmostApp }
         if CaptureExclusions.isExcludedApp(bundleID, userExcluded: cfg.excludedBundleIDs) { return .excludedApp(bundleID) }
         if CaptureExclusions.isPrivateWindowTitle(front.windowTitle) { return .privateWindow }

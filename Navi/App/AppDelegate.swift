@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Keychain.preload()   // background; UI never blocks on the Keychain ACL prompt
+        UserFront.install()  // the app the user is in, even after a navi:// link activates Navi (Core/ScreenCapture.swift)
 
         NaviAccount.shared.start()   // /v1/me on launch, wake and every 10 min; sign-in/out observers
         services = NaviServices.bootstrap()

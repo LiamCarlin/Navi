@@ -371,8 +371,12 @@ enum UltrafastBridge {
         let navigationOnly = first != search && isNavigationOnly(task)
         // Only a run something can answer pauses (`AgentRun` gives every handle it drives an asker).
         let mayAsk = handle.asker != nil
+        // A task about the tab in front ("skip the ad", "add 2 of these") is done there or not at all: Jev
+        // finding nothing to do on it is no reason to start over on a search for the sentence (the old
+        // "What Happens When You Don't Skip the Ads" video) — the judge says what is wrong instead.
+        let aboutThisTab = attachURL != nil && ScreenInFront.anchorsToTab(task, url: first)
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                            allowEarlyBlockRetry: first != search, background: background,
+                                            allowEarlyBlockRetry: first != search && !aboutThisTab, background: background,
                                             openedIsDone: navigationOnly, attachURL: attachURL, mayAsk: mayAsk)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab). Start over
@@ -490,6 +494,17 @@ enum UltrafastBridge {
         if status == "done" { return .achieved }
         if let typed, typed != .achieved { return typed }
         return .notAchieved
+    }
+
+    /// A runner "done" that did nothing on the page (`acted` == 0) and that the judge never confirmed
+    /// (`judged` false) — unless the task was only to open that page (`openedIsDone`). Reported as
+    /// completed it read "Nothing to do. (0 steps)" (bench errand-001, multi-001).
+    static func isUnverifiedZeroStepDone(_ json: [String: Any], acted: Int, openedIsDone: Bool) -> Bool {
+        guard (json["status"] as? String ?? "done") == "done", acted == 0, !openedIsDone else { return false }
+        if (json["judged"] as? Bool) == true { return false }
+        // Older runners sent no `judged`: their zero-step summary says it.
+        let summary = (json["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return json["judged"] != nil || summary.isEmpty || summary.hasPrefix("Nothing to do")
     }
 
     /// Is the task satisfied by opening its page — nothing to do once there?
@@ -691,6 +706,13 @@ enum UltrafastBridge {
                     let ms = json["elapsed_ms"] as? Int ?? 0
                     let opened = "Opened \(URL(string: json["url"] as? String ?? url)?.host ?? url)"
                     switch status {
+                    case "done" where Self.isUnverifiedZeroStepDone(json, acted: acted, openedIsDone: openedIsDone):
+                        // Nothing was done on the page and nobody checked that the page is the goal: never
+                        // "completed: Nothing to do. (0 steps)" — an honest stop the user can see.
+                        outcome = .failed
+                        handle.verdict = .partial
+                        let title = (json["title"] as? String).flatMap { $0.isEmpty ? nil : "“\($0)”" } ?? (URL(string: json["url"] as? String ?? url)?.host ?? "the page")
+                        handle.emit(.failed("Opened \(title) but did nothing on it — Navi couldn't confirm that's what you asked for."))
                     case "done":
                         outcome = .completed
                         finalText = [json["title"] as? String ?? "", json["url"] as? String ?? "", json["page_text"] as? String ?? ""]
@@ -711,7 +733,9 @@ enum UltrafastBridge {
                             // Not the end: `run` asks the user and goes on in this tab.
                             outcome = .paused(Pause(question: q, url: json["url"] as? String ?? url, tab: json["tab"] as? String,
                                                     steps: stepIndex, summary: developer ? "Blocked: \(summary)" : summary))
-                        } else if acted == 0, allowEarlyBlockRetry {
+                        } else if acted == 0, allowEarlyBlockRetry, (json["outcome"] as? String) != RunVerdict.partial.rawValue {
+                            // (A zero-step "done" the judge could not confirm comes back as partial: the
+                            // page looked like the goal — no reason to start over somewhere else.)
                             outcome = .blockedBeforeActing
                         } else {
                             outcome = .failed
