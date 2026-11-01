@@ -357,6 +357,10 @@ import Testing
         #expect(keys.contains { $0.0 == "cmd+return" && $0.1.contains("how this user sends") })
         let state = route.state(on: chat)
         #expect((state["steps"] as? [String])?.first?.hasPrefix("✓ ") == true && state["they_send_with"] as? String == "cmd+return")
+        // The message went out (typed and sent in one step): sending is no longer "→ next".
+        route.observeSend()
+        #expect(route.isFinished)
+        #expect(!((route.state(on: chat)["steps"] as? [String]) ?? []).contains { $0.hasPrefix("→ ") })
     }
 
     @Test func aMissingOrAmbiguousControlIsJevs() {

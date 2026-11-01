@@ -746,6 +746,12 @@ struct UserRoute: Sendable {
         }
     }
 
+    /// A message went out, however it was sent (typed and sent in one step, Return, a Send button):
+    /// their send step is behind the run, or Jev keeps reading it as next and types the message again.
+    mutating func observeSend() {
+        if let i = pending.prefix(Self.lookahead + 1).first(where: { steps[$0].kind == .submit }) { complete(through: i) }
+    }
+
     static func sameCombo(_ a: String, _ b: String) -> Bool {
         if a.lowercased() == b.lowercased() { return true }
         guard let x = try? KeyCombo.parse(a), let y = try? KeyCombo.parse(b) else { return false }

@@ -33,9 +33,14 @@ struct AgentTarget: Sendable, Equatable {
     static func running(bundleIDOrName id: String) -> AgentTarget? {
         if let t = running(bundleID: id) { return t }
         let wanted = id.lowercased().replacingOccurrences(of: ".app", with: "")
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { ($0.localizedName ?? "").lowercased() == wanted }),
-              app.processIdentifier != selfPID else { return nil }
-        return AgentTarget(pid: app.processIdentifier, bundleID: app.bundleIdentifier, appName: app.localizedName)
+        if let app = NSWorkspace.shared.runningApplications.first(where: { ($0.localizedName ?? "").lowercased() == wanted }),
+           app.processIdentifier != selfPID {
+            return AgentTarget(pid: app.processIdentifier, bundleID: app.bundleIdentifier, appName: app.localizedName)
+        }
+        // Jev names apps the way people do ("Outlook" is Microsoft Outlook): the app open_app
+        // resolved the same name to.
+        if let url = AgentCustomTools.findApp(named: id), let b = Bundle(url: url)?.bundleIdentifier { return running(bundleID: b) }
+        return nil
     }
 
     /// Whatever is frontmost right now, unless that is Navi itself.
