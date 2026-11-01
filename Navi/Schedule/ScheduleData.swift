@@ -192,6 +192,22 @@ final class ScheduleCalendar: @unchecked Sendable {
         return granted
     }
 
+    /// Every event on that day in the Mac's calendars (`CalendarQuestion`; birthdays left out, the
+    /// same event in two calendars once). Empty without full Calendar access.
+    func events(on day: Date, calendar cal: Calendar = .current) -> [CalendarQuestion.Item] {
+        lock.lock(); defer { lock.unlock() }
+        guard status == .granted, let end = cal.date(byAdding: .day, value: 1, to: day) else { return [] }
+        let calendars = store.calendars(for: .event).filter { $0.type != .birthday }
+        guard !calendars.isEmpty else { return [] }
+        var seen = Set<String>()
+        return store.events(matching: store.predicateForEvents(withStart: day, end: end, calendars: calendars))
+            .compactMap { e -> CalendarQuestion.Item? in
+                let title = (e.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard seen.insert("\(title)|\(e.startDate.timeIntervalSince1970)").inserted else { return nil }
+                return CalendarQuestion.Item(start: e.startDate, end: e.endDate, title: title.isEmpty ? "Busy" : title, allDay: e.isAllDay)
+            }
+    }
+
     /// "cloudflare.com" when the meeting goes to a work account: picks guests' work emails.
     func accountDomain(bookingIn calendarID: String?) -> String? {
         lock.lock(); defer { lock.unlock() }

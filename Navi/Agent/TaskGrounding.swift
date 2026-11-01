@@ -168,6 +168,7 @@ enum TaskGrounding {
     /// `possessive`: "open my lab report" counts too (voice, where no app was recognised);
     /// ⌘Space keeps "open my notes" for the Notes app and counts only explicit references.
     static func reopensOwnWork(_ task: String, now: Date = Date(), possessive: Bool = true) -> Bool {
+        if memoryWasOff(task) { return false }
         let t = task.lowercased().trimmingCharacters(in: .whitespaces)
         let opener = #"^(?:(?:can you|could you|please|navi)\s+)*(open|reopen|pull up|bring up|bring back|go back to|get back to|go to|take me to|show me|show|continue|resume|pick up|play|watch|find)\b"#
         guard t.range(of: opener, options: .regularExpression) != nil else { return false }
@@ -211,7 +212,17 @@ enum TaskGrounding {
 
     /// Worth grounding at all: the task points back in time, asks for a kind of
     /// thing, says "my/our …", refers to a message, or names something memory knows.
+    /// "the doc I was working on yesterday while memory was paused": the user says screen memory has
+    /// nothing for that time, so whatever it does hold is the wrong thing (bench memory-029 opened an
+    /// Onshape doc). Navi asks instead (`QueryRouter`: the Clarify row).
+    static func memoryWasOff(_ task: String) -> Bool {
+        task.lowercased().range(of: #"\b(while|when)\s+(screen\s+)?(memory|recall|navi|recording)\s+(was|were)\s+(paused|off|disabled|not (on|recording|running))\b"#
+                                + #"|\b(navi|memory)\s+(wasn'?t|was not)\s+(recording|watching|on|running)\b"#,
+                                options: .regularExpression) != nil
+    }
+
     static func shouldGround(task: String, scope: Scope, words: (specific: Set<String>, generic: Set<String>), named: Bool) -> Bool {
+        if memoryWasOff(task) { return false }
         if scope.recent || refersToMessage(task) { return true }
         if isSearch(task) { return false }
         // An errand is about the world, not the user's own work: "order me a random chipotle bowl" is
@@ -531,6 +542,7 @@ enum TaskGrounding {
     /// `memory`/`jev`: a memory of the caller's (the task bench's copy) instead of the installed one —
     /// the same code, uncached, no screen probe.
     static func ground(task: String, timeout: Double = 2.0, memory: ScreenMemory? = nil, jev: JevClient? = nil) async -> Grounded? {
+        if memoryWasOff(task) { return nil }
         if let memory { return await resolve(task: task, knowledge: memory.knowledge, jev: jev, cached: false) }
         guard let k = UserKnowledge.current else { return nil }
         switch lookupOrStart(task: task, knowledge: k) {

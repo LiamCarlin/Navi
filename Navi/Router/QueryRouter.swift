@@ -453,7 +453,15 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
                 .runAgent(agent.run(task: q, context: context))
             }, at: 0)
         }
-        if decision.needsClarification, !rows.contains(where: { $0.id.hasPrefix("clarify:") }) {
+        // "what's on my calendar tomorrow": read from Calendar, never an agent driving Outlook (calendar-001).
+        if let day = CalendarQuestion.day(asked: q) {
+            rows.insert(Self.calendarDayRow(q, day: day), at: 0)
+        }
+        // "…while memory was paused": memory has nothing for then — ask which one, never open a guess (memory-029).
+        if TaskGrounding.memoryWasOff(q) {
+            rows.removeAll { $0.id.hasPrefix("clarify:") }
+            rows.insert(clarifyRow(q, context: context, id: "clarify:memory-off:\(q)"), at: 0)
+        } else if decision.needsClarification, !rows.contains(where: { $0.id.hasPrefix("clarify:") }) {
             rows.insert(clarifyRow(q, context: context), at: 0)
         }
         return recording(rows, query: q)
@@ -482,6 +490,22 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
     /// work, a browser key press, the task in the app the query names.
     static func isPinnedRow(_ r: SearchResult) -> Bool {
         r.id.hasPrefix("open-it:") || r.id.hasPrefix("browser:") || r.id.hasPrefix("app-task:")
+            || r.id.hasPrefix("calendar-day:") || r.id.hasPrefix("clarify:memory-off:")
+    }
+
+    /// The day's events from the Mac's calendars, as the answer (`CalendarQuestion`). Local: no account
+    /// run, no model; asks for Calendar access the first time.
+    static func calendarDayRow(_ q: String, day: Date) -> SearchResult {
+        SearchResult(id: "calendar-day:\(q)", kind: .suggestion, title: "Your calendar: \(q)",
+                     subtitle: "From Calendar — every account on this Mac", icon: .system("calendar"),
+                     score: 1.0, shortcutHint: "⏎ Show") {
+            let calendar = ScheduleCalendar.shared
+            if calendar.status != .granted, !(await calendar.requestAccess()) {
+                return .error("Navi needs Calendar access: System Settings › Privacy & Security › Calendars")
+            }
+            let text = CalendarQuestion.answer(day: day, items: calendar.events(on: day))
+            return .streamAnswer(AsyncThrowingStream { $0.yield(text); $0.finish() })
+        }
     }
 
     /// What an action intent falls back to when it found nothing to act with.
@@ -625,9 +649,9 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         }
     }
 
-    func clarifyRow(_ q: String, context: QueryContext) -> SearchResult {
+    func clarifyRow(_ q: String, context: QueryContext, id: String? = nil) -> SearchResult {
         let answers = self.answers
-        return SearchResult(id: "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
+        return SearchResult(id: id ?? "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
                             subtitle: "Navi needs one detail first — pick an interpretation or type one",
                             icon: .system("questionmark.bubble"), score: 1.0, shortcutHint: "⏎ Clarify") {
             .clarify(ClarificationRequest(originalQuery: q) {

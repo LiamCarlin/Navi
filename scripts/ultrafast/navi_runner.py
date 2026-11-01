@@ -3926,6 +3926,19 @@ def cart_count(page):
     return max(counts) if counts else None
 
 
+def added_this_run(state):
+    """The cart/bag count rose since the run started, or the page says something was just added."""
+    page = state.get("page") or {}
+    start, now = state.get("navi_cart_start"), cart_count(page)
+    return bool((now is not None and now > (start or 0)) or ADDED.search(page.get("text") or ""))
+
+
+def leftover_cart(state):
+    """The cart held items when the run started and nothing this run added shows (bench errand-030)."""
+    start, now = state.get("navi_cart_start"), cart_count(state.get("page") or {})
+    return bool(start) and (now is None or now <= start) and not added_this_run(state)
+
+
 def done_doubt(state, decision, judge_available=False):
     """Why a DONE is not believed yet, or None. An unsure DONE is left to the judge when it can be asked
     (bench schoolwork-027: "Jev was unsure (15%) — carrying on" with the graph plotted, and 30 s of
@@ -3937,10 +3950,13 @@ def done_doubt(state, decision, judge_available=False):
         return None
     if is_purchase_goal(state.get("goal")):
         start, now = state.get("navi_cart_start"), cart_count(page)
-        went_in = (now is not None and now > (start or 0)) or ADDED.search(page.get("text") or "") \
-            or CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
-        if not went_in:
+        on_cart = CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
+        if not added_this_run(state) and not on_cart:
             return "nothing shows the item in the cart or bag yet"
+        # Bench errand-030: a guest cart already holding 3 items from earlier runs read as "ready to place
+        # the order" after three no-op steps. A cart page whose count did not rise shows nothing of this run.
+        if leftover_cart(state):
+            return "the cart only holds what was in it before this run"
     if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE and not judge_available:
         return "Jev was unsure (%d%%)" % round(100 * decision.get("confidence", 0))
     return None
@@ -4416,9 +4432,10 @@ def selftest():
     return 0 if ok else 1
 
 
-def purchase_note(goal, status):
-    """A finished purchase task: say the order is the user's to place (adaptation 27)."""
-    return "Ready for you to place the order — Navi never pays. " if status == "done" and PURCHASE_GOAL.search(goal or "") else ""
+def purchase_note(goal, status, leftover=False):
+    """A finished purchase task: say the order is the user's to place (adaptation 27) — never over a cart
+    that only holds what it held before the run (`leftover_cart`; bench errand-030)."""
+    return "Ready for you to place the order — Navi never pays. " if status == "done" and not leftover and PURCHASE_GOAL.search(goal or "") else ""
 
 
 def acted_on_page(history):
@@ -4762,7 +4779,7 @@ def main():
                     verdict = {"verdict": "achieved" if status == "done" else "not_achieved", "answer": "", "next_step": "", "judged": False}
                 summary = stop[1] if stop and stop[1] else (verdict.get("answer") or summarize(state["history"], status))
                 if status == "done":
-                    summary = purchase_note(args.goal, status) + summary
+                    summary = purchase_note(args.goal, status, leftover_cart(state)) + summary
                 # Adaptation 37: a stop only the user can unblock is a question; the tab stays for the rerun,
                 # and something to do on it ("sign in") brings it forward.
                 ask = user_question(verdict, args.goal, status)

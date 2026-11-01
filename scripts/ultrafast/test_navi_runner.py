@@ -674,6 +674,14 @@ st2 = {"goal": "go to mcdonalds and order me a burger", "page": {"text": "", "ur
 nr.done_doubt(st2, None)
 st2["page"] = {"text": "", "url": "https://x.test", "actions": [{"label": "1 items, open Order Cart"}]}
 assert nr.done_doubt(st2, {"operation": "DONE", "confidence": 0.8}) is None
+# Bench errand-030: a leftover guest cart (3 before the run, 3 now) on the cart page is not this run's doing.
+st4 = {"goal": "order me dinner on doordash", "page": {"text": "", "url": "https://www.doordash.com/home", "actions": [{"label": "3 items in cart"}]}, "history": []}
+nr.done_doubt(st4, None)
+st4["page"] = {"text": "Your cart", "url": "https://www.doordash.com/cart", "actions": [{"label": "3 items in cart"}]}
+assert "before this run" in nr.done_doubt(st4, {"operation": "DONE", "confidence": 0.9})
+assert nr.leftover_cart(st4) and nr.purchase_note(st4["goal"], "done", nr.leftover_cart(st4)) == ""
+st4["page"] = {"text": "Your cart", "url": "https://www.doordash.com/cart", "actions": [{"label": "4 items in cart"}]}
+assert nr.done_doubt(st4, {"operation": "DONE", "confidence": 0.9}) is None and not nr.leftover_cart(st4)
 assert nr.cart_count({"text": "6 items in cart", "actions": []}) == 6 and nr.cart_count({"text": "Bag (2)", "actions": []}) == 2
 st3 = {"goal": "track my amazon order", "page": {"text": "", "url": "https://x.test", "actions": []}, "history": []}
 assert nr.done_doubt(st3, {"operation": "DONE", "confidence": 0.9}) is None
