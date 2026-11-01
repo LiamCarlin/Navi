@@ -81,7 +81,7 @@ struct ScheduleRequest: Equatable, Sendable {
         let today = cal.startOfDay(for: now)
         func add(_ n: Int) -> Date { cal.date(byAdding: .day, value: n, to: today) ?? today }
         let weekday = cal.component(.weekday, from: today)
-        let toNextMonday: Int = { let n = (2 - weekday + 7) % 7; return n == 0 ? 7 : n }()
+        let toNextMonday = Self.daysToNextWeekMonday(from: today, calendar: cal)
         switch day {
         case .today:
             return today
@@ -108,6 +108,17 @@ struct ScheduleRequest: Equatable, Sendable {
             while cal.isDateInWeekend(add(n)) { n += 1 }
             return add(n)
         }
+    }
+
+    /// Days from `today` to the Monday of next week — the week after the one today is in, weeks
+    /// starting on `cal.firstWeekday`. With Sunday-first weeks (US) a Sunday starts this week, so
+    /// "next week" said on Sunday Nov 1 is Monday Nov 9, not tomorrow; Monday–Saturday it is the
+    /// coming Monday. Shared by "next week", "next friday" and the reminder card's "Next week" chip.
+    static func daysToNextWeekMonday(from today: Date, calendar cal: Calendar) -> Int {
+        let weekday = cal.component(.weekday, from: today)
+        var toWeekStart = (cal.firstWeekday - weekday + 7) % 7
+        if toWeekStart == 0 { toWeekStart = 7 }
+        return toWeekStart + (2 - cal.firstWeekday + 7) % 7
     }
 }
 
@@ -236,6 +247,7 @@ enum ScheduleParser {
         "and", "or", "with", "at", "on", "for", "to", "about", "re", "regarding", "in", "from", "this", "next",
         "today", "tonight", "tomorrow", "tmrw", "tmr", "tomorow", "tommorow", "morning", "afternoon", "evening",
         "noon", "midday", "around", "by", "before", "after", "via", "over", "during", "the", "every", "a", "an",
+        "between", "until", "till",
         "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december",
     ]
     /// Glue between recognised parts: consumed without counting as unknown.
@@ -271,10 +283,19 @@ enum ScheduleParser {
         }
 
         var unknown = 0
+        var titled = false
         var j = i
         while j < ws.count {
             if ws[j].lower == "with" {
                 j = parsePeople(ws, from: j + 1, into: &req)
+            } else if ws[j].lower == "for", activity == nil, !titled,
+                      let t = forTitle(ws, from: j + 1, freeText: verb == "block" || verb == "hold") {
+                // "block 2 to 4 on wednesday for focus time": what the time is for.
+                activity = t.activity
+                req.activity = t.name
+                req.tokens.append(token(.activity, ws, t.first, t.last))
+                titled = true
+                j = t.last + 1
             } else if let next = parseWhen(ws, at: j, into: &req) {
                 j = next
             } else {
@@ -284,6 +305,7 @@ enum ScheduleParser {
         }
 
         let hasPeople = !req.people.isEmpty
+        let named = titled
         let hasWhen = req.day != nil || req.partOfDay != nil || req.time != nil || req.durationMinutes != nil
         let v = verb ?? ""
         if let activity {
@@ -292,8 +314,29 @@ enum ScheduleParser {
             req.isExplicit = ((v == "schedule" || v == "arrange") && (hasPeople || hasWhen || unknown == 0))
                 || (verb != nil && hasPeople)
                 || ((v == "block" || v == "hold") && hasWhen)
+                || (named && hasWhen)
         }
         return req
+    }
+
+    /// The words after "for" when they say what the time is for, not how long ("for 45 min",
+    /// "for an hour" are lengths): an event word ("for focus time", "for a sync"), or — after
+    /// "block"/"hold" — up to five words of the user's own ("for the design review").
+    static func forTitle(_ ws: [Word], from start: Int, freeText: Bool) -> (activity: Activity?, name: String, first: Int, last: Int)? {
+        var scratch = ScheduleRequest(activity: "")
+        guard start < ws.count, parseWhen(ws, at: start, into: &scratch) == nil else { return nil }
+        var k = start
+        while k < ws.count, ["a", "an", "the", "some", "my", "our"].contains(ws[k].lower) { k += 1 }
+        if let a = matchActivity(ws, at: k) { return (a, a.name, k, k + a.words.count - 1) }
+        guard freeText else { return nil }
+        var end = k
+        while end < ws.count, end - k < 5, !nameStops.contains(ws[end].lower), weekdays[ws[end].lower] == nil,
+              parseWhen(ws, at: end, into: &scratch) == nil {
+            end += 1
+        }
+        guard end > k else { return nil }
+        let text = ws[k..<end].map(\.text).joined(separator: " ")
+        return (nil, text.prefix(1).uppercased() + text.dropFirst(), k, end - 1)
     }
 
     static func matchActivity(_ ws: [Word], at i: Int) -> Activity? {
@@ -404,6 +447,13 @@ enum ScheduleParser {
             return take(.time, through: j)
         }
 
+        // Time ranges: "2 to 4", "2-4", "from 2 to 4", "between 2 and 4", "2pm-4pm" → start + length.
+        if let r = parseRange(ws, at: j) {
+            req.time = ScheduleRequest.ClockTime(hour: r.start / 60, minute: r.start % 60)
+            req.durationMinutes = r.end - r.start
+            return take(.time, through: r.last)
+        }
+
         // Durations: "30min", "2h", "30 min", "an hour", "half an hour"
         if let minutes = compactDuration(w) {
             req.durationMinutes = minutes
@@ -449,6 +499,81 @@ enum ScheduleParser {
             return take(.duration, through: j)
         }
         return nil
+    }
+
+    static let rangeSeparators: Set<String> = ["to", "-", "–", "until", "till", "til", "through", "thru"]
+    /// Words before a bare range ("block 2 to 4", "from 2 to 4", "wednesday 2-4") that make it times.
+    static let rangeCuesBefore: Set<String> = ["from", "at", "@", "around", "block", "hold", "today", "tonight", "tomorrow"]
+    /// Words after a bare range ("2 to 4 on wednesday", "2-4 tomorrow") that make it times.
+    static let rangeCuesAfter: Set<String> = ["on", "this", "next", "today", "tonight", "tomorrow", "for", "with", "and"]
+
+    /// A clock time at `k` ("2", "2pm", "2 pm", "2:30") and the index of its last word.
+    static func clockAt(_ ws: [Word], _ k: Int) -> (clock: Clock, last: Int)? {
+        guard k < ws.count else { return nil }
+        if k + 1 < ws.count, ["am", "pm", "a.m", "p.m"].contains(ws[k + 1].lower),
+           let c = parseClock(ws[k].lower + ws[k + 1].lower) { return (c, k + 1) }
+        return parseClock(ws[k].lower).map { ($0, k) }
+    }
+
+    /// A span of time starting at `ws[j]`, in minutes from midnight, and the last word used.
+    /// Bare numbers ("2 to 4") count only with a cue around them, so "take 2 to 4 pills" and
+    /// "2 to 4 hours" are not times.
+    static func parseRange(_ ws: [Word], at j: Int) -> (start: Int, end: Int, last: Int)? {
+        let w = ws[j].lower
+        var a: Clock, b: Clock, last: Int
+        if w == "between", let x = clockAt(ws, j + 1), x.last + 1 < ws.count, ws[x.last + 1].lower == "and",
+           let y = clockAt(ws, x.last + 2) {
+            (a, b, last) = (x.clock, y.clock, y.last)
+        } else if let x = clockAt(ws, j), x.last + 1 < ws.count, rangeSeparators.contains(ws[x.last + 1].lower),
+                  let y = clockAt(ws, x.last + 2) {
+            (a, b, last) = (x.clock, y.clock, y.last)
+        } else if let dash = w.firstIndex(where: { $0 == "-" || $0 == "–" }) {
+            var second = String(w[w.index(after: dash)...])
+            last = j
+            if j + 1 < ws.count, ["am", "pm", "a.m", "p.m"].contains(ws[j + 1].lower) {
+                second += ws[j + 1].lower
+                last = j + 1
+            }
+            guard let x = parseClock(String(w[..<dash])), let y = parseClock(second) else { return nil }
+            (a, b) = (x, y)
+        } else {
+            return nil
+        }
+        let after = last + 1 < ws.count ? ws[last + 1].lower : nil
+        if let after, minuteUnits.contains(after) || hourUnits.contains(after) || after == "days" || after == "day" { return nil }
+        let bare = a.meridiem == nil && b.meridiem == nil && !a.hasColon && !b.hasColon
+        if bare, w != "between" {
+            let prev = j > 0 ? ws[j - 1].lower : nil
+            let cuedBefore = prev.map { rangeCuesBefore.contains($0) || weekdays[$0] != nil } ?? false
+            let cuedAfter = after.map { rangeCuesAfter.contains($0) || weekdays[$0] != nil } ?? true
+            guard cuedBefore || cuedAfter else { return nil }
+        }
+        guard let span = resolveRange(a, b) else { return nil }
+        return (span.start, span.end, last)
+    }
+
+    /// Minutes from midnight for a range. A start without am/pm takes the end's ("2 to 4pm"),
+    /// unless that would start after the end ("11 to 1pm" is 11 AM); with neither, the start reads
+    /// like a meeting time (1–7 afternoon) and the end is the first reading after it ("9 to 5").
+    static func resolveRange(_ a: Clock, _ b: Clock) -> (start: Int, end: Int)? {
+        func minutes(_ c: Clock, _ m: Character?) -> Int? { resolveHour(c.hour, meridiem: m).map { $0 * 60 + c.minute } }
+        var end: Int? = b.meridiem == nil ? nil : minutes(b, b.meridiem)
+        let start: Int?
+        if a.meridiem != nil {
+            start = minutes(a, a.meridiem)
+        } else if let e = end, (1...12).contains(a.hour) {
+            let other: Character = b.meridiem == "p" ? "a" : "p"
+            start = [minutes(a, b.meridiem), minutes(a, other)].compactMap { $0 }.first { $0 < e }
+        } else {
+            start = minutes(a, nil)
+        }
+        guard let s = start else { return nil }
+        if end == nil {
+            let plain = b.hour * 60 + b.minute
+            end = (b.hour == 0 || b.hour >= 12) ? plain : [plain, plain + 12 * 60].first { $0 > s }
+        }
+        guard let e = end, e > s, e - s <= 12 * 60 else { return nil }
+        return (s, e)
     }
 
     /// "3", "3rd", "21st" → 3, 3, 21.

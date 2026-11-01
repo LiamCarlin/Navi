@@ -97,6 +97,16 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(loose.day == .tomorrow)
     }
 
+    @Test func aRangeIsDueAtItsStart() {
+        let r = parse("remind me 2 to 4 tomorrow to study")
+        #expect(r.time == Clock(hour: 14, minute: 0))
+        #expect(r.day == .tomorrow)
+        #expect(r.title == "Study")
+        let pills = parse("remind me to take 2 to 4 pills")
+        #expect(pills.time == nil)
+        #expect(pills.title == "Take 2 to 4 pills")
+    }
+
     @Test func schedulerStepsAsideForReminders() {
         #expect(ScheduleParser.parse("remind me to book lunch with ana tomorrow") == nil)
         #expect(parse("remind me to book lunch with ana tomorrow").title == "Book lunch with ana")
@@ -151,6 +161,17 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(options[3].date == now.addingTimeInterval(3 * 86400 + 16 * 3600))    // Sat 10:00
         #expect(options[4].date == now.addingTimeInterval(5 * 86400 + 15 * 3600))    // Mon 09:00
         #expect(options[5].date == nil)
+    }
+
+    // Bench calendar-003 (Sunday 2026-11-01): the card said "Tomorrow at 9:00 AM".
+    @Test func nextWeekFromASunday() {
+        let sunday = Date(timeIntervalSince1970: 1_793_521_260)   // Sun 1 Nov 2026, 08:21 UTC
+        #expect(due("todo: renew passport next week", at: sunday) == "2026-11-09 09:00")
+        let options = ReminderPlanner.options(now: sunday, calendar: cal)
+        #expect(options.map(\.label) == ["In 1 hour", "This evening", "Tomorrow", "Next week", "No date"])
+        let next = options.first { $0.label == "Next week" }?.date
+        let comps = next.map { cal.dateComponents([.month, .day, .hour], from: $0) }
+        #expect(comps?.month == 11 && comps?.day == 9 && comps?.hour == 9)
     }
 
     @Test func quickPicksOnAFridayMorning() {

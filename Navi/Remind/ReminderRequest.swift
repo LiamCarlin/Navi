@@ -161,9 +161,9 @@ enum ReminderParser {
                 continue
             }
             // Days and times, read the way the scheduler reads them (lengths are title words here:
-            // "walk for 30 min" is the task).
+            // "walk for 30 min" is the task; a range like "2 to 4" is due at its start).
             var scratch = ScheduleRequest(activity: "")
-            if let end = ScheduleParser.parseWhen(ws, at: j, into: &scratch), scratch.durationMinutes == nil {
+            if let end = ScheduleParser.parseWhen(ws, at: j, into: &scratch), scratch.durationMinutes == nil || scratch.time != nil {
                 if let d = scratch.day { request.day = d }
                 if let p = scratch.partOfDay { request.partOfDay = p }
                 if let t = scratch.time { request.time = t }
@@ -249,8 +249,8 @@ enum ReminderPlanner {
         out.append(Option(label: "Tomorrow", date: at(1, 9)))
         let weekday = cal.component(.weekday, from: now)   // 1 = Sunday … 7 = Saturday
         if (2...5).contains(weekday) { out.append(Option(label: "This weekend", date: at(7 - weekday, 10))) }
-        let toMonday = { let n = (2 - weekday + 7) % 7; return n == 0 ? 7 : n }()
-        out.append(Option(label: "Next week", date: at(toMonday, 9)))
+        // Same Monday as a typed "next week" (on a Sunday that is 8 days away, not tomorrow).
+        out.append(Option(label: "Next week", date: at(ScheduleRequest.daysToNextWeekMonday(from: today, calendar: cal), 9)))
         out.append(Option(label: "No date", date: nil))
         return out
     }
