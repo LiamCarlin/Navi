@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var services: NaviServices!
     /// Voice control: the notch island + its session. Created lazily on first use.
     private(set) var voice: VoiceIslandController?
+    /// Queues `navi://` URLs that arrive before launch finishes and keeps the reopen
+    /// LaunchServices sends with a URL from opening the main window (`URLEventGate`).
+    private var urlGate = URLEventGate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -60,16 +63,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.voiceController.start() }
         }
         Log.app.info("Navi launched")
+
+        // A cold launch from `navi://…` delivers the URL before this method ran; the
+        // panel and services exist only now.
+        let early = urlGate.finishLaunching()
+        if !early.isEmpty {
+            Log.app.info("Handling \(early.count, privacy: .public) navi:// URL(s) that arrived during launch")
+            DispatchQueue.main.async { self.handle(urls: early) }
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openMainWindow()
+        // `open navi://…` on a running Navi also sends a reopen, before or after the URL.
+        // Decide a beat later so a URL in either order keeps the main window shut.
+        let reopenedAt = urlGate.timestamp()
+        DispatchQueue.main.asyncAfter(deadline: .now() + URLEventGate.reopenDecisionDelay) {
+            MainActor.assumeIsolated {
+                if self.urlGate.reopenShowsMainWindow(reopenedAt: reopenedAt) {
+                    self.openMainWindow()
+                } else {
+                    Log.app.debug("Reopen came with a navi:// URL: main window not shown")
+                }
+            }
+        }
         return false
+    }
+
+    /// Navi is a menu-bar app: closing the main window must never quit it. SwiftUI
+    /// quits an app whose last window closes unless the delegate says otherwise —
+    /// pressing the main window's close button once ended Navi, memory service and all.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         // navi://query?q=... lets other tools (Shortcuts, Raycast, CLI) drive Navi.
         guard !TestHost.isActive else { return }
+        // Before `applicationDidFinishLaunching` (a cold launch from the URL) the panel
+        // and services are nil: queue them, handled at the end of launch.
+        handle(urls: urlGate.receive(urls))
+    }
+
+    private func handle(urls: [URL]) {
         for url in urls {
             guard url.scheme == "navi" else { continue }
             #if DEBUG
