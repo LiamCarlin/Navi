@@ -100,17 +100,22 @@ def as_applescript(text):
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 def submit_hotkey(text, since):
-    """⌘Space, paste, wait for routing, ⏎. Returns False if the panel never showed (then the caller uses navi://)."""
+    """⌘Space, paste, wait for routing, ⏎. Returns None if the panel never showed (then the caller uses navi://),
+    "card" when the scheduler/reminder card came up — ⏎ there books a real event (and sends invites), so it is
+    withheld and the card is closed after a screenshot — else "ok"."""
     osa(f'set the clipboard to {as_applescript(text)}')
     osa('tell application "System Events" to keystroke " " using command down')
     time.sleep(0.7)
     osa('tell application "System Events" to keystroke "v" using command down')
     time.sleep(a.route_wait)
-    shown = "show(prefill" in sh("/usr/bin/log", "show", "--start", since, "--predicate",
-                                 'subsystem == "com.liamcarlin.navi" and category == "panel"', "--info", "--style", "compact", timeout=30)
-    if shown:
-        osa('tell application "System Events" to key code 36')
-    return shown
+    panel = sh("/usr/bin/log", "show", "--start", since, "--predicate",
+               'subsystem == "com.liamcarlin.navi" and category == "panel"', "--info", "--style", "compact", timeout=30)
+    if "show(prefill" not in panel:
+        return None
+    if "scheduler card for" in panel or "reminder card" in panel:
+        return "card"
+    osa('tell application "System Events" to key code 36')
+    return "ok"
 
 def ordered(tasks):
     """Round-robin over families, easy first inside each, so a cut-off night still covers everything."""
@@ -275,6 +280,7 @@ for i, (t, _) in enumerate(plan, 1):
     d = out / t["id"]; d.mkdir(exist_ok=True)
     ctx = {**contexts.get(t.get("context") or "", {}), **CONTEXT_OVERRIDES.get(t.get("context") or "", {})}
     tabs_before = chrome_tabs()
+    sh("pkill", "-x", "screencapture")   # an interactive screenshot left by the last scenario swallows ⌘Space
     setup(ctx)
     shot(d / "before.jpg")
     offset = log_size()
@@ -282,8 +288,15 @@ for i, (t, _) in enumerate(plan, 1):
     ultra_m = ULTRA.stat().st_mtime if ULTRA.exists() else 0
     t0 = time.time()
     trigger = a.trigger
-    if trigger == "hotkey" and not submit_hotkey(t["utterance"], since):
-        trigger = "url (hotkey panel did not show)"
+    if trigger == "hotkey":
+        sent = submit_hotkey(t["utterance"], since)
+        if sent is None:
+            trigger = "url (hotkey panel did not show)"
+        elif sent == "card":
+            trigger = "hotkey (card shown; Return withheld, it would book a real event)"
+            shot(d / "card.jpg")
+            for _ in range(2):   # esc: card → results, then close the panel
+                osa('tell application "System Events" to key code 53'); time.sleep(0.4)
     if trigger.startswith("url"):
         sh("open", "navi://run?q=" + urllib.parse.quote(t["utterance"]))
     limit, n_shot, last_shot = time_limit(t), 0, 0.0
