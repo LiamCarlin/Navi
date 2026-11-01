@@ -41,6 +41,15 @@ struct RouteFallthroughTests {
         #expect(merged[1].id == "ask-memory:q")
     }
 
+    @Test func recallAnswerLeadsTheRawMoments() {
+        // memory-002/-035: ⏎ opened one raw screen-memory moment instead of answering.
+        let routed = [row("memory:1", .memory, score: 0.99), row("ask-memory:q", .answer, score: 0.95), row("memory:2", .memory, score: 0.9)]
+        let calc = row("calc:q", .calculation, score: 0.95)
+        let merged = PanelViewModel.merge(instant: [calc, ask, web], routed: routed, decision: .heuristic(.recallMemory, confidence: 0.99))
+        #expect(merged.first?.id == "ask-memory:q")
+        #expect(PanelViewModel.submitIndex(results: merged, decision: .heuristic(.recallMemory)) == 0)
+    }
+
     @Test func strongInstantAppStillLeads() {
         let maps = row("app:com.apple.Maps", .app, score: 1.0)
         let routed = [maps, row("app-switch:com.apple.Maps", .app, score: 0.5)]
@@ -78,6 +87,8 @@ struct RouteFallthroughTests {
         #expect(QueryRouter.fallbackAction(for: "open that one", hasSelection: false) == .clarify)
         #expect(QueryRouter.fallbackAction(for: "open it", hasSelection: true) == .task)
         #expect(QueryRouter.fallbackAction(for: "when is my next meeting", hasSelection: false) == .keepAnswer)
+        #expect(QueryRouter.fallbackAction(for: "calc 2 to the 20th", hasSelection: false) == .keepAnswer)
+        #expect(QueryRouter.fallbackAction(for: "15 percent of 80", hasSelection: false) == .keepAnswer)
         #expect(QueryRouter.fallbackAction(for: "ramen?", hasSelection: false) == .keepAnswer)
     }
 

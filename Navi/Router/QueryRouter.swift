@@ -501,8 +501,18 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         guard !q.isEmpty else { return .keepAnswer }
         if let s = AppSkills.mentioned(in: q), !s.hosts.isEmpty { return .openWebApp }
         if pointsAtScreenOnly(q) { return hasSelection ? .task : .clarify }
-        if looksLikeQuestion(q) { return .keepAnswer }
+        if looksLikeQuestion(q) || asksForMath(q) { return .keepAnswer }
         return .task
+    }
+
+    /// "calc 2 to the 20th", "compute 15% of 80": math the parser couldn't read and no app named —
+    /// the answer computes it; a computer task would drive Calculator in the background (native-008).
+    static func asksForMath(_ q: String) -> Bool {
+        let lower = q.lowercased()
+        let first = lower.split(whereSeparator: { $0 == " " }).first.map(String.init) ?? ""
+        if ["calc", "calculate", "compute", "evaluate", "solve", "convert"].contains(first) { return true }
+        return lower.range(of: #"\d\s*(?:to the|squared|cubed|percent of|% of|times|divided by|plus|minus)\b"#,
+                           options: .regularExpression) != nil
     }
 
     /// "open it", "open that", "show me this": the only object is a pronoun.

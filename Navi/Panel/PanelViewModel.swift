@@ -375,8 +375,11 @@ final class PanelViewModel: ObservableObject {
             if QueryRouter.actionIntents.contains(decision.intent) { return true }
             return instant.first(where: { !QueryRouter.isPinnedRow($0) }).map { $0.score >= 0.9 && !QueryRouter.isFallbackRow($0) } ?? false
         }()
-        let pinned = (routed + instant).filter(QueryRouter.isPinnedRow)
-        let rest = (instantLeads ? instant + routed : routed + instant).filter { !QueryRouter.isPinnedRow($0) }
+        // A screen-memory question: ⏎ answers it ("Ask about this"), never opens one raw moment (memory-002/-035).
+        let recallAnswer: (SearchResult) -> Bool = { decision.intent == .recallMemory && $0.id.hasPrefix("ask-memory:") }
+        let leads: (SearchResult) -> Bool = { QueryRouter.isPinnedRow($0) || recallAnswer($0) }
+        let pinned = (routed + instant).filter(QueryRouter.isPinnedRow) + (routed + instant).filter(recallAnswer)
+        let rest = (instantLeads ? instant + routed : routed + instant).filter { !leads($0) }
         let ordered: [SearchResult]
         if instantLeads {
             let actions = rest.enumerated().filter { !QueryRouter.isFallbackRow($0.element) }
