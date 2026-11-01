@@ -1565,7 +1565,7 @@ class Takeover:
         self.last_url = start_url
         model = os.environ.get("NAVI_TAKEOVER_MODEL") or os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
         deadline = time.monotonic() + TAKEOVER_MAX_S
-        shot, self.ratio = viewport_shot(browser)
+        shot, self.ratio = retry_transient(lambda: viewport_shot(browser))
         recent = [h.get("action", "") for h in agent.state["history"][-8:]]
         intro = {
             "goal": goal,
@@ -3682,6 +3682,39 @@ def done_doubt(state, decision):
     return None
 
 
+# --- Adaptation 40: a document that is navigating is a stale page, not an error -----
+#
+# Kayak (bench 2026-11-01): a click that navigated mid-step raised CDP's "Document is navigating"
+# out of `tick`, and the run ended on it as an error; a Google results page did the same on the
+# first look (edge-006), and "Inspected target navigated or closed" likewise. Those are the page
+# moving under the runner: observe again (a short beat first), like a StalePage. Only a run of them
+# with nothing in between (the tab is really gone) still ends the run.
+
+TRANSIENT_CDP = re.compile(r"document is navigating|inspected target navigated or closed|cannot find context with specified id|"
+                           r"execution context was destroyed|cannot find default execution context|no node with given id|"
+                           r"could not find node with given id|node with given id does not belong to the document|"
+                           r"frame with the given id was not found|target (page, context,? or browser )?(has been )?closed",
+                           re.I)
+MAX_TRANSIENT = 6           # in a row, with no step in between
+TRANSIENT_WAIT_S = 0.35
+
+
+def is_transient(exc):
+    """A CDP error that only says the page moved under us ("Document is navigating")."""
+    return isinstance(exc, (RuntimeError, StalePage)) and bool(TRANSIENT_CDP.search(str(exc)))
+
+
+def retry_transient(fn, tries=4, wait=TRANSIENT_WAIT_S):
+    """fn(), retried while it fails only because the page is navigating."""
+    for attempt in range(tries):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — re-raised unless transient
+            if not is_transient(exc) or attempt == tries - 1:
+                raise
+            time.sleep(wait)
+
+
 def tick(agent, retried, rejected=None):
     """Upstream `Agent.command("tick")` (predict → act, StalePage re-observes),
     with two differences: a tentative BLOCKED on a page not yet retried is
@@ -3742,12 +3775,33 @@ def tick(agent, retried, rejected=None):
             state["history"][-1]["note"] = note
             state["history"][-1]["action"] = f"{state['history'][-1].get('action', '')} → {note}"
         RECIPIENT_NOTES.clear()
+        state["navi_transient"] = 0
         return "acted"
     except StalePage:
         state["decision"] = None
         state["status"] = "ready"
-        state["page"] = state["browser"].observe(screenshot=agent.screenshots)
+        state["page"] = retry_transient(lambda: state["browser"].observe(screenshot=agent.screenshots))
         state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        return "stale"
+    except RuntimeError as exc:
+        # Adaptation 40: "Document is navigating" — the page moved under the step. Look again.
+        if not is_transient(exc):
+            raise
+        state["navi_transient"] = state.get("navi_transient", 0) + 1
+        if state["navi_transient"] > MAX_TRANSIENT:
+            raise
+        emit("status", message=f"The page was still changing ({str(exc)[:60]}) — looking again")
+        state["decision"] = None
+        if state.get("status") not in {"done", "blocked"}:
+            state["status"] = "ready"
+        time.sleep(TRANSIENT_WAIT_S)
+        try:
+            state["page"] = retry_transient(lambda: state["browser"].observe(screenshot=agent.screenshots))
+        except Exception as again:  # noqa: BLE001 — the next tick observes again
+            if not is_transient(again):
+                raise
+        if state.get("started_at"):
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         return "stale"
 
 
