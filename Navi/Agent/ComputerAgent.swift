@@ -672,7 +672,9 @@ final class AgentRun: @unchecked Sendable {
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 // The start URL is the page that is open now: continue on that tab.
                 // WorkingSurface hook: …or the tab an earlier run worked in (the runner finds it by URL).
-                let attach = (frontmost.url != nil && url == frontmost.url) || WorkingSurface.Store.shared.isRecentPage(url)
+                // (The same page spelled a little differently — a fragment, "www.", a trailing slash — is that tab too,
+                // not a duplicate tab whose early BLOCKED then starts over on a search: bench schoolwork-022.)
+                let attach = (frontmost.url.map { url == $0 || TaskPlanner.samePage(url, $0) } ?? false) || WorkingSurface.Store.shared.isRecentPage(url)
                 let goal = task
                 let background = config.background
                 await showOverlay(step: max(1, actionIndex))

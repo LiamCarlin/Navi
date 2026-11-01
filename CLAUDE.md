@@ -349,7 +349,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     ("order…", "go to McDonald's", "book…") does not. A start page with nothing for the task
     (Jev BLOCKED before any action — coaching notes and waits are not actions) ends at once
     (`NAVI_EARLY_BLOCK_EXIT`, no Claude) and `UltrafastBridge.freshStart` reruns it from the
-    task's own site, else a search. Runner adaptations from the McDonald's runs: 23 — while an
+    task's own site, else a search — never when the run started on the user's own tab (the one in
+    front, or the tab an earlier run worked in) and the task names no other web place
+    (`UltrafastBridge.staysOnAttachedTab`): there the runner's judge and a Claude takeover act on that
+    same tab (bench 2026-11-01: captions/1.5x, Onshape export, a DoorDash swap had all restarted on a
+    search for the sentence). Runner adaptations from the McDonald's runs: 23 — while an
     `aria-modal`/`:modal` dialog is on top only its controls are offered, and app-install
     detours (App Store, "download the app", "scan the code") are dropped; 24 — the text helper
     gets `about_the_user` (`UserCard`, `NAVI_USER_PROFILE_JSON`) only for an address/ZIP/name/

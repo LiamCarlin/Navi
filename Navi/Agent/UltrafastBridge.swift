@@ -374,7 +374,7 @@ enum UltrafastBridge {
         // A task about the tab in front ("skip the ad", "add 2 of these") is done there or not at all: Jev
         // finding nothing to do on it is no reason to start over on a search for the sentence (the old
         // "What Happens When You Don't Skip the Ads" video) — the judge says what is wrong instead.
-        let aboutThisTab = attachURL != nil && ScreenInFront.anchorsToTab(task, url: first)
+        let aboutThisTab = staysOnAttachedTab(task: task, attachURL: attachURL)
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
                                             allowEarlyBlockRetry: first != search && !aboutThisTab, background: background,
                                             openedIsDone: navigationOnly, attachURL: attachURL, mayAsk: mayAsk)
@@ -415,6 +415,21 @@ enum UltrafastBridge {
         // be behind the user's windows — the tab *is* the result, so bring it forward.
         if outcome == .completed, background, lastTabPolicy == "reveal" { await bringBrowserForward() }
         return text
+    }
+
+    /// Does a run that starts on the user's own tab — the one in front (`useCurrentTab`, "here"), or the
+    /// tab an earlier run worked in (`WorkingSurface` / `continueOn`) — stay on it when Jev finds nothing
+    /// to do there at first? Yes, unless the task names another web place ("go to mcdonalds and order me
+    /// a burger" over a Canvas tab still starts over on McDonald's). Then an early BLOCKED is no
+    /// `NAVI_EARLY_BLOCK_EXIT`: the runner's judge reads the page and a Claude takeover acts on that same
+    /// tab. The phrasing test alone (`ScreenInFront.anchorsToTab`) missed most of them — bench
+    /// 2026-11-01: "turn on captions and make it 1.5x" over a playing video restarted on a YouTube search
+    /// for the sentence and set 1.5x on an unrelated Short; "export the bowl as an stl" left the Onshape
+    /// Part Studio for Google, then "impossible"; "swap the cheeseburger for a veggie burger" left the
+    /// DoorDash store for a DoorDash search for the sentence. Pure: unit-tested.
+    static func staysOnAttachedTab(task: String, attachURL: String?) -> Bool {
+        guard let url = attachURL, url.hasPrefix("http") else { return false }
+        return !ScreenInFront.namesOtherWebPlace(task, frontURL: url)
     }
 
     /// Where a task starts when the page it was given had nothing for it: the page or site the
