@@ -241,14 +241,26 @@ final class AppIndex: @unchecked Sendable {
     /// Lowercases, trims and strips "open "/"launch "/"start " and a trailing " app".
     static func normalize(_ query: String) -> String {
         var q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var launched = false
         for p in launchPrefixes where q.hasPrefix(p) {
             q = String(q.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+            launched = true
             break
+        }
+        // "open my calendar", "open the calculator", "open up slack": the app is what follows.
+        for p in ["up ", "my ", "the "] where q.hasPrefix(p) && q.count > p.count {
+            q = String(q.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
         }
         if q.hasSuffix(" app") { q = String(q.dropLast(4)) }
         if q.hasSuffix(".app") { q = String(q.dropLast(4)) }
-        return q.trimmingCharacters(in: .whitespaces)
+        q = q.trimmingCharacters(in: .whitespaces)
+        // "open it" / "open this" name no app ("it" is a subsequence of TextEdit); a bare "it"
+        // typed on its own is still the start of iTerm.
+        return launched && pronouns.contains(q) ? "" : q
     }
+
+    /// Words that point at something on screen rather than name an app.
+    static let pronouns: Set<String> = ["it", "this", "that", "them", "these", "those", "this one", "that one"]
 
     /// Pure fuzzy score of an already-normalized query against one entry (0 = no match).
     ///   exact name → 1.0 · alias → 0.98 · prefix → 0.95 · word-start / acronym → 0.85 ·

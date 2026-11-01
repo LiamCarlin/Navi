@@ -74,6 +74,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `Intent.allCases` (+ `is_risky` noul, `needs_clarification` noul, `wants_memory` noul).
   - **Confidence-gated routing**: below `NaviSettings.jevConfidenceThreshold` show
     both the quick match and "Ask Navi".
+  - **⏎ performs the routed action, never the answer row** (taskbench 2026-11-01: "open youtube",
+    "open canvas", "open the last assignment I did" all answered "I can't open apps"). Every query
+    carries "Ask Navi" + a web search (`QueryRouter.isFallbackRow`); `PanelViewModel.merge` puts
+    them after the action rows for action intents (`QueryRouter.actionIntents`) and pins "Open it"
+    (own past work), browser key presses and "Do it in <app>" first (`isPinnedRow`);
+    `submitIndex` picks the first action row. An action intent with no row of its own falls back
+    (`actionFallbackRows`): the named web app's page (`webAppRow`: AppSkills start URL on the
+    user's own host — youtube.com, canvas.olin.edu, desmos.com/calculator), "Clarify" for "open
+    it", else a task row; a question keeps the answer. `ownThingRow` (UserKnowledge) leads file
+    matches for "open the hci notes". "pause screen memory for an hour" is a `SystemCommands` action.
   - **Agent gating** (`Agent`): after each Claude computer-use step, Jev answers
     `is_irreversible` (send/pay/delete), `task_complete`, `is_stuck` from the
     textual step log — cheap and fast, so the loop stays snappy.
@@ -335,6 +345,18 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     redacted body + request sizes, run log only), retries once shorter, then `fewer_actions` (the ~120 controls
     likeliest for the goal); still failing, `tick` returns `model_error` and the run goes to judge → takeover.
     `scripts/ultrafast/test_model_errors.py`.
+    **Never the user's sign-in, checkout or a partner site** (runner adaptation 39, bench 2026-11-01: Jev typed
+    Liam's email + first name into Desmos's sign-up; "Continue with Google" ×3 at DoorDash checkout; Kayak's
+    "Compare vs. Booking.com"): unless the goal is to sign in/up, sign-in / sign-up / "Continue with …" controls
+    and an account form's identity fields are not offered to Jev (`account_form` in the state says close it or
+    BLOCKED), the text helper gets no `about_the_user` for them, and the takeover refuses them, never types into
+    such a form, never enters checkout (a click that lands there is undone) and stops on a sign-in page. A
+    needs-user sign-in is a question even on a purchase; a purchase whose item is in the cart is achieved
+    (`cart_is_the_end`). Partner-compare toggles are not offered or pressed. An unsure DONE (< 85 %) and a
+    takeover's last word without Done:/Did:/Stopped: ("unclear") go to the judge. The judge has 1200 tokens,
+    `salvage_json` for cut-off replies, one retry, `facts` in its state; past-dated choices are dropped (runner
+    and `AgentQuestion.tidy`). Adaptation 40: "Document is navigating" / "Inspected target navigated or closed"
+    is a stale page, never fatal. `scripts/ultrafast/test_takeover_safety.py`.
   - **Any browser** (`Agent/NativeBrowser`): web steps use the Chrome CDP runner only
     when the user's browser is Chromium *and* the runtime is installed; otherwise
     (Safari, Arc, Firefox, fresh install) the page opens in the user's browser and the
@@ -349,7 +371,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     ("order…", "go to McDonald's", "book…") does not. A start page with nothing for the task
     (Jev BLOCKED before any action — coaching notes and waits are not actions) ends at once
     (`NAVI_EARLY_BLOCK_EXIT`, no Claude) and `UltrafastBridge.freshStart` reruns it from the
-    task's own site, else a search. Runner adaptations from the McDonald's runs: 23 — while an
+    task's own site, else a search — never when the run started on the user's own tab (the one in
+    front, or the tab an earlier run worked in) and the task names no other web place
+    (`UltrafastBridge.staysOnAttachedTab`): there the runner's judge and a Claude takeover act on that
+    same tab (bench 2026-11-01: captions/1.5x, Onshape export, a DoorDash swap had all restarted on a
+    search for the sentence). Runner adaptations from the McDonald's runs: 23 — while an
     `aria-modal`/`:modal` dialog is on top only its controls are offered, and app-install
     detours (App Store, "download the app", "scan the code") are dropped; 24 — the text helper
     gets `about_the_user` (`UserCard`, `NAVI_USER_PROFILE_JSON`) only for an address/ZIP/name/
@@ -433,7 +459,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     drops an interactive card under the bar (`PanelViewModel.Mode.schedule`) — no Enter needed.
     `ScheduleParser` is local and runs on every keystroke (names after "with", days, parts of the
     day, times, lengths; questions/edits like "what meetings…"/"cancel…" are rejected); phrasings
-    it can't call are opened by Jev's `wants_to_schedule` noul (≥ 0.7) on the routing call.
+    it can't call are opened by Jev's `wants_to_schedule` noul (≥ 0.7) on the routing call. **Not the
+    card's** (`Schedule/CardGuard`; both parsers return nil, so neither the opener nor Jev opens a card —
+    ⏎ once booked "Meeting with Its" for a Google Doc task, bench 2026-11-01): several instructions
+    ("read…, make…, and block…"), another app/site to do it in ("in notion", "on canvas", "a google
+    calendar event", "make a google doc"; Calendar/Reminders and meeting-link apps are the cards' own; a
+    mere mention is not), a timer/alarm/stopwatch (the Clock app), something else to make ("make a note
+    called groceries…", "add a checklist…", "write an email" — a note is no reminder), an all-day or
+    multi-day event ("nov 14-15 all day" — the card books timed events). "with" + a pronoun/determiner or a
+    count ("with its title", "with my notes", "with three items") is never a guest, nor is a list after a
+    colon ("…items: slides, demo, q&a") (`ScheduleParser.notNames`, `Word.colon`).
     Rows: you + each guest (Contacts: photo, work email by the calendar account's domain) over a
     9–18 timeline of busy blocks (EventKit: your writable calendars; a guest's shared calendar
     titled with their email, else only meetings you share = "Calendar not shared"). "Everyone's
@@ -463,7 +498,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     week · No date; repeat menu, priority, list menu (Reminders lists), "Also due" that day. ⏎ adds
     (EventKit, with an alert at the due time); ↑↓ steps the chips. Jev's `wants_reminder` noul
     opens it for phrasings without an opener ("buy milk tomorrow"), competing with
-    `wants_to_schedule`. Needs Reminders (full access); the card asks.
+    `wants_to_schedule`. `CardGuard` holds here too, except that after an opener the rest is the
+    reminder's own text ("remind me to buy milk and call mom", "remind me to reset the alarm"; after
+    "remind me"/"don't forget" even a place — "add a todo in notion" is Notion's). Needs Reminders (full
+    access); the card asks.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,
@@ -553,7 +591,27 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     its app; grounding and routine starts skipped), `here` on the open tab / app in front (also
     `continueOn` when the last task worked there), `new_place` never on the open tab. Unsure/offline:
     the open tab only for page actions or when the last task worked on that very tab. ⌘Space: the
-    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. Live (2026-10-30):
+    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. **The screen in
+    front wins** (`Agent/ScreenInFront`, bench 2026-11-01: no typed run had started on the tab in front):
+    "in front" is `UserFront.app()` — never Navi, which a navi:// link / Settings activates (the last app
+    active before it, else the topmost window's owner; `FrontmostProbe`, `ContextProbe`, the panel's
+    previous app, `AgentTarget.frontmost`, `BrowserControls` use it). The planner gets `screen_in_front`
+    (app, window title, tab URL) and `recent_work.is_the_screen_in_front`; `ScreenInFront.anchor` then
+    moves the first step there when the task points at it (this/these/here/the video/the ad/this page/
+    page 2), acts on the page (pause, skip, click, scroll — a strict verb list) or asks for a page of the
+    site in front without naming another place ("open my cart", "to my cart", "add fries too"; not on a
+    search engine): a browser step continues on the tab (`useCurrentTab`, a one-step plan keeps the
+    user's words), a doc app in front (a PDF in Preview) replaces a step that would Google its words. A
+    task about the front tab never restarts elsewhere on an early BLOCKED. A typed browser control
+    ("reload this page", "go back", "bookmark this page") is one key press in the browser in front —
+    Safari too (`AgentRun.browserControl`); a typed window control ("make this full screen", "minimize
+    this", "hide Music" — never quit/close) is `WindowControls` on the window in front
+    (`AgentRun.typedWindowCommand`). A goal that starts like a lookup but ends doing something ("search
+    YouTube for X and open the first video", "find a PS5 at Target and add it to the cart":
+    `AgentRun.endsWithEffect`) is an effect: its tab is revealed, not closed. The runner attaches to the *visible* tab among several on the
+    same URL (`find_open_tab`), and a DONE before any action is always judged — unconfirmed it is a
+    partial stop, never "completed: Nothing to do. (0 steps)" (`should_judge_done(acted=)`,
+    `UltrafastBridge.isUnverifiedZeroStepDone`). Live (2026-10-30):
     14/14 sensible picks ("I meant in DoorDash where we just were" → the DoorDash tab at 0.99, "order
     me a burger" on a Canvas tab → new place 1.0); Haiku planned "open my cart…" after the order on
     doordash.com. **Fragments never run**: `whole_instruction` noul (< 0.25 — logged fragments scored

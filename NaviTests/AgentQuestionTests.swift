@@ -21,6 +21,27 @@ struct AgentQuestionTests {
         #expect(q.choices == ["Small", "Medium", "Large", "Extra large"])
     }
 
+    /// Bench 2026-11-01 (errand-031): "Did you mean December 5, 2025?" was offered on November 1, 2026.
+    @Test func pastDatesAreNeverOffered() {
+        let cal = Calendar(identifier: .gregorian)
+        let today = cal.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 15))!
+        func ymd(_ d: Date) -> [Int] { [cal.component(.year, from: d), cal.component(.month, from: d), cal.component(.day, from: d)] }
+        #expect(AgentQuestion.datesNamed(in: "December 5, 2025", calendar: cal).map(ymd) == [[2025, 12, 5]])
+        #expect(AgentQuestion.datesNamed(in: "Fri, Dec 5th 2026", calendar: cal).map(ymd) == [[2026, 12, 5]])
+        #expect(AgentQuestion.datesNamed(in: "5 December 2025", calendar: cal).map(ymd) == [[2025, 12, 5]])
+        #expect(AgentQuestion.datesNamed(in: "2025-12-05 vs Lakers", calendar: cal).map(ymd) == [[2025, 12, 5]])
+        #expect(AgentQuestion.datesNamed(in: "12/05/2025", calendar: cal).map(ymd) == [[2025, 12, 5]])
+        #expect(AgentQuestion.datesNamed(in: "October 2026", calendar: cal).map(ymd) == [[2026, 10, 31]])
+        #expect(AgentQuestion.datesNamed(in: "Let me check a different date", calendar: cal).isEmpty)
+        #expect(AgentQuestion.datesNamed(in: "December 5", calendar: cal).isEmpty)          // no year: not known to be past
+        #expect(AgentQuestion.namesPastDate("December 5, 2025", today: today, calendar: cal))
+        #expect(!AgentQuestion.namesPastDate("December 5, 2026", today: today, calendar: cal))
+        #expect(!AgentQuestion.namesPastDate("November 1, 2026", today: today, calendar: cal))   // today is not past
+        #expect(AgentQuestion.tidy(["December 5, 2025", "December 5, 2026", "Let me check a different date"], today: today)
+                == ["December 5, 2026", "Let me check a different date"])
+        #expect(AgentQuestion.tidy(["Small", "Large"], today: today) == ["Small", "Large"])
+    }
+
     @Test func aReplyNamesAChoiceByNumberOrWords() {
         let q = Self.size
         #expect(q.choice(matching: "2") == "Medium")

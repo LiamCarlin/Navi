@@ -112,7 +112,7 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(ScheduleParser.parse("") == nil)
         #expect(!parse("call mom").isExplicit)
         #expect(!parse("book a flight to paris").isExplicit)
-        #expect(!parse("set a timer for 10 minutes").isExplicit)
+        #expect(ScheduleParser.parse("set a timer for 10 minutes") == nil)   // the Clock's (`CardGuard`)
     }
 
     @Test func eventWordWithATimeIsExplicit() {
@@ -165,6 +165,67 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(ws.map(\.start) == [0, 7, 12, 17, 21, 23])
         #expect(ws[2].comma && !ws[3].comma)
     }
+
+    // Bench calendar-010 (2026-11-01): the card showed "Hold 9:00–9:30".
+    @Test func blockARangeForFocusTime() {
+        let r = parse("block 2 to 4 on wednesday for focus time")
+        #expect(r.activity == "Focus time")
+        #expect(r.day == .weekday(4, nextWeek: false))
+        #expect(r.time == Clock(hour: 14, minute: 0))
+        #expect(r.durationMinutes == 120)
+        #expect(r.people.isEmpty)
+        #expect(r.isExplicit)
+        #expect(r.tokens.map(\.kind) == [.time, .day, .activity])
+    }
+
+    @Test func timeRanges() {
+        func check(_ q: String, _ h: Int, _ m: Int, _ length: Int) {
+            let r = parse(q)
+            #expect(r.time == Clock(hour: h, minute: m), "\(q)")
+            #expect(r.durationMinutes == length, "\(q)")
+        }
+        check("meeting with ana 2-4 tomorrow", 14, 0, 120)
+        check("meeting with ana from 2 to 4", 14, 0, 120)
+        check("meeting with ana between 2 and 4", 14, 0, 120)
+        check("meeting with ana 2pm-4pm", 14, 0, 120)
+        check("meeting with ana 2-4 pm", 14, 0, 120)
+        check("meeting with ana 2 to 4pm", 14, 0, 120)
+        check("meeting with ana 11 to 1pm", 11, 0, 120)
+        check("meeting with ana from 10am to 2", 10, 0, 240)
+        check("block 9 to 5 tomorrow", 9, 0, 480)
+        check("block 1:30 until 3 on friday", 13, 30, 90)
+        check("block 10 to 12 tomorrow", 10, 0, 120)
+        check("block friday 2–4", 14, 0, 120)
+    }
+
+    @Test func numbersThatAreNotARange() {
+        let pills = parse("call ana about 2 to 4 people")
+        #expect(pills.time == nil)
+        #expect(pills.durationMinutes == nil)
+        let hours = parse("block 2 to 4 hours tomorrow")
+        #expect(hours.time == nil)
+        #expect(hours.durationMinutes == 240)
+        #expect(parse("1-1 with ana").activity == "1:1")
+        #expect(parse("1-1 with ana").time == nil)
+        #expect(ScheduleParser.resolveRange(ScheduleParser.parseClock("4")!, ScheduleParser.parseClock("2")!) == nil)
+    }
+
+    @Test func forSaysWhatTheTimeIsFor() {
+        let sync = parse("schedule time for a sync with ana tomorrow")
+        #expect(sync.activity == "Sync")
+        #expect(sync.people == ["ana"])
+        let review = parse("block wednesday 2-4 for the design review")
+        #expect(review.activity == "Design review")
+        #expect(review.time == Clock(hour: 14, minute: 0))
+        #expect(review.isExplicit)
+        let hold = parse("hold tomorrow afternoon for an hour")      // a length, not a title
+        #expect(hold.activity == "Hold")
+        #expect(hold.durationMinutes == 60)
+        let focus = parse("Focus time tomorrow morning for 2h")       // the event word came first
+        #expect(focus.activity == "Focus time")
+        #expect(focus.durationMinutes == 120)
+        #expect(ScheduleParser.parse("set a timer for 10 minutes") == nil)   // the Clock's (`CardGuard`)
+    }
 }
 
 // MARK: - Days
@@ -211,6 +272,28 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(day("meeting with ana at 8pm") == "2026-09-29")
         let friday = now.addingTimeInterval(3 * 86400)     // Friday 18:00 → Monday
         #expect(day("meeting with ana", at: friday) == "2026-10-05")
+    }
+
+    // Bench calendar-003 (Sunday 2026-11-01): "next week" was tomorrow.
+    @Test func nextWeekFromASunday() {
+        let sunday = Date(timeIntervalSince1970: 1_793_521_260)   // Sun 1 Nov 2026, 08:21 UTC
+        #expect(cal.component(.weekday, from: sunday) == 1)
+        #expect(day("meeting with ana next week", at: sunday) == "2026-11-09")
+        #expect(day("meeting with ana next friday", at: sunday) == "2026-11-06")   // as the runner's facts say
+        #expect(day("block 2 to 4 on wednesday for focus time", at: sunday) == "2026-11-04")
+        let saturday = sunday.addingTimeInterval(-86400)
+        #expect(day("meeting with ana next week", at: saturday) == "2026-11-02")
+        let monday = sunday.addingTimeInterval(86400)
+        #expect(day("meeting with ana next week", at: monday) == "2026-11-09")
+    }
+
+    @Test func nextWeekFollowsTheFirstDayOfTheWeek() {
+        var mondayFirst = cal
+        mondayFirst.firstWeekday = 2
+        let sunday = Date(timeIntervalSince1970: 1_793_521_260)
+        let today = mondayFirst.startOfDay(for: sunday)
+        #expect(ScheduleRequest.daysToNextWeekMonday(from: today, calendar: mondayFirst) == 1)
+        #expect(ScheduleRequest.daysToNextWeekMonday(from: today, calendar: cal) == 8)
     }
 }
 
@@ -366,5 +449,30 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(SchedulerModel.list(["Jilles"]) == "Jilles")
         #expect(SchedulerModel.list(["Jilles", "Harshil"]) == "Jilles and Harshil")
         #expect(SchedulerModel.list(["A", "B", "C"]) == "A, B and C")
+    }
+}
+
+// MARK: - "with" + a pronoun is no guest
+
+// Bench multi-030 (2026-11-01): "make a google doc with its title…, and block time friday morning" booked
+// "Meeting with Its".
+@Suite struct ScheduleGuestWordTests {
+    @Test func withAPronounOrDeterminerIsNoGuest() {
+        #expect(ScheduleParser.parse("block time friday morning with my notes")?.people == [])
+        #expect(ScheduleParser.parse("meeting with them tomorrow at 3")?.people == [])
+        #expect(ScheduleParser.parse("focus time with it friday")?.people == [])
+        #expect(ScheduleParser.parse("block time friday with its title")?.people == [])
+        #expect(ScheduleParser.parse("meeting with jilles and harshil")?.people == ["jilles", "harshil"])
+        #expect(ScheduleParser.parse("lunch with Will and Mark friday")?.people == ["Will", "Mark"])
+    }
+
+    // Bench native-041: "…with three items: slides, demo, q&a" became guests "Three, Demo & Q".
+    @Test func listItemsAreNoGuests() {
+        #expect(ScheduleParser.parse("review with three items: slides, demo, q&a")?.people == [])
+        #expect(ScheduleParser.parse("prep session with the agenda: slides, demo, q&a")?.people == [])
+        #expect(ScheduleParser.parse("standup with both teams tomorrow")?.people == [])
+        // A colon elsewhere is no list header: "with ana at 10:30" keeps Ana.
+        #expect(ScheduleParser.parse("meeting with ana at 10:30")?.people == ["ana"])
+        #expect(ScheduleParser.parse("agenda: sync with jilles, harshil tomorrow")?.people == ["jilles", "harshil"])
     }
 }

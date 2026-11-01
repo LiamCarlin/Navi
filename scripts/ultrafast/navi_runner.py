@@ -151,6 +151,16 @@ Reliability adaptations (from failed runs, see git log):
      only) and retried once, shorter; refused even then, Jev sees the
      controls likeliest for the goal; still failing, the run judges the page
      (32) instead of ending on a raw error.
+ 39. Never the user's sign-in, checkout or a partner site: unless the goal is to sign in or up,
+     sign-in / sign-up / "Continue with Google" controls and an account form's identity fields are
+     not offered to Jev (`account_form` in its state says why), the text helper gets no
+     about_the_user for them, and the takeover refuses them, never types the user's email or name
+     into such a form, never enters checkout (a "Continue" that lands there is undone) and stops for
+     the user on a sign-in page. A needs-user sign-in is a question even on a purchase, and a
+     purchase whose item is in the cart is achieved whatever is left (checkout, signing in, paying).
+     Partner-compare toggles ("Compare vs. Booking.com") are not offered or pressed in an errand.
+ 40. "Document is navigating" / "Inspected target navigated or closed" is the page moving under
+     the step: observe again, never an error that ends the run (only a run of them does).
 """
 
 import argparse
@@ -853,18 +863,42 @@ def same_page(a, b):
     return bool(norm(a)) and norm(a) == norm(b)
 
 
-def find_open_tab(url, targets=None):
-    """The id of an open Chrome tab showing `url`, or None."""
+def find_open_tab(url, targets=None, is_visible=None):
+    """The id of an open Chrome tab showing `url`, or None. Several tabs on the same page (the same
+    video opened twice, a store page left over from an earlier run): the one the user is looking at —
+    the active tab of a window, whose document is "visible" — not merely the first Chrome lists
+    (bench 2026-11-01: "pause the video" paused another YouTube tab)."""
     if targets is None:
         try:
             from browser_harness.helpers import cdp
             targets = cdp("Target.getTargets").get("targetInfos", [])
         except Exception:  # noqa: BLE001 — no daemon yet: open our own tab
             return None
-    for t in targets:
-        if t.get("type") == "page" and same_page(t.get("url"), url):
-            return t.get("targetId")
-    return None
+    matches = [t.get("targetId") for t in targets if t.get("type") == "page" and same_page(t.get("url"), url)]
+    if len(matches) > 1:
+        check = is_visible or tab_is_visible
+        for target_id in matches:
+            try:
+                if check(target_id):
+                    return target_id
+            except Exception:  # noqa: BLE001 — unknown: try the next one
+                continue
+    return matches[0] if matches else None
+
+
+def tab_is_visible(target_id):
+    """Is this tab the one shown in its window (`document.visibilityState` is "visible")? One short
+    CDP session; the tab is left exactly as it was."""
+    from browser_harness.helpers import cdp
+    session = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    try:
+        r = cdp("Runtime.evaluate", session_id=session, expression="document.visibilityState", returnByValue=True)
+        return ((r or {}).get("result") or {}).get("value") == "visible"
+    finally:
+        try:
+            cdp("Target.detachFromTarget", sessionId=session)
+        except Exception:  # noqa: BLE001 — the daemon drops it with the run anyway
+            pass
 
 
 def find_target(target_id, targets=None):
@@ -1204,6 +1238,56 @@ def json_object(text):
     return out
 
 
+def salvage_json(text):
+    """The JSON object in a reply that was cut off ("Unterminated string" — the judge ran out of tokens
+    mid-answer): every complete member before the cut, the open string closed, the braces balanced.
+    Raises ValueError when there is no object to salvage."""
+    try:
+        return json_object(text)
+    except ValueError:
+        pass
+    text = (text or "").strip()
+    a = text.find("{")
+    if a < 0:
+        raise ValueError("no JSON object in the reply")
+    text = text[a:]
+    stack, in_string, escaped, cuts = [], False, False, []
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if not stack:
+                text = text[:i + 1]
+                break
+        elif ch == "," and stack:
+            cuts.append((i, list(stack)))
+    candidates = []
+    if in_string:
+        candidates.append(text + ('\\' if escaped else '') + '"' + "".join(reversed(stack)))
+    candidates.append(text + "".join(reversed(stack)))
+    candidates += [text[:i] + "".join(reversed(st)) for i, st in reversed(cuts)]
+    for c in candidates:
+        try:
+            out = json.loads(c)
+        except ValueError:
+            continue
+        if isinstance(out, dict):
+            return out
+    raise ValueError("no JSON object in the reply")
+
+
 def jpeg_size(data):
     """(width, height) of a JPEG from its SOF marker, else None."""
     i = 2
@@ -1250,18 +1334,19 @@ VERDICTS = ("achieved", "partial", "not_achieved", "impossible", "needs_user")
 
 JUDGE_SYSTEM = """You check where a web task stands for Navi, an assistant that works in the user's browser. You get the user's goal, a screenshot of the browser tab now (when available), the page's URL, title and visible text, the actions taken so far, and why you were asked.
 
-Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user", "question": "...", "question_kind": "choice" | "do_it", "question_choices": ["...", ...]}
+Reply ONLY with one compact JSON object on one line — no markdown fence, nothing before or after it, answer under 60 words: {"verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user", "answer": "...", "next_step": "...", "question": "...", "question_kind": "choice" | "do_it", "question_choices": ["...", ...]}
 
-- achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag or checkout is reached — Navi never pays; the user places the order. For a sign-in, the account is signed in.
+- achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag (or checkout is reached) — that is achieved even though checkout, signing in to check out and placing the order are not done: Navi never checks out or pays; the user places the order. Never partial or needs_user for those. For a sign-in, the account is signed in.
 - partial: some parts are done, others not yet.
 - not_achieved: not done yet, but doable from here or on this site.
 - impossible: it cannot be done on this site at all (say why).
-- needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, a payment, a choice the goal leaves open.
+- needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, signing in or creating an account when the task cannot go on without it (Navi never signs in or signs up for the user unless the goal asks), a payment, a choice the goal leaves open.
 answer: one to three plain sentences for the user, true to the screen. Never claim something was done that the screen does not show, and never talk about what you yourself can or cannot do.
 next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details.
 question, question_kind, question_choices — only with needs_user (else "", "", []); Navi pauses the task and puts this to the user:
 - "choice" when the user must decide something the goal leaves open: question is one short question ("Which size do you want?"), question_choices 2–4 short answers — the options the page itself offers, as labelled there, the likeliest first.
-- "do_it" when only the user can do the next step on screen (their password or a code, a captcha, an account to pick in a sign-in window): question says what to do in one sentence ("Sign in to DoorDash in this tab."), question_choices is [].
+- "do_it" when only the user can do the next step on screen (signing in, their password or a code, a captcha, an account to pick in a sign-in window): question says what to do in one sentence ("Sign in to DoorDash in this tab."), question_choices is [].
+facts.today is today's date: a date the goal names without a year means its next occurrence; never offer a date before today as a choice, and never suggest the user meant a past year.
 Never ask about paying or placing the order: an item in the cart/bag is achieved, and the order is the user's to place.
 user_said, when present, holds what the user already answered in this task: follow it, and never ask the same thing again."""
 
@@ -1275,19 +1360,88 @@ def says_could_not(text):
     return bool(COULD_NOT.search(text or ""))
 
 
-def normalize_verdict(out):
-    """A judge reply as {verdict, answer, next_step}: an unknown verdict reads as not_achieved, and
-    an "achieved" whose own words say it was not done is not believed."""
+IN_CART = re.compile(r"\b(added to (your |the )?([\w'’&-]+ ){0,2}(cart|bag|basket)|(is|are|now|sits?|was|were|it's|its) (now |already )?in "
+                     r"(your |the )?([\w'’&-]+ )?(cart|bag|basket)|(cart|bag|basket) (now )?(has|holds|contains|shows) )", re.I)
+NOT_IN_CART = re.compile(r"(\bnot|n't|\bnever|\bno longer|\bcould not|\bfailed to)\b[^.;,]{0,30}\b(added|in (your |the )?(cart|bag|basket))|"
+                         r"\b(nothing|no items?)\b[^.;,]{0,20}\b(cart|bag|basket)|\b(cart|bag|basket) (is |was )?(still )?empty\b", re.I)
+LEFT_FOR_USER = re.compile(r"\b(check ?out|checkout|place (the |your )?order|placed|placing|pay|paid|payment|purchase|sign(ed|ing)? ?in|"
+                           r"log(ged|ging)? ?in|account|deliver(y|ed)?|total|taxes|fees?)\b", re.I)
+STILL_TO_DO = re.compile(COULD_NOT.pattern + r"|\b(not yet|yet to|hasn't|haven't|isn't|aren't|still|remains?|needs?|requires?|missing|"
+                         r"must|have to|has to)\b", re.I)
+
+
+def cart_is_the_end(goal, answer):
+    """A purchase goal whose judge answer says the item went into the cart, and that only checkout, signing
+    in, paying or placing the order is left (bench errand-030: "partial — the item is in the cart but checkout
+    hasn't been completed", then the takeover went to checkout). The cart is where Navi's purchase ends."""
+    answer = answer or ""
+    if not is_purchase_goal(goal) or not IN_CART.search(answer) or NOT_IN_CART.search(answer):
+        return False
+    for clause in re.split(r"[.;!?,]\s|\bbut\b|\bhowever\b", answer):
+        if STILL_TO_DO.search(clause) and not LEFT_FOR_USER.search(clause):
+            return False
+    return True
+
+
+MONTHS = {m: i for i, ms in enumerate([("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
+                                         ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
+                                         ("oct", "october"), ("nov", "november"), ("dec", "december")], 1) for m in ms}
+MONTH_RX = r"(" + "|".join(sorted(MONTHS, key=len, reverse=True)) + r")\.?"
+
+
+def dates_named(text):
+    """The calendar dates a short text names with a year: "December 5, 2025", "5 Dec 2025", "2025-12-05",
+    "12/05/2025", or a month alone ("December 2025" → its last day)."""
+    import calendar as _cal
+    import datetime as _dt
+    t = (text or "").lower()
+    found = []
+
+    def add(y, m, d):
+        try:
+            found.append(_dt.date(int(y), int(m), int(d)))
+        except ValueError:
+            pass
+    spans = []
+    for m in re.finditer(MONTH_RX + r"\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})\b", t):
+        add(m.group(4), MONTHS[m.group(1)], m.group(2)); spans.append(m.span())
+    for m in re.finditer(r"\b(\d{1,2})(st|nd|rd|th)?\s+(of\s+)?" + MONTH_RX + r",?\s+(\d{4})\b", t):
+        add(m.group(5), MONTHS[m.group(4)], m.group(1)); spans.append(m.span())
+    for m in re.finditer(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t):
+        add(m.group(1), m.group(2), m.group(3))
+    for m in re.finditer(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", t):
+        add(m.group(3), m.group(1), m.group(2))
+    for m in re.finditer(r"\b" + MONTH_RX + r",?\s+(\d{4})\b", t):
+        if not any(a <= m.start() < b for a, b in spans):
+            y, mo = int(m.group(2)), MONTHS[m.group(1)]
+            if 1 <= y <= 9999:
+                add(y, mo, _cal.monthrange(y, mo)[1])
+    return found
+
+
+def names_past_date(text, today=None):
+    """Does this answer name a date that has already gone by (bench errand-031 offered "December 5, 2025")?"""
+    import datetime as _dt
+    today = today or _dt.date.today()
+    return any(d < today for d in dates_named(text))
+
+
+def normalize_verdict(out, goal=None, today=None):
+    """A judge reply as {verdict, answer, next_step}: an unknown verdict reads as not_achieved, an
+    "achieved" whose own words say it was not done is not believed, and a purchase whose item is in the
+    cart is achieved whatever is left for the user (checkout, signing in, paying)."""
     verdict = str(out.get("verdict") or "").strip().lower().replace(" ", "_").replace("-", "_")
     if verdict not in VERDICTS:
         verdict = "not_achieved"
     answer = str(out.get("answer") or "").strip()
     if verdict == "achieved" and says_could_not(answer):
         verdict = "partial"
+    if verdict in {"partial", "not_achieved", "needs_user"} and goal and cart_is_the_end(goal, answer):
+        verdict = "achieved"
     result = {"verdict": verdict, "answer": answer[:800], "next_step": str(out.get("next_step") or "").strip()[:300]}
     if verdict == "needs_user":
         # Adaptation 37: what to put to the user. An unnamed kind follows the choices it came with.
-        choices = tidy_choices(out.get("question_choices"))
+        choices = tidy_choices(out.get("question_choices"), today=today)
         kind = str(out.get("question_kind") or "").strip().lower().replace(" ", "_").replace("-", "_")
         if kind not in {"choice", "do_it"}:
             kind = "choice" if len(choices) >= 2 else "do_it"
@@ -1299,12 +1453,13 @@ def normalize_verdict(out):
 MAX_CHOICES = 4
 
 
-def tidy_choices(raw):
-    """Up to four distinct, short, non-empty answers (the same rule as Navi's `AgentQuestion.tidy`)."""
+def tidy_choices(raw, today=None):
+    """Up to four distinct, short, non-empty answers (the same rule as Navi's `AgentQuestion.tidy`); an
+    answer naming a date that has gone by is never offered."""
     out, seen = [], set()
     for c in raw if isinstance(raw, list) else []:
         t = str(c or "").strip().strip("•-– ")
-        if t and len(t) <= 80 and t.lower() not in seen:
+        if t and len(t) <= 80 and t.lower() not in seen and not names_past_date(t, today):
             seen.add(t.lower())
             out.append(t)
         if len(out) == MAX_CHOICES:
@@ -1323,6 +1478,10 @@ def user_said_from_env():
 
 
 PAYMENT_STEP = re.compile(r"\b(pay|payment|place (the |your )?order|checkout|check out|card number|billing)\b", re.I)
+# Adaptation 39: "Sign in to DoorDash in this tab" is the user's to do and the task goes on after it — a
+# question, even on a purchase whose checkout needs it (bench errand-030 ended failed instead).
+SIGN_IN_STEP = re.compile(r"\b(sign(ed)? ?in|log(ged)? ?in|sign ?up|create (an |your )?account)\b", re.I)
+PAYMENT_ONLY = re.compile(r"\b(pay|payment|place (the |your )?order|card number|billing)\b", re.I)
 
 
 def user_question(verdict, goal, status):
@@ -1333,9 +1492,10 @@ def user_question(verdict, goal, status):
     question = (verdict.get("question") or verdict.get("answer") or "").strip()
     if not question:
         return None
-    if PURCHASE_GOAL.search(goal or "") and PAYMENT_STEP.search(question + " " + (verdict.get("answer") or "")):
-        return None
     kind = verdict.get("question_kind") or "do_it"
+    signing_in = kind == "do_it" and SIGN_IN_STEP.search(question) and not PAYMENT_ONLY.search(question)
+    if PURCHASE_GOAL.search(goal or "") and PAYMENT_STEP.search(question + " " + (verdict.get("answer") or "")) and not signing_in:
+        return None
     return {"question": question, "question_kind": kind,
             "question_choices": verdict.get("question_choices") or [] if kind == "choice" else []}
 
@@ -1352,25 +1512,50 @@ def judge(goal, page, history, why, screenshot_b64=None):
     said = user_said_from_env()
     if said:
         state["user_said"] = said
+    state["facts"] = date_facts(goal)
     content = []
     if screenshot_b64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
     content.append({"type": "text", "text": json.dumps(state, sort_keys=True, ensure_ascii=False)})
     model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
-    result = claude_post({"model": model, "max_tokens": 600, "system": JUDGE_SYSTEM,
-                          "messages": [{"role": "user", "content": content}]}, timeout=60, what="Claude's check")
-    return normalize_verdict(json_object(message_text(result)))
+    messages = [{"role": "user", "content": content}]
+    for attempt in range(2):
+        result = claude_post({"model": model, "max_tokens": JUDGE_MAX_TOKENS, "system": JUDGE_SYSTEM,
+                              "messages": messages}, timeout=60, what="Claude's check")
+        text = message_text(result)
+        try:
+            # A reply cut off mid-string keeps every complete member (bench: "Unterminated string").
+            return normalize_verdict(salvage_json(text), goal=goal)
+        except ValueError:
+            if attempt:
+                raise
+            # Prose, or nothing usable: ask once more for the object alone.
+            messages = messages + [{"role": "assistant", "content": text or "(no reply)"},
+                                   {"role": "user", "content": "Reply with the JSON object only, on one line."}]
 
 
+JUDGE_MAX_TOKENS = 1200
 JUDGE_DONE_BELOW = 0.85
 JUDGE_SETTLE_S = 0.6        # a beat for a dialog that just opened before the judge looks
 
 
-def should_judge_done(confidence):
-    """Jev's own DONE stands when it is sure; an unsure one (KFC's 63 %) is checked by the judge."""
+def should_judge_done(confidence, acted=True):
+    """Jev's own DONE stands when it is sure; an unsure one (KFC's 63 %) is checked by the judge.
+    A DONE before anything was done on the page is always checked, however sure: the start page may
+    be the goal ("open my amazon cart" → the judge reads the cart), but "Nothing to do. (0 steps)"
+    is never an answer (bench 2026-11-01, errand-001 / multi-001)."""
     if os.environ.get("NAVI_JUDGE") == "0" or claude_endpoint() is None:
         return False
+    if not acted:
+        return True
     return (confidence if confidence is not None else 0.0) < JUDGE_DONE_BELOW
+
+
+def unconfirmed_zero_step_done(title):
+    """A DONE with no action on the page that no judge confirmed: a stop the user sees, not a success."""
+    where = f"“{title}”" if title else "the page"
+    return (("blocked", f"Stopped: opened {where} but did nothing on it — Navi couldn't confirm that's what you asked for."),
+            {"verdict": "partial", "answer": "", "next_step": "", "judged": False})
 
 
 # --- the takeover ------------------------------------------------------------------
@@ -1385,8 +1570,10 @@ TAKEOVER_SYSTEM = """You are finishing a task in one Chrome tab for the user of 
 You see the tab through screenshots: only the web page, no address bar, tabs or other windows. Act with the computer tool (coordinates are in the latest screenshot's pixels); `go_to_url` opens an https address in this tab and `go_back` goes back. Take a screenshot again after any action that changes the page.
 
 Rules:
-- Navi never pays: never click Place order, Pay, Buy now, Confirm purchase or the like. A purchase or order is finished when the item is in the cart/bag or the checkout page shows it; then stop with Done.
-- Never type passwords, one-time codes, card or bank numbers. You may press "Continue with Google" or "Sign in" buttons, but when the next step needs the user's password, a code, an account choice in a sign-in window, a payment, or a choice the goal leaves open, stop.
+- Navi never pays: never click Place order, Pay, Buy now, Confirm purchase or the like, and never go to checkout. A purchase or order is finished when the item is in the cart/bag; then stop with Done — checkout and paying are the user's.
+- Never sign in, sign up or create an account for the user (unless the goal itself is to sign in or sign up): never press "Continue with Google/Apple/Facebook", "Sign in", "Log in" or "Sign up", and never type the user's email or name into such a form. When the task cannot go on without the user's account, stop with "Stopped: Sign in to <site> in this tab." — the user signs in, then you carry on.
+- Never type passwords, one-time codes, card or bank numbers. When the next step needs the user's password, a code, an account choice in a sign-in window, a payment, or a choice the goal leaves open, stop.
+- Never tick "Compare with <another site>" or similar boxes that open other sites' results; stay on this site.
 - Do not send, post, delete or submit anything the goal does not ask for.
 - Dismiss pop-ups, cookie banners and app-download prompts that are in the way, unless they are the goal.
 - Be quick: a few actions per turn.
@@ -1451,13 +1638,23 @@ AT_POINT_JS = """((x,y) => {
   const e=document.elementFromPoint(x,y); if (!e) return null;
   const c=e.closest('button,a,[role=button],[role=link],[role=menuitem],[role=option],input,select,textarea,label,summary,[onclick]')||e;
   const t=s=>String(s||'').replace(/\\s+/g,' ').trim();
+  const kind=(c.control&&c.control.type)||(c.tagName==='INPUT'&&c.type)||c.getAttribute('role')||'';
   return {label:t(c.getAttribute('aria-label')||c.innerText||c.value||c.title||c.getAttribute('alt')).slice(0,160),
-          tag:c.tagName, frame:e.tagName==='IFRAME'};
+          tag:c.tagName, kind:String(kind).toLowerCase(), frame:e.tagName==='IFRAME'};
 })"""
 
 SECRET_FIELD_JS = """(() => { const e=document.activeElement; if (!e) return false;
   const a=String(e.autocomplete||'')+' '+String(e.name||'')+' '+String(e.id||'');
   return e.type==='password' || /cc-|card|cvv|cvc|one-time-code|otp|password/i.test(a); })()"""
+
+# Adaptation 39: the focused field is an identity field (email, name, phone) of a sign-in / sign-up form.
+ACCOUNT_FIELD_JS = """(() => { const e=document.activeElement; if (!e || !/^(INPUT|TEXTAREA)$/.test(e.tagName)) return false;
+  const lab=(e.labels&&e.labels[0]&&e.labels[0].innerText)||'';
+  const a=[e.type,e.autocomplete,e.name,e.id,e.placeholder,e.getAttribute('aria-label'),lab].map(x=>String(x||'')).join(' ');
+  if (!/e-?mail|user ?name|given-name|family-name|first ?name|last ?name|full ?name|\\bname\\b|\\btel\\b|phone|mobile/i.test(a)) return false;
+  const scope=e.closest('form,[role=dialog],dialog,[aria-modal=true]')||document.body;
+  return !!scope.querySelector('input[type=password]') ||
+    /continue with (google|apple|facebook|microsoft|email)|sign ?up|create (an |your )?account/i.test((scope.innerText||'').slice(0,4000)); })()"""
 
 
 def pays_refusal(label):
@@ -1466,6 +1663,36 @@ def pays_refusal(label):
         return (f"Refused: ‘{label[:60]}’ would spend the user's money — Navi never pays. "
                 "If the item is in the cart or checkout is open, reply Done: … ; the user places the order.")
     return None
+
+
+CHECKOUT = re.compile(r"\b(check ?out|proceed to (checkout|payment)|go to (checkout|payment)|continue to (checkout|payment))\b", re.I)
+CHECKOUT_URL = re.compile(r"^https?://(checkout\.|pay\.|secure\.)|/(checkout|payment|pay)(/|\?|#|$)", re.I)
+AUTH_URL = re.compile(r"^https?://(accounts?|identity|auth|login|signin|sso)\.|/(log-?in|sign-?in|sign-?up|signup|register|auth|oauth2?|sso)(/|\?|#|$)",
+                      re.I)
+
+
+def takeover_refusal(goal, hit):
+    """Why the takeover may not click this control (adaptations 27 and 39), else None: it spends money,
+    enters checkout, signs the user in or up, or ticks a partner site's compare box."""
+    label = (hit or {}).get("label") or ""
+    refusal = pays_refusal(label)
+    if refusal or not label:
+        return refusal
+    first = label.split("\n")[0][:60]
+    if CHECKOUT.search(label):
+        return (f"Refused: ‘{first}’ goes to checkout — Navi never checks out or pays. If the item is in the cart/bag, "
+                "reply Done: … ; the user checks out.")
+    if is_auth_control(label) and not is_account_goal(goal):
+        return (f"Refused: ‘{first}’ would sign the user in or create an account — that is the user's to do. "
+                "If the task cannot go on without it, reply Stopped: Sign in to … in this tab.")
+    if is_partner_detour(label, (hit or {}).get("kind")) and not re.search(r"\bcompar", goal or "", re.I):
+        return f"Refused: ‘{first}’ opens another site's results — stay on this site."
+    return None
+
+
+def entered(rx, before, after):
+    """Did the tab move into a URL `rx` matches (checkout, a sign-in page) that it was not on before?"""
+    return bool(after) and bool(rx.search(after)) and not rx.search(before or "")
 
 
 def describe_call(block):
@@ -1551,6 +1778,7 @@ class Takeover:
         self.last_url = None
         self.ratio = 1.0
         self.cursor = (0.0, 0.0)
+        self.goal = ""
 
     def available(self):
         return os.environ.get("NAVI_TAKEOVER", "1") != "0" and claude_endpoint() is not None and self.count < MAX_TAKEOVERS
@@ -1563,9 +1791,10 @@ class Takeover:
         hand_back = not (self.last_url is not None and Coach.same_document(self.last_url, start_url))
         self.count += 1
         self.last_url = start_url
+        self.goal = goal
         model = os.environ.get("NAVI_TAKEOVER_MODEL") or os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
         deadline = time.monotonic() + TAKEOVER_MAX_S
-        shot, self.ratio = viewport_shot(browser)
+        shot, self.ratio = retry_transient(lambda: viewport_shot(browser))
         recent = [h.get("action", "") for h in agent.state["history"][-8:]]
         intro = {
             "goal": goal,
@@ -1616,6 +1845,10 @@ class Takeover:
                     actions += 1
                     recent.append("Claude: " + did)
                     on_step({"action": "Claude: " + did, "kind": "takeover", "text": None, "url": start_url})
+            if actions:
+                detour = self.detour(browser, start_url)
+                if detour:
+                    return {**detour, "actions": actions}
             rounds_left = TAKEOVER_TURNS - sum(1 for m in messages if m["role"] == "assistant")
             if rounds_left <= 0 or time.monotonic() > deadline:
                 results.append({"type": "text", "text": "You have used this takeover's budget. Do not call any tool. "
@@ -1632,6 +1865,25 @@ class Takeover:
                     return {"result": "handback", "actions": actions,
                             "summary": f"Did: moved on to {now.get('title') or now.get('url')}"}
         return {"result": takeover_result(summary, actions), "summary": summary, "actions": actions}
+
+    def detour(self, browser, start_url):
+        """Adaptation 39: an action that took the tab into checkout (a generic "Continue" in a cart) is
+        undone — the cart is the end of a purchase — and one that reached a sign-in page stops for the user."""
+        try:
+            now = browser.evaluate("location.href")
+        except Exception:  # noqa: BLE001 — mid-navigation; the next round looks again
+            return None
+        if entered(CHECKOUT_URL, start_url, now):
+            emit("status", message="Claude reached checkout — going back: checkout and paying are the user's")
+            try:
+                browser.evaluate("history.back()")
+                time.sleep(0.8)
+            except Exception:  # noqa: BLE001 — the judge reads whatever page this is
+                pass
+            return {"result": "done", "summary": "Done: the item is in the cart — checkout and paying are the user's."}
+        if entered(AUTH_URL, start_url, now) and not is_account_goal(self.goal):
+            return {"result": "stopped", "summary": "Stopped: Sign in in this tab — signing in is yours to do."}
+        return None
 
     def point(self, coordinate):
         if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
@@ -1695,9 +1947,10 @@ class Takeover:
             if name in {"left_click", "right_click", "middle_click", "double_click", "triple_click"}:
                 x, y = self.point(inp.get("coordinate")) if inp.get("coordinate") else self.cursor
                 hit = browser.evaluate(f"{AT_POINT_JS}({x},{y})") or {}
-                refusal = pays_refusal(hit.get("label"))
+                refusal = takeover_refusal(self.goal, hit)
                 if refusal:
-                    emit("status", message=f"Claude went for ‘{hit.get('label', '')[:50]}’ — Navi never pays")
+                    why = "Navi never pays" if PAYS.search(hit.get("label") or "") else "not Navi's to press"
+                    emit("status", message=f"Claude went for ‘{hit.get('label', '')[:50]}’ — {why}")
                     return self.result(block, text=refusal, error=True), None
                 button = {"right_click": "right", "middle_click": "middle"}.get(name, "left")
                 count = {"double_click": 2, "triple_click": 3}.get(name, 1)
@@ -1730,6 +1983,11 @@ class Takeover:
                 if browser.evaluate(SECRET_FIELD_JS):
                     return self.result(block, text="Refused: the focused field takes a password, code or card number — "
                                        "Navi never types those. Reply Stopped: … so the user can.", error=True), None
+                if not is_account_goal(self.goal) and browser.evaluate(ACCOUNT_FIELD_JS):
+                    # Adaptation 39: the user's email or name never goes into a sign-in / sign-up form unasked.
+                    return self.result(block, text="Refused: the focused field belongs to a sign-in / sign-up form — "
+                                       "Navi never signs the user in or up. Close the form, or reply Stopped: Sign in to … "
+                                       "in this tab.", error=True), None
                 browser.call("Input.insertText", text=text)
                 time.sleep(0.2)
                 return self.result(block), f"type “{text[:40]}”"
@@ -1755,13 +2013,17 @@ class Takeover:
 
 def takeover_result(summary, actions):
     """What a takeover's last word means: Done / Stopped are Claude's own verdicts (Done is still
-    checked by the judge); anything else hands back when it acted, else it made no progress."""
+    checked by the judge); Did: hands back when it acted, else it made no progress. A last word with
+    none of the three ("The sinc function is now correctly plotted…", bench schoolwork-027) is
+    "unclear": the judge reads the page — it is often done — instead of Jev wandering on."""
     s = (summary or "").lstrip()
     if s.startswith("Done"):
         return "done"
     if s.startswith("Stopped"):
         return "stopped"
-    return "handback" if actions else "no_progress"
+    if not actions:
+        return "no_progress"
+    return "handback" if not s or s.startswith("Did") else "unclear"
 
 
 # --- escalation: what a stuck or unsure stop leads to -------------------------------
@@ -3664,8 +3926,23 @@ def cart_count(page):
     return max(counts) if counts else None
 
 
-def done_doubt(state, decision):
-    """Why a DONE is not believed yet, or None."""
+def added_this_run(state):
+    """The cart/bag count rose since the run started, or the page says something was just added."""
+    page = state.get("page") or {}
+    start, now = state.get("navi_cart_start"), cart_count(page)
+    return bool((now is not None and now > (start or 0)) or ADDED.search(page.get("text") or ""))
+
+
+def leftover_cart(state):
+    """The cart held items when the run started and nothing this run added shows (bench errand-030)."""
+    start, now = state.get("navi_cart_start"), cart_count(state.get("page") or {})
+    return bool(start) and (now is None or now <= start) and not added_this_run(state)
+
+
+def done_doubt(state, decision, judge_available=False):
+    """Why a DONE is not believed yet, or None. An unsure DONE is left to the judge when it can be asked
+    (bench schoolwork-027: "Jev was unsure (15%) — carrying on" with the graph plotted, and 30 s of
+    wandering into Desmos's sign-up form followed); only without one does it get a second look here."""
     page = state.get("page") or {}
     if "navi_cart_start" not in state:
         state["navi_cart_start"] = cart_count(page)
@@ -3673,13 +3950,49 @@ def done_doubt(state, decision):
         return None
     if is_purchase_goal(state.get("goal")):
         start, now = state.get("navi_cart_start"), cart_count(page)
-        went_in = (now is not None and now > (start or 0)) or ADDED.search(page.get("text") or "") \
-            or CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
-        if not went_in:
+        on_cart = CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
+        if not added_this_run(state) and not on_cart:
             return "nothing shows the item in the cart or bag yet"
-    if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE:
+        # Bench errand-030: a guest cart already holding 3 items from earlier runs read as "ready to place
+        # the order" after three no-op steps. A cart page whose count did not rise shows nothing of this run.
+        if leftover_cart(state):
+            return "the cart only holds what was in it before this run"
+    if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE and not judge_available:
         return "Jev was unsure (%d%%)" % round(100 * decision.get("confidence", 0))
     return None
+
+
+# --- Adaptation 40: a document that is navigating is a stale page, not an error -----
+#
+# Kayak (bench 2026-11-01): a click that navigated mid-step raised CDP's "Document is navigating"
+# out of `tick`, and the run ended on it as an error; a Google results page did the same on the
+# first look (edge-006), and "Inspected target navigated or closed" likewise. Those are the page
+# moving under the runner: observe again (a short beat first), like a StalePage. Only a run of them
+# with nothing in between (the tab is really gone) still ends the run.
+
+TRANSIENT_CDP = re.compile(r"document is navigating|inspected target navigated or closed|cannot find context with specified id|"
+                           r"execution context was destroyed|cannot find default execution context|no node with given id|"
+                           r"could not find node with given id|node with given id does not belong to the document|"
+                           r"frame with the given id was not found|target (page, context,? or browser )?(has been )?closed",
+                           re.I)
+MAX_TRANSIENT = 6           # in a row, with no step in between
+TRANSIENT_WAIT_S = 0.35
+
+
+def is_transient(exc):
+    """A CDP error that only says the page moved under us ("Document is navigating")."""
+    return isinstance(exc, (RuntimeError, StalePage)) and bool(TRANSIENT_CDP.search(str(exc)))
+
+
+def retry_transient(fn, tries=4, wait=TRANSIENT_WAIT_S):
+    """fn(), retried while it fails only because the page is navigating."""
+    for attempt in range(tries):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — re-raised unless transient
+            if not is_transient(exc) or attempt == tries - 1:
+                raise
+            time.sleep(wait)
 
 
 def tick(agent, retried, rejected=None):
@@ -3705,7 +4018,8 @@ def tick(agent, retried, rejected=None):
             return "model_error"
         decision = state["decision"]
         fingerprint = state["page"]["fingerprint"]
-        doubt = done_doubt(state, decision)
+        doubt = done_doubt(state, decision,
+                           judge_available=bool(decision) and should_judge_done(decision.get("confidence")))
         if doubt and fingerprint not in retried and len(retried) < MAX_BLOCKED_RETRIES:
             # Adaptation 30: a DONE without evidence is not the end. Jev hears why and goes on.
             retried.add(fingerprint)
@@ -3742,12 +4056,33 @@ def tick(agent, retried, rejected=None):
             state["history"][-1]["note"] = note
             state["history"][-1]["action"] = f"{state['history'][-1].get('action', '')} → {note}"
         RECIPIENT_NOTES.clear()
+        state["navi_transient"] = 0
         return "acted"
     except StalePage:
         state["decision"] = None
         state["status"] = "ready"
-        state["page"] = state["browser"].observe(screenshot=agent.screenshots)
+        state["page"] = retry_transient(lambda: state["browser"].observe(screenshot=agent.screenshots))
         state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        return "stale"
+    except RuntimeError as exc:
+        # Adaptation 40: "Document is navigating" — the page moved under the step. Look again.
+        if not is_transient(exc):
+            raise
+        state["navi_transient"] = state.get("navi_transient", 0) + 1
+        if state["navi_transient"] > MAX_TRANSIENT:
+            raise
+        emit("status", message=f"The page was still changing ({str(exc)[:60]}) — looking again")
+        state["decision"] = None
+        if state.get("status") not in {"done", "blocked"}:
+            state["status"] = "ready"
+        time.sleep(TRANSIENT_WAIT_S)
+        try:
+            state["page"] = retry_transient(lambda: state["browser"].observe(screenshot=agent.screenshots))
+        except Exception as again:  # noqa: BLE001 — the next tick observes again
+            if not is_transient(again):
+                raise
+        if state.get("started_at"):
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         return "stale"
 
 
@@ -3790,6 +4125,110 @@ def drop_payments(page):
     return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
 
 
+# --- Adaptation 39: never sign in, sign up or detour to a partner site for the user ---
+#
+# Bench 2026-11-01: on Desmos ("plot y=sin(x)/x") an unsure DONE let Jev wander into the sign-up
+# dialog, and the text helper typed the user's real email and first name into it (about_the_user,
+# adaptation 24); on DoorDash Jev pressed "Continue with Google" three times at checkout. Signing
+# in or creating an account is the user's, never Navi's, unless the goal asks for it: a sign-in /
+# sign-up / log-in / "Continue with Google" control is not offered to Jev, and the identity fields
+# of an account form (email, name, phone, password) are not offered either. Jev is told why
+# (`account_form`), so a form in the way is closed and one the task cannot get past is BLOCKED —
+# judged needs_user, which pauses the task with "Sign in … in this tab" (adaptation 37).
+# And a "Compare vs. Booking.com" box (Kayak) opens another site in front of the task: such
+# partner-compare / open-in-a-new-site toggles are not offered unless the goal asks to compare.
+
+ACCOUNT_GOAL = re.compile(r"\b(sign(ing|ed)?[ -]?(in|into|up|on|out)\b|log(ging|ged)?[ -]?(in|into|on|out)\b|login|logon|signup|"
+                          r"register|registration|(create|make|open|set up) (an |a |my |new )?account|my account|account settings|subscribe)",
+                          re.I)
+OAUTH = re.compile(r"\b(continue|sign ?(in|up)|log ?in|register|join|connect|get started)\s+(with|using|via|through)\s+"
+                   r"(google|apple|facebook|microsoft|github|twitter|x|amazon|linkedin|email|e-mail|phone|sso|passkey|your)\b", re.I)
+AUTH_PHRASE = re.compile(r"\b(sign ?(in|up)|log ?(in|on)|login|signup|create (an |your |a |new )?account|register|"
+                         r"forgot (your )?password)\b", re.I)
+IDENTITY_FIELD = re.compile(r"e-?mail|password|passcode|user ?name|first name|last name|full name|^\W*name\W*$|your name|"
+                            r"phone|mobile|birthday|date of birth|continue with", re.I)
+PASSWORD = re.compile(r"\bpassword\b", re.I)
+ACCOUNT_NOTE = ("This page asks the user to sign in or create an account. Navi never signs in, signs up or creates an "
+                "account for the user, so those controls and the form's fields are not offered. If the form is in the way, "
+                "close it or go back; if the task cannot go on without the user's account, answer BLOCKED.")
+PAGE_NOTES = {}             # per decision: notes for Jev's state about the page it is offered (set by `choose`)
+
+
+def is_account_goal(goal):
+    return bool(ACCOUNT_GOAL.search(goal or ""))
+
+
+def is_auth_control(label):
+    """A control that signs in, signs up or logs in: "Continue with Google", "Sign up or Login", a "Sign In"
+    tab, "Continue to Sign In", "Create account" (short labels only — a sentence that mentions signing in is text)."""
+    label = (label or "").split(" → ")[0].split(" — ")[0].strip()
+    if not label:
+        return False
+    if OAUTH.search(label):
+        return True
+    return bool(AUTH_PHRASE.search(label)) and len(re.findall(r"[\w']+", label)) <= 6
+
+
+def account_form(page):
+    """Is a sign-in / sign-up form on the page? An OAuth button, a password field (or its Show Password
+    toggle), or a sign-in/up control next to an identity field."""
+    actions = page.get("actions") or []
+    labels = [(a.get("kind"), a.get("label") or "") for a in actions]
+    if any(OAUTH.search(l) for _, l in labels) or any(PASSWORD.search(l) for _, l in labels):
+        return True
+    return any(k in {"click", "select"} and is_auth_control(l) for k, l in labels) and \
+        any(k == "fill" and IDENTITY_FIELD.search(l) for k, l in labels)
+
+
+def drop_account_controls(page, goal):
+    """The page without the controls that would sign the user in or up, and without the identity fields of
+    an account form; `account_gate` is set when a form was there. Unchanged for a goal about signing in."""
+    if is_account_goal(goal):
+        return page
+    form = account_form(page)
+
+    def auth(a):
+        label = a.get("label") or ""
+        if a.get("kind") in {"click", "select"} and is_auth_control(label):
+            return True
+        return form and a.get("kind") == "fill" and bool(IDENTITY_FIELD.search(label.split(" → ")[0]))
+
+    actions = [a for a in page["actions"] if not auth(a)]
+    if len(actions) == len(page["actions"]):
+        return page
+    return {**page, "actions": actions, "account_gate": form}
+
+
+PARTNER_DETOUR = re.compile(r"^\W*compare\b.{0,60}\b(vs\.?|versus|against|with)\s|\bcompare\b.{0,50}\b[\w-]+\.(com|net|org|co|ca|de|fr|es|it)\b|"
+                            r"\b(open|show|search|view)\b.{0,40}\b(in|on) (a )?(new|separate) (tab|window|site)\b|"
+                            r"\bopens? (in )?(a )?(new|separate) (tab|window)\b", re.I)
+TOGGLE_KINDS = {"checkbox", "switch", "radio", "menuitemcheckbox"}
+
+
+def is_partner_detour(label, role=""):
+    """A toggle that opens another site's results next to (or instead of) the task's: Kayak's "Compare vs.
+    KAYAK Booking.com", "Open results in a new window"."""
+    return (role or "").lower() in TOGGLE_KINDS and bool(PARTNER_DETOUR.search(label or ""))
+
+
+def drop_partner_detours(page, goal):
+    if re.search(r"\bcompar", goal or "", re.I):
+        return page
+    actions = [a for a in page["actions"] if a.get("kind") not in {"click", "select"}
+               or not is_partner_detour(a.get("label"), a.get("role"))]
+    return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+
+def with_page_notes(post):
+    """Jev's request carries the notes `choose` left for the page it is deciding on (`account_form`)."""
+    def post_json(url, key, body):
+        if PAGE_NOTES and isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict) \
+                and "elements" in body["state"]:
+            body = {**body, "state": {**body["state"], **PAGE_NOTES}}
+        return post(url, key, body)
+    return post_json
+
+
 # --- Adaptation 24: the user's own details for their own errands -------------
 #
 # "Order me a burger" needs a delivery address; the text helper is told never to invent
@@ -3813,13 +4252,31 @@ def user_profile():
     return {k: v for k, v in profile.items() if isinstance(v, str) and v.strip()} if isinstance(profile, dict) else {}
 
 
+ACCOUNT_FORM_TEXT = re.compile(r"\b(password|create (an |your )?account|sign ?up|sign up with|forgot (your )?password)\b", re.I)
+
+
+def account_form_field(context):
+    """Is this field one of a sign-in / sign-up form's identity fields (adaptation 39)? Its own label says
+    email / name / phone / password, and the page shows an account form (an OAuth button, a password,
+    "create account", "sign up")."""
+    field = context.get("field") or {}
+    label = str(field.get("label") or "")
+    if not IDENTITY_FIELD.search(label):
+        return False
+    text = f"{label}\n{(context.get('page') or {}).get('title') or ''}\n{(context.get('page') or {}).get('text') or ''}"
+    return bool(OAUTH.search(text) or ACCOUNT_FORM_TEXT.search(text))
+
+
 def with_user_details(context, profile=None):
-    """The helper's context plus about_the_user, for a field that asks for the user's own details."""
+    """The helper's context plus about_the_user, for a field that asks for the user's own details — never
+    for a sign-up / sign-in form's fields unless the goal is to sign in or up (adaptation 39)."""
     profile = user_profile() if profile is None else profile
     if not profile or not isinstance(context, dict):
         return context
     field = context.get("field") or {}
     if not PERSONAL_FIELD.search(f"{field.get('label') or ''} {field.get('role') or ''}"):
+        return context
+    if account_form_field(context) and not is_account_goal(context.get("goal")):
         return context
     return {**context, "about_the_user": profile}
 
@@ -3841,6 +4298,8 @@ def install_adaptations():
     RAW_JEV_POST[0] = jev_model.post_json
     # Adaptation 38: innermost layer, so it sizes the request the playbook/context/coach layers built.
     jev_model.post_json = guarded_jev(jev_model.post_json)
+    # Adaptation 39: the page's notes (an account form Jev is not offered) ride in the state.
+    jev_model.post_json = with_page_notes(jev_model.post_json)
     import jev_ultrafast.agent as agent_module
 
     use_claude = navi_cloud() is not None or (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"))
@@ -3859,6 +4318,11 @@ def install_adaptations():
 
     def choose(page, goal, history):
         page = drop_payments(drop_app_detours(rejected.filter(page), goal))
+        # Adaptation 39: never the user's sign-in / sign-up, never a partner site's compare box.
+        page = drop_partner_detours(drop_account_controls(page, goal), goal)
+        PAGE_NOTES.clear()
+        if page.get("account_gate"):
+            PAGE_NOTES["account_form"] = ACCOUNT_NOTE
         speculative.speculate(goal, page, history)
         try:
             return original_choose(page, goal, history)
@@ -3968,9 +4432,10 @@ def selftest():
     return 0 if ok else 1
 
 
-def purchase_note(goal, status):
-    """A finished purchase task: say the order is the user's to place (adaptation 27)."""
-    return "Ready for you to place the order — Navi never pays. " if status == "done" and PURCHASE_GOAL.search(goal or "") else ""
+def purchase_note(goal, status, leftover=False):
+    """A finished purchase task: say the order is the user's to place (adaptation 27) — never over a cart
+    that only holds what it held before the run (`leftover_cart`; bench errand-030)."""
+    return "Ready for you to place the order — Navi never pays. " if status == "done" and not leftover and PURCHASE_GOAL.search(goal or "") else ""
 
 
 def acted_on_page(history):
@@ -4158,19 +4623,23 @@ def main():
                 if checked and checked["verdict"] == "needs_user" and checked.get("question"):
                     stopped = dict(checked, answer=checked["answer"] or res["summary"])
                 return ("blocked", res["summary"]), stopped
-            if res["result"] in {"done", "no_progress"}:
+            if res["result"] in {"done", "no_progress", "unclear"}:
                 # Claude's "Done" — or a reply with no action, which is its read of the page ("the
-                # Google option is clearly visible") — is checked on a fresh look, never taken on trust.
+                # Google option is clearly visible"), or a last word with no Done/Did/Stopped — is checked
+                # on a fresh look, never taken on trust.
                 checked = look("Claude, driving, says: " + (res["summary"] or "(nothing)"))
                 if checked is None:
                     if res["result"] == "done":
                         return ("done", res["summary"]), {"verdict": "achieved", "answer": res["summary"], "next_step": "", "judged": False}
-                    return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
-                if checked["verdict"] == "achieved":
-                    return ("done", checked["answer"]), checked
-                if checked["verdict"] in {"impossible", "needs_user"} or res["result"] == "no_progress":
-                    return ("blocked", checked["answer"]), checked
-                verdict = checked
+                    if res["result"] == "no_progress":
+                        return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
+                    # "unclear" and no judge to ask: Jev carries on from here.
+                else:
+                    if checked["verdict"] == "achieved":
+                        return ("done", checked["answer"]), checked
+                    if checked["verdict"] in {"impossible", "needs_user"} or res["result"] == "no_progress":
+                        return ("blocked", checked["answer"]), checked
+                    verdict = checked
             emit("status", message="Back to Jev from here")
             resume()
             return None, verdict
@@ -4271,13 +4740,32 @@ def main():
             elif state["status"] == "done":
                 # Adaptation 32: an unsure DONE is judged; "not there yet" goes on (takeover) instead of ending.
                 last = state["decisions"][-1] if state["decisions"] else {}
-                if should_judge_done(last.get("confidence")):
-                    verdict = look("Jev judged the goal done (%d%% sure)" % round(100 * (last.get("confidence") or 0)))
+                acted = acted_on_page(state["history"])
+                if should_judge_done(last.get("confidence"), acted=acted):
+                    verdict = look("Jev judged the goal done (%d%% sure)" % round(100 * (last.get("confidence") or 0))
+                                   + ("" if acted else " before doing anything on this page"))
                     if verdict and verdict["verdict"] != "achieved":
                         why = "Jev said done, but " + (verdict["answer"][:160] or "the page does not show it")
                         if verdict["verdict"] in {"impossible", "needs_user"}:
                             stop = ("blocked", verdict["answer"])
                             why = None
+                    confidence = last.get("confidence") or 0.0
+                    fp = agent.state["page"].get("fingerprint")
+                    if confidence < DONE_MIN_CONFIDENCE and not stop and (verdict is None or (why and not takeover.available())) \
+                            and fp not in retried_blocked and len(retried_blocked) < MAX_BLOCKED_RETRIES:
+                        # Adaptation 30 without a check that settles it (the judge unreachable, or no takeover
+                        # left): a DONE Jev was unsure of gets one more look on this page, never the end.
+                        retried_blocked.add(fp)
+                        note = (verdict or {}).get("next_step") or "Jev was unsure (%d%%)" % round(100 * confidence)
+                        agent.state["history"].append({"step": len(agent.state["history"]) + 1, "action": "Not done yet: " + note[:200],
+                                                       "kind": "check", "text": None, "page_changed": None,
+                                                       "url": agent.state["page"].get("url")})
+                        emit("status", message=f"Jev said done, but {note[:120]} — carrying on")
+                        resume()
+                        continue
+                if not acted and verdict is None and not why and not stop:
+                    # No judge to read the page (NAVI_JUDGE=0, no Claude): nothing done, nothing confirmed.
+                    stop, verdict = unconfirmed_zero_step_done(state["page"].get("title", ""))
             if why:
                 stop, verdict = escalate(state, why, verdict)
                 if stop is None:
@@ -4291,7 +4779,7 @@ def main():
                     verdict = {"verdict": "achieved" if status == "done" else "not_achieved", "answer": "", "next_step": "", "judged": False}
                 summary = stop[1] if stop and stop[1] else (verdict.get("answer") or summarize(state["history"], status))
                 if status == "done":
-                    summary = purchase_note(args.goal, status) + summary
+                    summary = purchase_note(args.goal, status, leftover_cart(state)) + summary
                 # Adaptation 37: a stop only the user can unblock is a question; the tab stays for the rerun,
                 # and something to do on it ("sign in") brings it forward.
                 ask = user_question(verdict, args.goal, status)

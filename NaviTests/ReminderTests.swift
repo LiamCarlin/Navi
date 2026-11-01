@@ -97,6 +97,16 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(loose.day == .tomorrow)
     }
 
+    @Test func aRangeIsDueAtItsStart() {
+        let r = parse("remind me 2 to 4 tomorrow to study")
+        #expect(r.time == Clock(hour: 14, minute: 0))
+        #expect(r.day == .tomorrow)
+        #expect(r.title == "Study")
+        let pills = parse("remind me to take 2 to 4 pills")
+        #expect(pills.time == nil)
+        #expect(pills.title == "Take 2 to 4 pills")
+    }
+
     @Test func schedulerStepsAsideForReminders() {
         #expect(ScheduleParser.parse("remind me to book lunch with ana tomorrow") == nil)
         #expect(parse("remind me to book lunch with ana tomorrow").title == "Book lunch with ana")
@@ -153,6 +163,17 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(options[5].date == nil)
     }
 
+    // Bench calendar-003 (Sunday 2026-11-01): the card said "Tomorrow at 9:00 AM".
+    @Test func nextWeekFromASunday() {
+        let sunday = Date(timeIntervalSince1970: 1_793_521_260)   // Sun 1 Nov 2026, 08:21 UTC
+        #expect(due("todo: renew passport next week", at: sunday) == "2026-11-09 09:00")
+        let options = ReminderPlanner.options(now: sunday, calendar: cal)
+        #expect(options.map(\.label) == ["In 1 hour", "This evening", "Tomorrow", "Next week", "No date"])
+        let next = options.first { $0.label == "Next week" }?.date
+        let comps = next.map { cal.dateComponents([.month, .day, .hour], from: $0) }
+        #expect(comps?.month == 11 && comps?.day == 9 && comps?.hour == 9)
+    }
+
     @Test func quickPicksOnAFridayMorning() {
         let fridayMorning = now.addingTimeInterval(3 * 86400 - 8 * 3600)   // Fri 2 Oct 10:00
         let labels = ReminderPlanner.options(now: fridayMorning, calendar: cal).map(\.label)
@@ -175,5 +196,62 @@ private typealias Clock = ScheduleRequest.ClockTime
         guard case .noul? = QueryRouter.jevQuestions["wants_reminder"] else {
             Issue.record("wants_reminder must be a noul on the routing call"); return
         }
+    }
+}
+
+/// The cards on the two days a year whose clocks change (America/New_York). The bench ran on
+/// Sunday 2026-11-01, when "every sunday morning" came out as 8:00 AM: 540 elapsed minutes after
+/// midnight EDT is 8:00 EST. Times are wall-clock now (`Calendar.wallClock`).
+@Suite struct CardDaylightSavingTests {
+    let ny: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "America/New_York")!
+        return c
+    }()
+    /// Sun 1 Nov 2026, 03:21 EST (clocks went back at 2:00).
+    let fallBack = Date(timeIntervalSince1970: 1_793_521_260)
+    /// Sat 7 Mar 2026, 12:00 EST (clocks go forward at 2:00 the next morning).
+    let springEve = Date(timeIntervalSince1970: 1_772_902_800)
+
+    private func stamp(_ d: Date?) -> String? {
+        guard let d else { return nil }
+        let c = ny.dateComponents([.year, .month, .day, .hour, .minute], from: d)
+        return String(format: "%04d-%02d-%02d %02d:%02d", c.year!, c.month!, c.day!, c.hour!, c.minute!)
+    }
+
+    private func due(_ q: String, at now: Date) -> String? {
+        stamp((ReminderParser.parse(q) ?? ReminderRequest(title: "")).resolvedDue(now: now, calendar: ny))
+    }
+
+    @Test func remindersKeepTheirClockTime() {
+        #expect(due("remind me every sunday morning to plan my week", at: fallBack) == "2026-11-01 09:00")
+        #expect(due("todo: renew passport next week", at: fallBack) == "2026-11-09 09:00")
+        #expect(due("remind me to x today at 5", at: fallBack) == "2026-11-01 17:00")
+        #expect(due("remind me to x tomorrow", at: springEve) == "2026-03-08 09:00")
+        #expect(due("remind me to x tomorrow evening", at: springEve) == "2026-03-08 18:00")
+    }
+
+    @Test func quickPicksKeepTheirClockTime() {
+        let options = ReminderPlanner.options(now: fallBack, calendar: ny)
+        func date(_ label: String) -> String? { stamp(options.first { $0.label == label }?.date) }
+        #expect(date("This evening") == "2026-11-01 18:00")
+        #expect(date("Tomorrow") == "2026-11-02 09:00")
+        #expect(date("Next week") == "2026-11-09 09:00")
+    }
+
+    @Test func schedulerSlotsKeepTheirClockTime() {
+        for day in [ny.startOfDay(for: fallBack), ny.startOfDay(for: springEve.addingTimeInterval(86400))] {
+            let window = SchedulePlanner.window(for: day, time: nil, duration: 30, calendar: ny)
+            #expect(ny.component(.hour, from: window.start) == 9)
+            #expect(ny.component(.hour, from: window.end) == 18)
+            let afternoon = SchedulePlanner.preferredWindow(for: day, partOfDay: .afternoon, activity: "Meeting", calendar: ny)
+            #expect(afternoon.map { ny.component(.hour, from: $0.start) } == 12)
+            #expect(afternoon.map { ny.component(.hour, from: $0.end) } == 17)
+            let start = SchedulePlanner.initialStart(time: ScheduleRequest.ClockTime(hour: 14, minute: 0), day: day,
+                                                     suggestions: [], calendar: ny)
+            #expect(start.map { ny.component(.hour, from: $0) } == 14)
+        }
+        let midnight = ny.wallClock(minutes: 24 * 60, on: fallBack)
+        #expect(stamp(midnight) == "2026-11-02 00:00")
     }
 }

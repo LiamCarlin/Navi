@@ -78,7 +78,8 @@ final class PanelController {
         DebugTrace.log("show prefill=\(prefill ?? "-") submit=\(submit)")
         #endif
         notchQuestion.hide()   // the panel's card asks instead
-        previousApp = NSWorkspace.shared.frontmostApplication
+        // The app the user was in (`UserFront`): a navi:// link activates Navi itself.
+        previousApp = UserFront.app()
         let ctx = ContextProbe.current(recent: [])
         viewModel.willShow(prefill: prefill, context: ctx)
         applyAppearance()
@@ -287,7 +288,7 @@ final class NaviPanel: NSPanel {
 enum ContextProbe {
     @MainActor
     static func current(recent: [String]) -> QueryContext {
-        let app = NSWorkspace.shared.frontmostApplication
+        let app = UserFront.app()   // never Navi itself (navi:// links, Settings)
         var title: String?
         if let pid = app?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)

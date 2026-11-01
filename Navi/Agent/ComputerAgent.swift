@@ -389,6 +389,23 @@ final class AgentRun: @unchecked Sendable {
         defer { endActivity() }
 
         do {
+            // "Reload this page", "go back", "next tab" with a browser in front — Safari as much as Chrome:
+            // one key press in that browser (`BrowserControls`, as voice does), never a run that Googles
+            // the sentence in another browser.
+            if config.planWithClaude, let done = await browserControl(handle) {
+                handle.verdict = .achieved
+                handle.emit(.completed(summary: done))
+                return
+            }
+            // "Make this full screen", "minimize this": the front window's own attribute (`WindowControls`, as
+            // voice does) — never a run on the page. Bench native-020: over a YouTube video the runner found
+            // nothing to press, Googled "make the Rick Astley video full screen", reopened the video in a
+            // second tab and pressed its full-screen button in a background tab, then said "Done".
+            if config.planWithClaude, let done = await windowControl(handle) {
+                handle.verdict = .achieved
+                handle.emit(.completed(summary: done))
+                return
+            }
             // What the task refers to in the user's own work ("the doc I was working on" → that
             // doc), from screen memory and one Jev pick — usually settled by `prepare` already.
             // …and whether it is something they have done before, their way (in parallel).
@@ -437,7 +454,13 @@ final class AgentRun: @unchecked Sendable {
         if !config.planWithClaude { return await resolvePlanWithoutPlanner() }
         if claude.isConfigured {
             let (front, plan) = await TaskPlanner.planUsingPrefetch(task: originalTask, claude: claude)
-            if let plan { return (front, plan) }
+            if let plan {
+                // The screen in front wins when the task points at it ("add 2 of these", "pause the video",
+                // "open my cart" on a store, "the scores on page 2" over a PDF) — not the last run's tab.
+                let anchored = ScreenInFront.anchor(plan, task: originalTask, frontmost: front)
+                if anchored != plan { Log.agent.info("ScreenInFront: first step moved onto \(front.appName ?? front.bundleID ?? "?", privacy: .public)") }
+                return (front, anchored)
+            }
             Log.agent.warning("TaskPlanner returned no usable plan; classifying the surface with Jev")
         }
         guard ComputerAgent.browserRunner != nil, jev.isConfigured else {
@@ -609,6 +632,55 @@ final class AgentRun: @unchecked Sendable {
         return hit.bundleID
     }
 
+    /// A browser-level instruction (`BrowserControls`: reload, back, next tab, scroll, zoom…) typed while
+    /// a browser is the app the user is looking at: done with one key press in *that* browser. nil when
+    /// the task is no such instruction or no browser is in front (then it is planned as usual).
+    private func browserControl(_ handle: AgentRunHandle) async -> String? {
+        guard let command = BrowserControls.match(originalTask) else { return nil }
+        let input = self.input
+        return await Task { @MainActor () -> String? in
+            guard let browser = BrowserControls.frontBrowser() else { return nil }
+            let name = browser.localizedName ?? "the browser"
+            Log.agent.info("BrowserControls: ‘\(command.title, privacy: .public)’ in \(name, privacy: .public) for a typed task")
+            handle.emit(.step(index: 1, description: "\(command.title) in \(name)"))
+            guard let did = await BrowserControls.perform(command, input: input, in: browser) else { return nil }
+            return "\(did) in \(name)"
+        }.value
+    }
+
+    /// Window instructions a typed task carries out directly: nothing is lost by them (quitting and
+    /// closing stay with the agent and its gate).
+    static let typedWindowVerbs: Set<WindowControls.Verb> = [.fullScreen, .minimize, .hide]
+
+    /// The window command a typed task is, when it is one of `typedWindowVerbs` and nothing more
+    /// ("make this full screen", "minimize this", "hide Slack"). Pure: unit-tested.
+    static func typedWindowCommand(_ task: String, runningApps: [String]) -> WindowControls.Command? {
+        guard let command = WindowControls.match(task, resolveApp: { WindowControls.bestName($0, in: runningApps) }),
+              typedWindowVerbs.contains(command.verb) else { return nil }
+        return command
+    }
+
+    /// "Make this full screen", "minimize this", "hide Music" typed into ⌘Space: done on the window of the
+    /// app the user is looking at (`UserFront`: never Navi). nil when the task is no such instruction or
+    /// it could not be done (then it is planned as usual).
+    private func windowControl(_ handle: AgentRunHandle) async -> String? {
+        let task = originalTask
+        let input = self.input
+        return await Task { @MainActor () -> String? in
+            guard let command = Self.typedWindowCommand(task, runningApps: WindowControls.runningAppNames()) else { return nil }
+            let front = UserFront.app()
+            Log.agent.info("WindowControls: ‘\(command.title, privacy: .public)’ for a typed task")
+            handle.emit(.step(index: 1, description: command.title))
+            switch await WindowControls.perform(command, fallbackApp: front?.bundleIdentifier, input: input) {
+            case .success(let did):
+                return did
+            case .failure(let error):
+                handle.emit(.status("\(error.localizedDescription) — trying it as a task"))
+                return nil
+            }
+        }.value
+    }
+
     private enum StepOutcome { case completed(summary: String), failed(String), cancelled }
 
     private func execute(_ plan: TaskPlanner.Plan, frontmost: FrontmostProbe.Info, handle: AgentRunHandle) async throws {
@@ -642,7 +714,9 @@ final class AgentRun: @unchecked Sendable {
                 let url = TaskPlanner.startURL(for: step, frontmost: frontmost)
                 // The start URL is the page that is open now: continue on that tab.
                 // WorkingSurface hook: …or the tab an earlier run worked in (the runner finds it by URL).
-                let attach = (frontmost.url != nil && url == frontmost.url) || WorkingSurface.Store.shared.isRecentPage(url)
+                // (The same page spelled a little differently — a fragment, "www.", a trailing slash — is that tab too,
+                // not a duplicate tab whose early BLOCKED then starts over on a search: bench schoolwork-022.)
+                let attach = (frontmost.url.map { url == $0 || TaskPlanner.samePage(url, $0) } ?? false) || WorkingSurface.Store.shared.isRecentPage(url)
                 let goal = task
                 let background = config.background
                 await showOverlay(step: max(1, actionIndex))
@@ -751,10 +825,22 @@ final class AgentRun: @unchecked Sendable {
         }
     }
 
+    /// A later clause of the goal that acts ("… and open the first video", "…, then add it to the cart",
+    /// "… and play it"), as opposed to one that reads back ("… and tell me the price").
+    static func endsWithEffect(_ goal: String) -> Bool {
+        goal.lowercased().range(of: #"(\band\b|\bthen\b|,)\s+(then\s+)?(open|add|put|play|watch|click|tap|select|choose|pick|buy|order|book|reserve|send|text|message|email|reply|share|post|save|download|subscribe|like|start|create|make|set|turn|fill|submit|bookmark|follow|join|sign up|apply|go to|navigate to|leave it open|keep it open)\b"#,
+                                    options: .regularExpression) != nil
+    }
+
     /// Does this goal ask for information rather than an effect? Then the
     /// completion must carry what was found, not just what was clicked.
     static func isLookup(_ goal: String) -> Bool {
         let g = goal.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // "Search YouTube for X and open the first video", "Find a PS5 at Target and add it to the cart": it
+        // starts like a lookup, but its last clause does something — the page it ends on is the result. As a
+        // lookup its background tab was closed when it completed (`tabPolicy` "close"; bench web-020,
+        // errand-025: the video / the cart were gone at the end).
+        if Self.endsWithEffect(g) { return false }
         let starters = ["find", "get", "look up", "lookup", "check", "search", "see if", "see whether", "what", "whats", "what's",
                         "how", "when", "where", "who", "which", "is ", "are ", "does ", "do ", "tell me", "show me", "give me",
                         "can you find", "can you get", "can you check", "can you look", "can you see", "can you tell", "could you find"]

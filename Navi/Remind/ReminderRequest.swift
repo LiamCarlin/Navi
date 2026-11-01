@@ -53,7 +53,7 @@ struct ReminderRequest: Equatable, Sendable {
 
         let minutes = time?.minutes ?? partOfDay.map(Self.usualMinutes) ?? 9 * 60
         let today = cal.startOfDay(for: now)
-        func at(_ d: Date) -> Date { cal.date(byAdding: .minute, value: minutes, to: d) ?? d }
+        func at(_ d: Date) -> Date { cal.wallClock(minutes: minutes, on: d) }
         if let day {
             let base = ScheduleRequest(activity: "", day: day).resolvedDay(now: now, calendar: cal)
             let due = at(base)
@@ -110,9 +110,16 @@ enum ReminderParser {
         guard i < ws.count, !ScheduleParser.rejects.subtracting(["remind"]).contains(ws[i].lower) else { return nil }
 
         var request = ReminderRequest(title: "")
-        if let lead = leadIns.first(where: { phrase in
+        let lead = leadIns.first(where: { phrase in
             i + phrase.count <= ws.count && zip(phrase, ws[i...]).allSatisfy { $0 == $1.lower }
-        }) {
+        })
+        // "Set a timer for 10 minutes" (Clock), "in notion add a todo…" (Notion), several instructions:
+        // not a reminder (`CardGuard`). After an opener the rest is the reminder's own text — after "remind
+        // me…"/"don't forget…" even a place ("remind me to submit it on canvas"); "add a todo in notion" is Notion's.
+        let opener = lead?.joined(separator: " ") ?? ""
+        let remindsOutright = opener.contains("remind") || opener.contains("forget")
+        if CardGuard.veto(query, card: .reminder, explicitOpener: lead != nil, placeIsContent: remindsOutright) != nil { return nil }
+        if let lead {
             i += lead.count
             let hasRest = i < ws.count
             request.isExplicit = hasRest || standaloneLeadIns.contains(lead.joined(separator: " "))
@@ -161,9 +168,9 @@ enum ReminderParser {
                 continue
             }
             // Days and times, read the way the scheduler reads them (lengths are title words here:
-            // "walk for 30 min" is the task).
+            // "walk for 30 min" is the task; a range like "2 to 4" is due at its start).
             var scratch = ScheduleRequest(activity: "")
-            if let end = ScheduleParser.parseWhen(ws, at: j, into: &scratch), scratch.durationMinutes == nil {
+            if let end = ScheduleParser.parseWhen(ws, at: j, into: &scratch), scratch.durationMinutes == nil || scratch.time != nil {
                 if let d = scratch.day { request.day = d }
                 if let p = scratch.partOfDay { request.partOfDay = p }
                 if let t = scratch.time { request.time = t }
@@ -237,7 +244,7 @@ enum ReminderPlanner {
         let today = cal.startOfDay(for: now)
         func at(_ dayOffset: Int, _ hour: Int) -> Date {
             let d = cal.date(byAdding: .day, value: dayOffset, to: today) ?? today
-            return cal.date(byAdding: .hour, value: hour, to: d) ?? d
+            return cal.wallClock(minutes: hour * 60, on: d)
         }
         let fiveMinutes: TimeInterval = 300
         let inAnHour = Date(timeIntervalSinceReferenceDate:
@@ -249,8 +256,8 @@ enum ReminderPlanner {
         out.append(Option(label: "Tomorrow", date: at(1, 9)))
         let weekday = cal.component(.weekday, from: now)   // 1 = Sunday … 7 = Saturday
         if (2...5).contains(weekday) { out.append(Option(label: "This weekend", date: at(7 - weekday, 10))) }
-        let toMonday = { let n = (2 - weekday + 7) % 7; return n == 0 ? 7 : n }()
-        out.append(Option(label: "Next week", date: at(toMonday, 9)))
+        // Same Monday as a typed "next week" (on a Sunday that is 8 days away, not tomorrow).
+        out.append(Option(label: "Next week", date: at(ScheduleRequest.daysToNextWeekMonday(from: today, calendar: cal), 9)))
         out.append(Option(label: "No date", date: nil))
         return out
     }

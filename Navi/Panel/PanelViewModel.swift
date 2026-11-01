@@ -355,29 +355,54 @@ final class PanelViewModel: ObservableObject {
                 self.submitAfterRouting = false
                 let preferred = self.submitPreferredKind
                 self.submitPreferredKind = nil
-                self.selectedIndex = preferred.flatMap { k in self.results.firstIndex { $0.kind == k } } ?? 0
+                self.selectedIndex = Self.submitIndex(results: self.results, decision: d, preferred: preferred)
                 // A scheduling request waits on the card: booking is the user's ⏎.
                 if self.mode != .schedule && self.mode != .remind { self.performSelected() }
             }
         }
     }
 
-    /// Merge rule: if Jev is confident the query is an app/URL/calc match, the
-    /// instant rows stay first. Otherwise the routed intent's primary row leads.
+    /// Merge rule: rows that lead whatever the intent come first ("Open it" for the user's own
+    /// past work, a browser key press, the task in the app the query names). If Jev reads the
+    /// query as an app/URL/calc/file/system action, the action rows — instant and routed, best
+    /// score first — follow, and "Ask Navi" / the web search go last: they are on every query,
+    /// and leading with them made ⏎ answer "I can't open apps" for "open youtube" (the instant
+    /// list held nothing else). Otherwise the routed intent's primary row leads.
     static func merge(instant: [SearchResult], routed: [SearchResult], decision: RouteDecision) -> [SearchResult] {
         var seen = Set<String>()
         var out: [SearchResult] = []
         let instantLeads: Bool = {
-            switch decision.intent {
-            case .openApp, .openURL, .calculate, .openFile, .systemCommand, .settings: return true
-            default: return instant.first.map { $0.score >= 0.9 } ?? false
-            }
+            if QueryRouter.actionIntents.contains(decision.intent) { return true }
+            return instant.first(where: { !QueryRouter.isPinnedRow($0) }).map { $0.score >= 0.9 && !QueryRouter.isFallbackRow($0) } ?? false
         }()
-        let ordered = instantLeads ? instant + routed : routed + instant
+        // A screen-memory question: ⏎ answers it ("Ask about this"), never opens one raw moment (memory-002/-035).
+        let recallAnswer: (SearchResult) -> Bool = { decision.intent == .recallMemory && $0.id.hasPrefix("ask-memory:") }
+        let leads: (SearchResult) -> Bool = { QueryRouter.isPinnedRow($0) || recallAnswer($0) }
+        let pinned = (routed + instant).filter(QueryRouter.isPinnedRow) + (routed + instant).filter(recallAnswer)
+        let rest = (instantLeads ? instant + routed : routed + instant).filter { !leads($0) }
+        let ordered: [SearchResult]
+        if instantLeads {
+            let actions = rest.enumerated().filter { !QueryRouter.isFallbackRow($0.element) }
+                .sorted { $0.element.score != $1.element.score ? $0.element.score > $1.element.score : $0.offset < $1.offset }
+                .map { $0.element }
+            ordered = pinned + actions + rest.filter(QueryRouter.isFallbackRow)
+        } else {
+            ordered = pinned + rest
+        }
         for r in ordered where !seen.contains(r.id) {
             seen.insert(r.id); out.append(r)
         }
         return out
+    }
+
+    /// The row ⏎ performs once routing is done (`navi://run`, a refined clarification): the
+    /// preferred kind if there is one, else — when Jev routed an action — the first row that
+    /// carries it out, never "Ask Navi" or the web search while an action row exists.
+    static func submitIndex(results: [SearchResult], decision: RouteDecision, preferred: ResultKind? = nil) -> Int {
+        if let k = preferred, let i = results.firstIndex(where: { $0.kind == k }) { return i }
+        if let first = results.first, QueryRouter.isPinnedRow(first) { return 0 }
+        guard QueryRouter.actionIntents.contains(decision.intent) else { return 0 }
+        return results.firstIndex(where: { !QueryRouter.isFallbackRow($0) }) ?? 0
     }
 
     // MARK: - Actions

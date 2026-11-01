@@ -505,6 +505,19 @@ tabs = [{"type": "page", "targetId": "A", "url": "https://mail.google.com/mail/u
 assert nr.find_open_tab("youtube.com", tabs) == "C"
 assert nr.find_open_tab("https://mail.google.com/mail/u/0/", tabs) == "A"
 assert nr.find_open_tab("https://example.com", tabs) is None
+# Two tabs on the same page: the one the user is looking at (visible), not the first listed.
+dupes = [{"type": "page", "targetId": "OLD", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+         {"type": "page", "targetId": "FRONT", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+         {"type": "page", "targetId": "OTHER", "url": "https://www.youtube.com/watch?v=qt5p-_tE8d0"}]
+seen = []
+assert nr.find_open_tab("https://www.youtube.com/watch?v=dQw4w9WgXcQ", dupes,
+                        is_visible=lambda t: seen.append(t) or t == "FRONT") == "FRONT"
+assert "OTHER" not in seen                                     # only tabs on that page are looked at
+assert nr.find_open_tab("https://www.youtube.com/watch?v=dQw4w9WgXcQ", dupes, is_visible=lambda t: False) == "OLD"
+def boom(t): raise RuntimeError("detached")
+assert nr.find_open_tab("https://www.youtube.com/watch?v=dQw4w9WgXcQ", dupes, is_visible=boom) == "OLD"
+# One match: no visibility check at all.
+assert nr.find_open_tab("https://www.youtube.com/watch?v=qt5p-_tE8d0", dupes, is_visible=boom) == "OTHER"
 print("attach OK")
 
 # --- a helper with no value is a failed step (adaptation 16) ---
@@ -661,6 +674,14 @@ st2 = {"goal": "go to mcdonalds and order me a burger", "page": {"text": "", "ur
 nr.done_doubt(st2, None)
 st2["page"] = {"text": "", "url": "https://x.test", "actions": [{"label": "1 items, open Order Cart"}]}
 assert nr.done_doubt(st2, {"operation": "DONE", "confidence": 0.8}) is None
+# Bench errand-030: a leftover guest cart (3 before the run, 3 now) on the cart page is not this run's doing.
+st4 = {"goal": "order me dinner on doordash", "page": {"text": "", "url": "https://www.doordash.com/home", "actions": [{"label": "3 items in cart"}]}, "history": []}
+nr.done_doubt(st4, None)
+st4["page"] = {"text": "Your cart", "url": "https://www.doordash.com/cart", "actions": [{"label": "3 items in cart"}]}
+assert "before this run" in nr.done_doubt(st4, {"operation": "DONE", "confidence": 0.9})
+assert nr.leftover_cart(st4) and nr.purchase_note(st4["goal"], "done", nr.leftover_cart(st4)) == ""
+st4["page"] = {"text": "Your cart", "url": "https://www.doordash.com/cart", "actions": [{"label": "4 items in cart"}]}
+assert nr.done_doubt(st4, {"operation": "DONE", "confidence": 0.9}) is None and not nr.leftover_cart(st4)
 assert nr.cart_count({"text": "6 items in cart", "actions": []}) == 6 and nr.cart_count({"text": "Bag (2)", "actions": []}) == 2
 st3 = {"goal": "track my amazon order", "page": {"text": "", "url": "https://x.test", "actions": []}, "history": []}
 assert nr.done_doubt(st3, {"operation": "DONE", "confidence": 0.9}) is None
@@ -707,6 +728,13 @@ assert nr.takeover_result("Did: opened the menu", 2) == "handback" and nr.takeov
 os.environ.pop("NAVI_JUDGE", None)
 assert nr.should_judge_done(0.63) and not nr.should_judge_done(0.95)
 os.environ["NAVI_JUDGE"] = "0"; assert not nr.should_judge_done(0.1); os.environ.pop("NAVI_JUDGE")
+# A DONE before any action on the page is always judged, however sure (never "Nothing to do. (0 steps)").
+assert nr.should_judge_done(0.95, acted=False) and nr.should_judge_done(0.99, acted=False)
+os.environ["NAVI_JUDGE"] = "0"; assert not nr.should_judge_done(0.95, acted=False); os.environ.pop("NAVI_JUDGE")
+stop0, verdict0 = nr.unconfirmed_zero_step_done("Amazon.com Shopping Cart")
+assert stop0[0] == "blocked" and "Amazon.com Shopping Cart" in stop0[1] and "Nothing to do" not in stop0[1]
+assert verdict0["verdict"] == "partial" and verdict0["judged"] is False and nr.outcome_status(verdict0) == "blocked"
+assert "the page" in nr.unconfirmed_zero_step_done("")[0][1]
 # Keys, the gate, Navi never pays.
 assert nr.parse_key("Return")[:4] == ("Enter", "Enter", 13, "\r")
 k = nr.parse_key("cmd+a"); assert k[4] == 4 and (k[5] == ["selectAll"] or sys.platform != "darwin") and k[3] is None
@@ -743,7 +771,8 @@ class FakeTab:
             return [1280, 800, 0, 120, 2]
         if js.startswith(nr.AT_POINT_JS):
             x = float(js[len(nr.AT_POINT_JS) + 1:].split(",")[0])
-            return {"label": "Place Order" if x > 1000 else "Continue with Google", "tag": "BUTTON", "frame": False}
+            label = "Place Order" if x > 1000 else "Continue with Google" if x > 500 else "7th Street Burger"
+            return {"label": label, "tag": "BUTTON", "frame": False}
         if js == nr.SECRET_FIELD_JS:
             return self.secret
         return None
