@@ -387,9 +387,16 @@ enum ScheduleParser {
         return j
     }
 
+    /// Words after "with" that are never a guest: "a google doc with its title", "with my notes".
+    static let notNames: Set<String> = [
+        "it", "its", "it's", "this", "that", "these", "those", "them", "him", "her", "his", "their", "theirs", "our",
+        "ours", "your", "yours", "my", "mine", "me", "us", "you", "some", "any", "all", "each", "no", "one",
+        "someone", "somebody", "anyone", "anybody", "everyone", "everybody", "nobody", "people", "whoever",
+    ]
+
     static func isNameWord(_ ws: [Word], at k: Int) -> Bool {
         let w = ws[k].lower
-        if nameStops.contains(w) || weekdays[w] != nil { return false }
+        if nameStops.contains(w) || notNames.contains(w) || weekdays[w] != nil { return false }
         // "with ana oct 3": a short month before a day number is the date, not a surname.
         if months[w] != nil, k + 1 < ws.count, dayNumber(ws[k + 1].lower) != nil { return false }
         if w.first?.isNumber == true { return false }

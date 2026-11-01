@@ -451,3 +451,18 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(SchedulerModel.list(["A", "B", "C"]) == "A, B and C")
     }
 }
+
+// MARK: - "with" + a pronoun is no guest
+
+// Bench multi-030 (2026-11-01): "make a google doc with its title…, and block time friday morning" booked
+// "Meeting with Its".
+@Suite struct ScheduleGuestWordTests {
+    @Test func withAPronounOrDeterminerIsNoGuest() {
+        #expect(ScheduleParser.parse("block time friday morning with my notes")?.people == [])
+        #expect(ScheduleParser.parse("meeting with them tomorrow at 3")?.people == [])
+        #expect(ScheduleParser.parse("focus time with it friday")?.people == [])
+        #expect(ScheduleParser.parse("block time friday with its title")?.people == [])
+        #expect(ScheduleParser.parse("meeting with jilles and harshil")?.people == ["jilles", "harshil"])
+        #expect(ScheduleParser.parse("lunch with Will and Mark friday")?.people == ["Will", "Mark"])
+    }
+}
