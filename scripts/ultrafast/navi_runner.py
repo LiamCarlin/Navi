@@ -151,6 +151,16 @@ Reliability adaptations (from failed runs, see git log):
      only) and retried once, shorter; refused even then, Jev sees the
      controls likeliest for the goal; still failing, the run judges the page
      (32) instead of ending on a raw error.
+ 39. Never the user's sign-in, checkout or a partner site: unless the goal is to sign in or up,
+     sign-in / sign-up / "Continue with Google" controls and an account form's identity fields are
+     not offered to Jev (`account_form` in its state says why), the text helper gets no
+     about_the_user for them, and the takeover refuses them, never types the user's email or name
+     into such a form, never enters checkout (a "Continue" that lands there is undone) and stops for
+     the user on a sign-in page. A needs-user sign-in is a question even on a purchase, and a
+     purchase whose item is in the cart is achieved whatever is left (checkout, signing in, paying).
+     Partner-compare toggles ("Compare vs. Booking.com") are not offered or pressed in an errand.
+ 40. "Document is navigating" / "Inspected target navigated or closed" is the page moving under
+     the step: observe again, never an error that ends the run (only a run of them does).
 """
 
 import argparse
@@ -1256,7 +1266,7 @@ Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved
 - partial: some parts are done, others not yet.
 - not_achieved: not done yet, but doable from here or on this site.
 - impossible: it cannot be done on this site at all (say why).
-- needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, a payment, a choice the goal leaves open.
+- needs_user: the next step is one only the user can take or decide: their password or a code, an account to pick in a sign-in window, signing in or creating an account when the task cannot go on without it (Navi never signs in or signs up for the user unless the goal asks), a payment, a choice the goal leaves open.
 answer: one to three plain sentences for the user, true to the screen. Never claim something was done that the screen does not show, and never talk about what you yourself can or cannot do.
 next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details.
 question, question_kind, question_choices — only with needs_user (else "", "", []); Navi pauses the task and puts this to the user:
@@ -1323,6 +1333,10 @@ def user_said_from_env():
 
 
 PAYMENT_STEP = re.compile(r"\b(pay|payment|place (the |your )?order|checkout|check out|card number|billing)\b", re.I)
+# Adaptation 39: "Sign in to DoorDash in this tab" is the user's to do and the task goes on after it — a
+# question, even on a purchase whose checkout needs it (bench errand-030 ended failed instead).
+SIGN_IN_STEP = re.compile(r"\b(sign(ed)? ?in|log(ged)? ?in|sign ?up|create (an |your )?account)\b", re.I)
+PAYMENT_ONLY = re.compile(r"\b(pay|payment|place (the |your )?order|card number|billing)\b", re.I)
 
 
 def user_question(verdict, goal, status):
@@ -1333,9 +1347,10 @@ def user_question(verdict, goal, status):
     question = (verdict.get("question") or verdict.get("answer") or "").strip()
     if not question:
         return None
-    if PURCHASE_GOAL.search(goal or "") and PAYMENT_STEP.search(question + " " + (verdict.get("answer") or "")):
-        return None
     kind = verdict.get("question_kind") or "do_it"
+    signing_in = kind == "do_it" and SIGN_IN_STEP.search(question) and not PAYMENT_ONLY.search(question)
+    if PURCHASE_GOAL.search(goal or "") and PAYMENT_STEP.search(question + " " + (verdict.get("answer") or "")) and not signing_in:
+        return None
     return {"question": question, "question_kind": kind,
             "question_choices": verdict.get("question_choices") or [] if kind == "choice" else []}
 
@@ -1385,8 +1400,10 @@ TAKEOVER_SYSTEM = """You are finishing a task in one Chrome tab for the user of 
 You see the tab through screenshots: only the web page, no address bar, tabs or other windows. Act with the computer tool (coordinates are in the latest screenshot's pixels); `go_to_url` opens an https address in this tab and `go_back` goes back. Take a screenshot again after any action that changes the page.
 
 Rules:
-- Navi never pays: never click Place order, Pay, Buy now, Confirm purchase or the like. A purchase or order is finished when the item is in the cart/bag or the checkout page shows it; then stop with Done.
-- Never type passwords, one-time codes, card or bank numbers. You may press "Continue with Google" or "Sign in" buttons, but when the next step needs the user's password, a code, an account choice in a sign-in window, a payment, or a choice the goal leaves open, stop.
+- Navi never pays: never click Place order, Pay, Buy now, Confirm purchase or the like, and never go to checkout. A purchase or order is finished when the item is in the cart/bag; then stop with Done — checkout and paying are the user's.
+- Never sign in, sign up or create an account for the user (unless the goal itself is to sign in or sign up): never press "Continue with Google/Apple/Facebook", "Sign in", "Log in" or "Sign up", and never type the user's email or name into such a form. When the task cannot go on without the user's account, stop with "Stopped: Sign in to <site> in this tab." — the user signs in, then you carry on.
+- Never type passwords, one-time codes, card or bank numbers. When the next step needs the user's password, a code, an account choice in a sign-in window, a payment, or a choice the goal leaves open, stop.
+- Never tick "Compare with <another site>" or similar boxes that open other sites' results; stay on this site.
 - Do not send, post, delete or submit anything the goal does not ask for.
 - Dismiss pop-ups, cookie banners and app-download prompts that are in the way, unless they are the goal.
 - Be quick: a few actions per turn.
@@ -1451,13 +1468,23 @@ AT_POINT_JS = """((x,y) => {
   const e=document.elementFromPoint(x,y); if (!e) return null;
   const c=e.closest('button,a,[role=button],[role=link],[role=menuitem],[role=option],input,select,textarea,label,summary,[onclick]')||e;
   const t=s=>String(s||'').replace(/\\s+/g,' ').trim();
+  const kind=(c.control&&c.control.type)||(c.tagName==='INPUT'&&c.type)||c.getAttribute('role')||'';
   return {label:t(c.getAttribute('aria-label')||c.innerText||c.value||c.title||c.getAttribute('alt')).slice(0,160),
-          tag:c.tagName, frame:e.tagName==='IFRAME'};
+          tag:c.tagName, kind:String(kind).toLowerCase(), frame:e.tagName==='IFRAME'};
 })"""
 
 SECRET_FIELD_JS = """(() => { const e=document.activeElement; if (!e) return false;
   const a=String(e.autocomplete||'')+' '+String(e.name||'')+' '+String(e.id||'');
   return e.type==='password' || /cc-|card|cvv|cvc|one-time-code|otp|password/i.test(a); })()"""
+
+# Adaptation 39: the focused field is an identity field (email, name, phone) of a sign-in / sign-up form.
+ACCOUNT_FIELD_JS = """(() => { const e=document.activeElement; if (!e || !/^(INPUT|TEXTAREA)$/.test(e.tagName)) return false;
+  const lab=(e.labels&&e.labels[0]&&e.labels[0].innerText)||'';
+  const a=[e.type,e.autocomplete,e.name,e.id,e.placeholder,e.getAttribute('aria-label'),lab].map(x=>String(x||'')).join(' ');
+  if (!/e-?mail|user ?name|given-name|family-name|first ?name|last ?name|full ?name|\\bname\\b|\\btel\\b|phone|mobile/i.test(a)) return false;
+  const scope=e.closest('form,[role=dialog],dialog,[aria-modal=true]')||document.body;
+  return !!scope.querySelector('input[type=password]') ||
+    /continue with (google|apple|facebook|microsoft|email)|sign ?up|create (an |your )?account/i.test((scope.innerText||'').slice(0,4000)); })()"""
 
 
 def pays_refusal(label):
@@ -1466,6 +1493,36 @@ def pays_refusal(label):
         return (f"Refused: ‘{label[:60]}’ would spend the user's money — Navi never pays. "
                 "If the item is in the cart or checkout is open, reply Done: … ; the user places the order.")
     return None
+
+
+CHECKOUT = re.compile(r"\b(check ?out|proceed to (checkout|payment)|go to (checkout|payment)|continue to (checkout|payment))\b", re.I)
+CHECKOUT_URL = re.compile(r"^https?://(checkout\.|pay\.|secure\.)|/(checkout|payment|pay)(/|\?|#|$)", re.I)
+AUTH_URL = re.compile(r"^https?://(accounts?|identity|auth|login|signin|sso)\.|/(log-?in|sign-?in|sign-?up|signup|register|auth|oauth2?|sso)(/|\?|#|$)",
+                      re.I)
+
+
+def takeover_refusal(goal, hit):
+    """Why the takeover may not click this control (adaptations 27 and 39), else None: it spends money,
+    enters checkout, signs the user in or up, or ticks a partner site's compare box."""
+    label = (hit or {}).get("label") or ""
+    refusal = pays_refusal(label)
+    if refusal or not label:
+        return refusal
+    first = label.split("\n")[0][:60]
+    if CHECKOUT.search(label):
+        return (f"Refused: ‘{first}’ goes to checkout — Navi never checks out or pays. If the item is in the cart/bag, "
+                "reply Done: … ; the user checks out.")
+    if is_auth_control(label) and not is_account_goal(goal):
+        return (f"Refused: ‘{first}’ would sign the user in or create an account — that is the user's to do. "
+                "If the task cannot go on without it, reply Stopped: Sign in to … in this tab.")
+    if is_partner_detour(label, (hit or {}).get("kind")) and not re.search(r"\bcompar", goal or "", re.I):
+        return f"Refused: ‘{first}’ opens another site's results — stay on this site."
+    return None
+
+
+def entered(rx, before, after):
+    """Did the tab move into a URL `rx` matches (checkout, a sign-in page) that it was not on before?"""
+    return bool(after) and bool(rx.search(after)) and not rx.search(before or "")
 
 
 def describe_call(block):
@@ -1551,6 +1608,7 @@ class Takeover:
         self.last_url = None
         self.ratio = 1.0
         self.cursor = (0.0, 0.0)
+        self.goal = ""
 
     def available(self):
         return os.environ.get("NAVI_TAKEOVER", "1") != "0" and claude_endpoint() is not None and self.count < MAX_TAKEOVERS
@@ -1563,6 +1621,7 @@ class Takeover:
         hand_back = not (self.last_url is not None and Coach.same_document(self.last_url, start_url))
         self.count += 1
         self.last_url = start_url
+        self.goal = goal
         model = os.environ.get("NAVI_TAKEOVER_MODEL") or os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
         deadline = time.monotonic() + TAKEOVER_MAX_S
         shot, self.ratio = retry_transient(lambda: viewport_shot(browser))
@@ -1616,6 +1675,10 @@ class Takeover:
                     actions += 1
                     recent.append("Claude: " + did)
                     on_step({"action": "Claude: " + did, "kind": "takeover", "text": None, "url": start_url})
+            if actions:
+                detour = self.detour(browser, start_url)
+                if detour:
+                    return {**detour, "actions": actions}
             rounds_left = TAKEOVER_TURNS - sum(1 for m in messages if m["role"] == "assistant")
             if rounds_left <= 0 or time.monotonic() > deadline:
                 results.append({"type": "text", "text": "You have used this takeover's budget. Do not call any tool. "
@@ -1632,6 +1695,25 @@ class Takeover:
                     return {"result": "handback", "actions": actions,
                             "summary": f"Did: moved on to {now.get('title') or now.get('url')}"}
         return {"result": takeover_result(summary, actions), "summary": summary, "actions": actions}
+
+    def detour(self, browser, start_url):
+        """Adaptation 39: an action that took the tab into checkout (a generic "Continue" in a cart) is
+        undone — the cart is the end of a purchase — and one that reached a sign-in page stops for the user."""
+        try:
+            now = browser.evaluate("location.href")
+        except Exception:  # noqa: BLE001 — mid-navigation; the next round looks again
+            return None
+        if entered(CHECKOUT_URL, start_url, now):
+            emit("status", message="Claude reached checkout — going back: checkout and paying are the user's")
+            try:
+                browser.evaluate("history.back()")
+                time.sleep(0.8)
+            except Exception:  # noqa: BLE001 — the judge reads whatever page this is
+                pass
+            return {"result": "done", "summary": "Done: the item is in the cart — checkout and paying are the user's."}
+        if entered(AUTH_URL, start_url, now) and not is_account_goal(self.goal):
+            return {"result": "stopped", "summary": "Stopped: Sign in in this tab — signing in is yours to do."}
+        return None
 
     def point(self, coordinate):
         if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
@@ -1695,9 +1777,10 @@ class Takeover:
             if name in {"left_click", "right_click", "middle_click", "double_click", "triple_click"}:
                 x, y = self.point(inp.get("coordinate")) if inp.get("coordinate") else self.cursor
                 hit = browser.evaluate(f"{AT_POINT_JS}({x},{y})") or {}
-                refusal = pays_refusal(hit.get("label"))
+                refusal = takeover_refusal(self.goal, hit)
                 if refusal:
-                    emit("status", message=f"Claude went for ‘{hit.get('label', '')[:50]}’ — Navi never pays")
+                    why = "Navi never pays" if PAYS.search(hit.get("label") or "") else "not Navi's to press"
+                    emit("status", message=f"Claude went for ‘{hit.get('label', '')[:50]}’ — {why}")
                     return self.result(block, text=refusal, error=True), None
                 button = {"right_click": "right", "middle_click": "middle"}.get(name, "left")
                 count = {"double_click": 2, "triple_click": 3}.get(name, 1)
@@ -1730,6 +1813,11 @@ class Takeover:
                 if browser.evaluate(SECRET_FIELD_JS):
                     return self.result(block, text="Refused: the focused field takes a password, code or card number — "
                                        "Navi never types those. Reply Stopped: … so the user can.", error=True), None
+                if not is_account_goal(self.goal) and browser.evaluate(ACCOUNT_FIELD_JS):
+                    # Adaptation 39: the user's email or name never goes into a sign-in / sign-up form unasked.
+                    return self.result(block, text="Refused: the focused field belongs to a sign-in / sign-up form — "
+                                       "Navi never signs the user in or up. Close the form, or reply Stopped: Sign in to … "
+                                       "in this tab.", error=True), None
                 browser.call("Input.insertText", text=text)
                 time.sleep(0.2)
                 return self.result(block), f"type “{text[:40]}”"
@@ -3844,6 +3932,110 @@ def drop_payments(page):
     return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
 
 
+# --- Adaptation 39: never sign in, sign up or detour to a partner site for the user ---
+#
+# Bench 2026-11-01: on Desmos ("plot y=sin(x)/x") an unsure DONE let Jev wander into the sign-up
+# dialog, and the text helper typed the user's real email and first name into it (about_the_user,
+# adaptation 24); on DoorDash Jev pressed "Continue with Google" three times at checkout. Signing
+# in or creating an account is the user's, never Navi's, unless the goal asks for it: a sign-in /
+# sign-up / log-in / "Continue with Google" control is not offered to Jev, and the identity fields
+# of an account form (email, name, phone, password) are not offered either. Jev is told why
+# (`account_form`), so a form in the way is closed and one the task cannot get past is BLOCKED —
+# judged needs_user, which pauses the task with "Sign in … in this tab" (adaptation 37).
+# And a "Compare vs. Booking.com" box (Kayak) opens another site in front of the task: such
+# partner-compare / open-in-a-new-site toggles are not offered unless the goal asks to compare.
+
+ACCOUNT_GOAL = re.compile(r"\b(sign(ing|ed)?[ -]?(in|into|up|on|out)\b|log(ging|ged)?[ -]?(in|into|on|out)\b|login|logon|signup|"
+                          r"register|registration|(create|make|open|set up) (an |a |my |new )?account|my account|account settings|subscribe)",
+                          re.I)
+OAUTH = re.compile(r"\b(continue|sign ?(in|up)|log ?in|register|join|connect|get started)\s+(with|using|via|through)\s+"
+                   r"(google|apple|facebook|microsoft|github|twitter|x|amazon|linkedin|email|e-mail|phone|sso|passkey|your)\b", re.I)
+AUTH_PHRASE = re.compile(r"\b(sign ?(in|up)|log ?(in|on)|login|signup|create (an |your |a |new )?account|register|"
+                         r"forgot (your )?password)\b", re.I)
+IDENTITY_FIELD = re.compile(r"e-?mail|password|passcode|user ?name|first name|last name|full name|^\W*name\W*$|your name|"
+                            r"phone|mobile|birthday|date of birth|continue with", re.I)
+PASSWORD = re.compile(r"\bpassword\b", re.I)
+ACCOUNT_NOTE = ("This page asks the user to sign in or create an account. Navi never signs in, signs up or creates an "
+                "account for the user, so those controls and the form's fields are not offered. If the form is in the way, "
+                "close it or go back; if the task cannot go on without the user's account, answer BLOCKED.")
+PAGE_NOTES = {}             # per decision: notes for Jev's state about the page it is offered (set by `choose`)
+
+
+def is_account_goal(goal):
+    return bool(ACCOUNT_GOAL.search(goal or ""))
+
+
+def is_auth_control(label):
+    """A control that signs in, signs up or logs in: "Continue with Google", "Sign up or Login", a "Sign In"
+    tab, "Continue to Sign In", "Create account" (short labels only — a sentence that mentions signing in is text)."""
+    label = (label or "").split(" → ")[0].split(" — ")[0].strip()
+    if not label:
+        return False
+    if OAUTH.search(label):
+        return True
+    return bool(AUTH_PHRASE.search(label)) and len(re.findall(r"[\w']+", label)) <= 6
+
+
+def account_form(page):
+    """Is a sign-in / sign-up form on the page? An OAuth button, a password field (or its Show Password
+    toggle), or a sign-in/up control next to an identity field."""
+    actions = page.get("actions") or []
+    labels = [(a.get("kind"), a.get("label") or "") for a in actions]
+    if any(OAUTH.search(l) for _, l in labels) or any(PASSWORD.search(l) for _, l in labels):
+        return True
+    return any(k in {"click", "select"} and is_auth_control(l) for k, l in labels) and \
+        any(k == "fill" and IDENTITY_FIELD.search(l) for k, l in labels)
+
+
+def drop_account_controls(page, goal):
+    """The page without the controls that would sign the user in or up, and without the identity fields of
+    an account form; `account_gate` is set when a form was there. Unchanged for a goal about signing in."""
+    if is_account_goal(goal):
+        return page
+    form = account_form(page)
+
+    def auth(a):
+        label = a.get("label") or ""
+        if a.get("kind") in {"click", "select"} and is_auth_control(label):
+            return True
+        return form and a.get("kind") == "fill" and bool(IDENTITY_FIELD.search(label.split(" → ")[0]))
+
+    actions = [a for a in page["actions"] if not auth(a)]
+    if len(actions) == len(page["actions"]):
+        return page
+    return {**page, "actions": actions, "account_gate": form}
+
+
+PARTNER_DETOUR = re.compile(r"^\W*compare\b.{0,60}\b(vs\.?|versus|against|with)\s|\bcompare\b.{0,50}\b[\w-]+\.(com|net|org|co|ca|de|fr|es|it)\b|"
+                            r"\b(open|show|search|view)\b.{0,40}\b(in|on) (a )?(new|separate) (tab|window|site)\b|"
+                            r"\bopens? (in )?(a )?(new|separate) (tab|window)\b", re.I)
+TOGGLE_KINDS = {"checkbox", "switch", "radio", "menuitemcheckbox"}
+
+
+def is_partner_detour(label, role=""):
+    """A toggle that opens another site's results next to (or instead of) the task's: Kayak's "Compare vs.
+    KAYAK Booking.com", "Open results in a new window"."""
+    return (role or "").lower() in TOGGLE_KINDS and bool(PARTNER_DETOUR.search(label or ""))
+
+
+def drop_partner_detours(page, goal):
+    if re.search(r"\bcompar", goal or "", re.I):
+        return page
+    actions = [a for a in page["actions"] if a.get("kind") not in {"click", "select"}
+               or not is_partner_detour(a.get("label"), a.get("role"))]
+    return {**page, "actions": actions} if len(actions) != len(page["actions"]) else page
+
+
+def with_page_notes(post):
+    """Jev's request carries the notes `choose` left for the page it is deciding on (`account_form`)."""
+    def post_json(url, key, body):
+        if PAGE_NOTES and isinstance(body, dict) and "questions" in body and isinstance(body.get("state"), dict) \
+                and "elements" in body["state"]:
+            body = {**body, "state": {**body["state"], **PAGE_NOTES}}
+        return post(url, key, body)
+    return post_json
+
+
 # --- Adaptation 24: the user's own details for their own errands -------------
 #
 # "Order me a burger" needs a delivery address; the text helper is told never to invent
@@ -3867,13 +4059,31 @@ def user_profile():
     return {k: v for k, v in profile.items() if isinstance(v, str) and v.strip()} if isinstance(profile, dict) else {}
 
 
+ACCOUNT_FORM_TEXT = re.compile(r"\b(password|create (an |your )?account|sign ?up|sign up with|forgot (your )?password)\b", re.I)
+
+
+def account_form_field(context):
+    """Is this field one of a sign-in / sign-up form's identity fields (adaptation 39)? Its own label says
+    email / name / phone / password, and the page shows an account form (an OAuth button, a password,
+    "create account", "sign up")."""
+    field = context.get("field") or {}
+    label = str(field.get("label") or "")
+    if not IDENTITY_FIELD.search(label):
+        return False
+    text = f"{label}\n{(context.get('page') or {}).get('title') or ''}\n{(context.get('page') or {}).get('text') or ''}"
+    return bool(OAUTH.search(text) or ACCOUNT_FORM_TEXT.search(text))
+
+
 def with_user_details(context, profile=None):
-    """The helper's context plus about_the_user, for a field that asks for the user's own details."""
+    """The helper's context plus about_the_user, for a field that asks for the user's own details — never
+    for a sign-up / sign-in form's fields unless the goal is to sign in or up (adaptation 39)."""
     profile = user_profile() if profile is None else profile
     if not profile or not isinstance(context, dict):
         return context
     field = context.get("field") or {}
     if not PERSONAL_FIELD.search(f"{field.get('label') or ''} {field.get('role') or ''}"):
+        return context
+    if account_form_field(context) and not is_account_goal(context.get("goal")):
         return context
     return {**context, "about_the_user": profile}
 
@@ -3895,6 +4105,8 @@ def install_adaptations():
     RAW_JEV_POST[0] = jev_model.post_json
     # Adaptation 38: innermost layer, so it sizes the request the playbook/context/coach layers built.
     jev_model.post_json = guarded_jev(jev_model.post_json)
+    # Adaptation 39: the page's notes (an account form Jev is not offered) ride in the state.
+    jev_model.post_json = with_page_notes(jev_model.post_json)
     import jev_ultrafast.agent as agent_module
 
     use_claude = navi_cloud() is not None or (not os.environ.get("TEXT_MODEL_API_KEY") and os.environ.get("ANTHROPIC_API_KEY"))
@@ -3913,6 +4125,11 @@ def install_adaptations():
 
     def choose(page, goal, history):
         page = drop_payments(drop_app_detours(rejected.filter(page), goal))
+        # Adaptation 39: never the user's sign-in / sign-up, never a partner site's compare box.
+        page = drop_partner_detours(drop_account_controls(page, goal), goal)
+        PAGE_NOTES.clear()
+        if page.get("account_gate"):
+            PAGE_NOTES["account_form"] = ACCOUNT_NOTE
         speculative.speculate(goal, page, history)
         try:
             return original_choose(page, goal, history)
