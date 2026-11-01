@@ -371,7 +371,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     ("order…", "go to McDonald's", "book…") does not. A start page with nothing for the task
     (Jev BLOCKED before any action — coaching notes and waits are not actions) ends at once
     (`NAVI_EARLY_BLOCK_EXIT`, no Claude) and `UltrafastBridge.freshStart` reruns it from the
-    task's own site, else a search. Runner adaptations from the McDonald's runs: 23 — while an
+    task's own site, else a search — never when the run started on the user's own tab (the one in
+    front, or the tab an earlier run worked in) and the task names no other web place
+    (`UltrafastBridge.staysOnAttachedTab`): there the runner's judge and a Claude takeover act on that
+    same tab (bench 2026-11-01: captions/1.5x, Onshape export, a DoorDash swap had all restarted on a
+    search for the sentence). Runner adaptations from the McDonald's runs: 23 — while an
     `aria-modal`/`:modal` dialog is on top only its controls are offered, and app-install
     detours (App Store, "download the app", "scan the code") are dropped; 24 — the text helper
     gets `about_the_user` (`UserCard`, `NAVI_USER_PROFILE_JSON`) only for an address/ZIP/name/
@@ -587,7 +591,27 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     its app; grounding and routine starts skipped), `here` on the open tab / app in front (also
     `continueOn` when the last task worked there), `new_place` never on the open tab. Unsure/offline:
     the open tab only for page actions or when the last task worked on that very tab. ⌘Space: the
-    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. Live (2026-10-30):
+    planner gets `recent_work` (exact URL/app) and continues there for follow-ups. **The screen in
+    front wins** (`Agent/ScreenInFront`, bench 2026-11-01: no typed run had started on the tab in front):
+    "in front" is `UserFront.app()` — never Navi, which a navi:// link / Settings activates (the last app
+    active before it, else the topmost window's owner; `FrontmostProbe`, `ContextProbe`, the panel's
+    previous app, `AgentTarget.frontmost`, `BrowserControls` use it). The planner gets `screen_in_front`
+    (app, window title, tab URL) and `recent_work.is_the_screen_in_front`; `ScreenInFront.anchor` then
+    moves the first step there when the task points at it (this/these/here/the video/the ad/this page/
+    page 2), acts on the page (pause, skip, click, scroll — a strict verb list) or asks for a page of the
+    site in front without naming another place ("open my cart", "to my cart", "add fries too"; not on a
+    search engine): a browser step continues on the tab (`useCurrentTab`, a one-step plan keeps the
+    user's words), a doc app in front (a PDF in Preview) replaces a step that would Google its words. A
+    task about the front tab never restarts elsewhere on an early BLOCKED. A typed browser control
+    ("reload this page", "go back", "bookmark this page") is one key press in the browser in front —
+    Safari too (`AgentRun.browserControl`); a typed window control ("make this full screen", "minimize
+    this", "hide Music" — never quit/close) is `WindowControls` on the window in front
+    (`AgentRun.typedWindowCommand`). A goal that starts like a lookup but ends doing something ("search
+    YouTube for X and open the first video", "find a PS5 at Target and add it to the cart":
+    `AgentRun.endsWithEffect`) is an effect: its tab is revealed, not closed. The runner attaches to the *visible* tab among several on the
+    same URL (`find_open_tab`), and a DONE before any action is always judged — unconfirmed it is a
+    partial stop, never "completed: Nothing to do. (0 steps)" (`should_judge_done(acted=)`,
+    `UltrafastBridge.isUnverifiedZeroStepDone`). Live (2026-10-30):
     14/14 sensible picks ("I meant in DoorDash where we just were" → the DoorDash tab at 0.99, "order
     me a burger" on a Canvas tab → new place 1.0); Haiku planned "open my cart…" after the order on
     doordash.com. **Fragments never run**: `whole_instruction` noul (< 0.25 — logged fragments scored

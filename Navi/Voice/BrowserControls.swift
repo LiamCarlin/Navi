@@ -91,20 +91,27 @@ enum BrowserControls {
         return nil
     }
 
-    /// Bundle ids of running browsers, frontmost first.
+    /// Bundle ids of running browsers, the one the user is looking at first (`UserFront`: not
+    /// "whichever browser launched first" when a navi:// link made Navi the active app).
     @MainActor
     static func runningBrowsers() -> [NSRunningApplication] {
         let all = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier.map(AXSnapshotter.isBrowser) ?? false }
-        let front = NSWorkspace.shared.frontmostApplication
+        let front = UserFront.app()
         return all.sorted { a, b in a == front && b != front }
     }
 
-    /// Carries out `command` in the browser in front (or the most recently
-    /// used one, brought forward first). Returns what was done, or nil when
-    /// no browser is running.
+    /// The browser the user is looking at, when the app in front is one (Safari, Chrome, Arc…).
     @MainActor
-    static func perform(_ command: Command, input: InputController) async -> String? {
-        guard let browser = runningBrowsers().first else { return nil }
+    static func frontBrowser() -> NSRunningApplication? {
+        guard let app = UserFront.app(), app.bundleIdentifier.map(AXSnapshotter.isBrowser) == true else { return nil }
+        return app
+    }
+
+    /// Carries out `command` in `browser` — by default the browser in front (or the most recently
+    /// used one), brought forward first. Returns what was done, or nil when no browser is running.
+    @MainActor
+    static func perform(_ command: Command, input: InputController, in chosen: NSRunningApplication? = nil) async -> String? {
+        guard let browser = chosen ?? runningBrowsers().first else { return nil }
         if NSWorkspace.shared.frontmostApplication != browser {
             browser.activate()
             try? await Task.sleep(for: .milliseconds(250))

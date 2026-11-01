@@ -46,7 +46,7 @@ struct AgentTarget: Sendable, Equatable {
     /// Whatever is frontmost right now, unless that is Navi itself.
     @MainActor
     static func frontmost() -> AgentTarget? {
-        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != selfPID else { return nil }
+        guard let app = UserFront.app(), app.processIdentifier != selfPID else { return nil }
         return AgentTarget(pid: app.processIdentifier, bundleID: app.bundleIdentifier, appName: app.localizedName)
     }
 

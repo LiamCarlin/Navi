@@ -412,7 +412,8 @@ enum TaskSurface {
             // "Click the write-a-message area", "scroll down", "pick the second one": an
             // action on whatever page is open. Googling the sentence instead once
             // produced a results page explaining that Google cannot click things.
-            if isPageAction(task) { return u }
+            // …and anything that points at it ("add 2 of these", "the video", "open my cart" on a store).
+            if isPageAction(task) || ScreenInFront.anchorsToTab(task, url: u) { return u }
             if let start {
                 // Jev's "start somewhere new" falls through to the errand pages below, not straight to a search.
                 if start == .currentTab { return u }
