@@ -455,7 +455,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     drops an interactive card under the bar (`PanelViewModel.Mode.schedule`) — no Enter needed.
     `ScheduleParser` is local and runs on every keystroke (names after "with", days, parts of the
     day, times, lengths; questions/edits like "what meetings…"/"cancel…" are rejected); phrasings
-    it can't call are opened by Jev's `wants_to_schedule` noul (≥ 0.7) on the routing call.
+    it can't call are opened by Jev's `wants_to_schedule` noul (≥ 0.7) on the routing call. **Not the
+    card's** (`Schedule/CardGuard`; both parsers return nil, so neither the opener nor Jev opens a card —
+    ⏎ once booked "Meeting with Its" for a Google Doc task, bench 2026-11-01): several instructions
+    ("read…, make…, and block…"), another app/site to do it in ("in notion", "on canvas", "a google
+    calendar event", "make a google doc"; Calendar/Reminders and meeting-link apps are the cards' own; a
+    mere mention is not), a timer/alarm/stopwatch (the Clock app), something else to make ("make a note
+    called groceries…", "add a checklist…", "write an email" — a note is no reminder), an all-day or
+    multi-day event ("nov 14-15 all day" — the card books timed events). "with" + a pronoun/determiner or a
+    count ("with its title", "with my notes", "with three items") is never a guest, nor is a list after a
+    colon ("…items: slides, demo, q&a") (`ScheduleParser.notNames`, `Word.colon`).
     Rows: you + each guest (Contacts: photo, work email by the calendar account's domain) over a
     9–18 timeline of busy blocks (EventKit: your writable calendars; a guest's shared calendar
     titled with their email, else only meetings you share = "Calendar not shared"). "Everyone's
@@ -485,7 +494,10 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     week · No date; repeat menu, priority, list menu (Reminders lists), "Also due" that day. ⏎ adds
     (EventKit, with an alert at the due time); ↑↓ steps the chips. Jev's `wants_reminder` noul
     opens it for phrasings without an opener ("buy milk tomorrow"), competing with
-    `wants_to_schedule`. Needs Reminders (full access); the card asks.
+    `wants_to_schedule`. `CardGuard` holds here too, except that after an opener the rest is the
+    reminder's own text ("remind me to buy milk and call mom", "remind me to reset the alarm"; after
+    "remind me"/"don't forget" even a place — "add a todo in notion" is Notion's). Needs Reminders (full
+    access); the card asks.
   - **Memory triage** (`Memory`): per frame, from local OCR text + app + title, Jev
     answers `activity` choice (coding, browsing, writing, chat, meeting, media, other),
     `is_sensitive` noul (passwords, banking → never stored), `is_new_context` noul,

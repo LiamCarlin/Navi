@@ -23,8 +23,8 @@ enum SchedulePlanner {
             endHour = max(endHour, Int((Double(time.minutes + duration) / 60).rounded(.up)))
         }
         endHour = min(endHour, 24)
-        let start = cal.date(byAdding: .hour, value: startHour, to: day) ?? day
-        let end = cal.date(byAdding: .hour, value: endHour, to: day) ?? day
+        let start = cal.wallClock(minutes: startHour * 60, on: day)
+        let end = cal.wallClock(minutes: endHour * 60, on: day)
         return ScheduleInterval(start: start, end: end)
     }
 
@@ -42,9 +42,8 @@ enum SchedulePlanner {
         } else {
             return nil
         }
-        guard let s = cal.date(byAdding: .minute, value: range.start, to: day),
-              let e = cal.date(byAdding: .minute, value: range.end, to: day) else { return nil }
-        return ScheduleInterval(start: s, end: e)
+        return ScheduleInterval(start: cal.wallClock(minutes: range.start, on: day),
+                                end: cal.wallClock(minutes: range.end, on: day))
     }
 
     /// Starts on a `step`-minute grid inside the window where nobody who can
@@ -84,7 +83,7 @@ enum SchedulePlanner {
 
     /// Where the slot sits before the user picks one: the typed time, else the first suggestion.
     static func initialStart(time: ScheduleRequest.ClockTime?, day: Date, suggestions: [Date], calendar cal: Calendar) -> Date? {
-        if let time { return cal.date(byAdding: .minute, value: time.minutes, to: day) }
+        if let time { return cal.wallClock(minutes: time.minutes, on: day) }
         return suggestions.first
     }
 
