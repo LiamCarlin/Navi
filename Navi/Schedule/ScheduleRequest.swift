@@ -122,6 +122,20 @@ struct ScheduleRequest: Equatable, Sendable {
     }
 }
 
+extension Calendar {
+    /// `minutes` after midnight on `day`'s date by the wall clock, not by elapsed time: on a
+    /// daylight-saving day (23 or 25 hours long) 9:00 is still 9:00 — adding 540 minutes to
+    /// midnight gave 8:00 AM on Sunday 2026-11-01. 24:00 is the next midnight.
+    func wallClock(minutes: Int, on day: Date) -> Date {
+        let start = startOfDay(for: day)
+        let m = Swift.max(0, minutes)
+        let base = m >= 24 * 60 ? (date(byAdding: .day, value: m / (24 * 60), to: start) ?? start) : start
+        let rest = m % (24 * 60)
+        return date(bySettingHour: rest / 60, minute: rest % 60, second: 0, of: base)
+            ?? base.addingTimeInterval(TimeInterval(rest * 60))
+    }
+}
+
 // MARK: - Parser
 
 enum ScheduleParser {

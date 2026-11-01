@@ -53,7 +53,7 @@ struct ReminderRequest: Equatable, Sendable {
 
         let minutes = time?.minutes ?? partOfDay.map(Self.usualMinutes) ?? 9 * 60
         let today = cal.startOfDay(for: now)
-        func at(_ d: Date) -> Date { cal.date(byAdding: .minute, value: minutes, to: d) ?? d }
+        func at(_ d: Date) -> Date { cal.wallClock(minutes: minutes, on: d) }
         if let day {
             let base = ScheduleRequest(activity: "", day: day).resolvedDay(now: now, calendar: cal)
             let due = at(base)
@@ -237,7 +237,7 @@ enum ReminderPlanner {
         let today = cal.startOfDay(for: now)
         func at(_ dayOffset: Int, _ hour: Int) -> Date {
             let d = cal.date(byAdding: .day, value: dayOffset, to: today) ?? today
-            return cal.date(byAdding: .hour, value: hour, to: d) ?? d
+            return cal.wallClock(minutes: hour * 60, on: d)
         }
         let fiveMinutes: TimeInterval = 300
         let inAnHour = Date(timeIntervalSinceReferenceDate:
