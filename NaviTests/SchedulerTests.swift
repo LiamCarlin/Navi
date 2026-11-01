@@ -279,7 +279,7 @@ private typealias Clock = ScheduleRequest.ClockTime
         let sunday = Date(timeIntervalSince1970: 1_793_521_260)   // Sun 1 Nov 2026, 08:21 UTC
         #expect(cal.component(.weekday, from: sunday) == 1)
         #expect(day("meeting with ana next week", at: sunday) == "2026-11-09")
-        #expect(day("meeting with ana next friday", at: sunday) == "2026-11-13")
+        #expect(day("meeting with ana next friday", at: sunday) == "2026-11-06")   // as the runner's facts say
         #expect(day("block 2 to 4 on wednesday for focus time", at: sunday) == "2026-11-04")
         let saturday = sunday.addingTimeInterval(-86400)
         #expect(day("meeting with ana next week", at: saturday) == "2026-11-02")

@@ -81,16 +81,18 @@ struct ScheduleRequest: Equatable, Sendable {
         let today = cal.startOfDay(for: now)
         func add(_ n: Int) -> Date { cal.date(byAdding: .day, value: n, to: today) ?? today }
         let weekday = cal.component(.weekday, from: today)
-        let toNextMonday = Self.daysToNextWeekMonday(from: today, calendar: cal)
+        // "next friday" counts from the coming Monday (on Sunday Nov 1: Friday Nov 6), as the
+        // browser runner's `facts` resolve it; bare "next week" is the week after this one.
+        let toComingMonday: Int = { let n = (2 - weekday + 7) % 7; return n == 0 ? 7 : n }()
         switch day {
         case .today:
             return today
         case .tomorrow:
             return add(1)
         case .nextWeek:
-            return add(toNextMonday)
+            return add(Self.daysToNextWeekMonday(from: today, calendar: cal))
         case .weekday(let target, let nextWeek):
-            if nextWeek { return add(toNextMonday + (target - 2 + 7) % 7) }
+            if nextWeek { return add(toComingMonday + (target - 2 + 7) % 7) }
             return add((target - weekday + 7) % 7)
         case .date(let month, let dayOfMonth):
             var comps = cal.dateComponents([.year], from: today)
@@ -113,7 +115,8 @@ struct ScheduleRequest: Equatable, Sendable {
     /// Days from `today` to the Monday of next week — the week after the one today is in, weeks
     /// starting on `cal.firstWeekday`. With Sunday-first weeks (US) a Sunday starts this week, so
     /// "next week" said on Sunday Nov 1 is Monday Nov 9, not tomorrow; Monday–Saturday it is the
-    /// coming Monday. Shared by "next week", "next friday" and the reminder card's "Next week" chip.
+    /// coming Monday. Shared by "next week" and the reminder card's "Next week" chip ("next friday"
+    /// keeps counting from the coming Monday, matching the browser runner's `facts`).
     static func daysToNextWeekMonday(from today: Date, calendar cal: Calendar) -> Int {
         let weekday = cal.component(.weekday, from: today)
         var toWeekStart = (cal.firstWeekday - weekday + 7) % 7
