@@ -1977,13 +1977,17 @@ class Takeover:
 
 def takeover_result(summary, actions):
     """What a takeover's last word means: Done / Stopped are Claude's own verdicts (Done is still
-    checked by the judge); anything else hands back when it acted, else it made no progress."""
+    checked by the judge); Did: hands back when it acted, else it made no progress. A last word with
+    none of the three ("The sinc function is now correctly plotted…", bench schoolwork-027) is
+    "unclear": the judge reads the page — it is often done — instead of Jev wandering on."""
     s = (summary or "").lstrip()
     if s.startswith("Done"):
         return "done"
     if s.startswith("Stopped"):
         return "stopped"
-    return "handback" if actions else "no_progress"
+    if not actions:
+        return "no_progress"
+    return "handback" if not s or s.startswith("Did") else "unclear"
 
 
 # --- escalation: what a stuck or unsure stop leads to -------------------------------
@@ -3886,8 +3890,10 @@ def cart_count(page):
     return max(counts) if counts else None
 
 
-def done_doubt(state, decision):
-    """Why a DONE is not believed yet, or None."""
+def done_doubt(state, decision, judge_available=False):
+    """Why a DONE is not believed yet, or None. An unsure DONE is left to the judge when it can be asked
+    (bench schoolwork-027: "Jev was unsure (15%) — carrying on" with the graph plotted, and 30 s of
+    wandering into Desmos's sign-up form followed); only without one does it get a second look here."""
     page = state.get("page") or {}
     if "navi_cart_start" not in state:
         state["navi_cart_start"] = cart_count(page)
@@ -3899,7 +3905,7 @@ def done_doubt(state, decision):
             or CART_URL.search(page.get("url") or "") or any(CART_URL.search(h.get("url") or "") for h in state.get("history", [])[-3:])
         if not went_in:
             return "nothing shows the item in the cart or bag yet"
-    if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE:
+    if decision.get("confidence", 1.0) < DONE_MIN_CONFIDENCE and not judge_available:
         return "Jev was unsure (%d%%)" % round(100 * decision.get("confidence", 0))
     return None
 
@@ -3960,7 +3966,8 @@ def tick(agent, retried, rejected=None):
             return "model_error"
         decision = state["decision"]
         fingerprint = state["page"]["fingerprint"]
-        doubt = done_doubt(state, decision)
+        doubt = done_doubt(state, decision,
+                           judge_available=bool(decision) and should_judge_done(decision.get("confidence")))
         if doubt and fingerprint not in retried and len(retried) < MAX_BLOCKED_RETRIES:
             # Adaptation 30: a DONE without evidence is not the end. Jev hears why and goes on.
             retried.add(fingerprint)
@@ -4563,19 +4570,23 @@ def main():
                 if checked and checked["verdict"] == "needs_user" and checked.get("question"):
                     stopped = dict(checked, answer=checked["answer"] or res["summary"])
                 return ("blocked", res["summary"]), stopped
-            if res["result"] in {"done", "no_progress"}:
+            if res["result"] in {"done", "no_progress", "unclear"}:
                 # Claude's "Done" — or a reply with no action, which is its read of the page ("the
-                # Google option is clearly visible") — is checked on a fresh look, never taken on trust.
+                # Google option is clearly visible"), or a last word with no Done/Did/Stopped — is checked
+                # on a fresh look, never taken on trust.
                 checked = look("Claude, driving, says: " + (res["summary"] or "(nothing)"))
                 if checked is None:
                     if res["result"] == "done":
                         return ("done", res["summary"]), {"verdict": "achieved", "answer": res["summary"], "next_step": "", "judged": False}
-                    return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
-                if checked["verdict"] == "achieved":
-                    return ("done", checked["answer"]), checked
-                if checked["verdict"] in {"impossible", "needs_user"} or res["result"] == "no_progress":
-                    return ("blocked", checked["answer"]), checked
-                verdict = checked
+                    if res["result"] == "no_progress":
+                        return ("blocked", (verdict or {}).get("answer") or "Stopped: stuck on this page."), verdict
+                    # "unclear" and no judge to ask: Jev carries on from here.
+                else:
+                    if checked["verdict"] == "achieved":
+                        return ("done", checked["answer"]), checked
+                    if checked["verdict"] in {"impossible", "needs_user"} or res["result"] == "no_progress":
+                        return ("blocked", checked["answer"]), checked
+                    verdict = checked
             emit("status", message="Back to Jev from here")
             resume()
             return None, verdict
@@ -4683,6 +4694,20 @@ def main():
                         if verdict["verdict"] in {"impossible", "needs_user"}:
                             stop = ("blocked", verdict["answer"])
                             why = None
+                    confidence = last.get("confidence") or 0.0
+                    fp = agent.state["page"].get("fingerprint")
+                    if confidence < DONE_MIN_CONFIDENCE and not stop and (verdict is None or (why and not takeover.available())) \
+                            and fp not in retried_blocked and len(retried_blocked) < MAX_BLOCKED_RETRIES:
+                        # Adaptation 30 without a check that settles it (the judge unreachable, or no takeover
+                        # left): a DONE Jev was unsure of gets one more look on this page, never the end.
+                        retried_blocked.add(fp)
+                        note = (verdict or {}).get("next_step") or "Jev was unsure (%d%%)" % round(100 * confidence)
+                        agent.state["history"].append({"step": len(agent.state["history"]) + 1, "action": "Not done yet: " + note[:200],
+                                                       "kind": "check", "text": None, "page_changed": None,
+                                                       "url": agent.state["page"].get("url")})
+                        emit("status", message=f"Jev said done, but {note[:120]} — carrying on")
+                        resume()
+                        continue
             if why:
                 stop, verdict = escalate(state, why, verdict)
                 if stop is None:
