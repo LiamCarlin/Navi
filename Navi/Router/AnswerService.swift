@@ -142,7 +142,10 @@ final class AnswerService: AnswerProviding, @unchecked Sendable {
         if !memory.isEmpty {
             lines.append("Relevant moments from the user's screen memory (most relevant first):")
             lines.append(memory.prefix(8).map { formatMemoryHit($0, timeZone: timeZone) }.joined(separator: "\n"))
+        } else if context.memorySearched {
+            lines.append("Navi searched the user's screen memory (what was on their screen, by time and app) for this and found no matching moments. Say that in one short line (memory may be paused, off, or hold nothing for that time); do not claim you have no access to their activity.")
         }
+        lines.append("You are the answer half of Navi, which itself opens apps, websites and files and carries out tasks on this Mac. Never tell the user you cannot open apps, sites or files or control their Mac; if they asked you to do something rather than answer, say in one short line that Navi can run it as a task.")
         lines.append("""
         Rules:
         - Answer directly. No preamble, no restating the question.

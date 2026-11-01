@@ -33,6 +33,9 @@ enum SystemCommands {
         case confirmRequired(String)  // tells the user to append " now"
         case showDesktop
         case doNotDisturb
+        /// Navi's own screen memory: pause capture for this many minutes (nil = until tomorrow).
+        case pauseMemory(minutes: Int?)
+        case resumeMemory
     }
 
     private struct Spec {
@@ -72,6 +75,13 @@ enum SystemCommands {
 
     private static let volumeRegex = try! NSRegularExpression(pattern: #"^(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})%?$"#)
     private static let quitRegex = try! NSRegularExpression(pattern: #"^(quit|close|kill|force quit|force-quit)\s+(.+)$"#)
+    /// "pause screen memory for an hour", "stop recall for 30 minutes", "pause recording until tomorrow".
+    private static let memoryWords = #"(?:the\s+|my\s+|navi'?s?\s+)?(?:screen\s+(?:memory|recording|capture|capturing)|memory|recall)"#
+    private static let pauseMemoryRegex = try! NSRegularExpression(pattern:
+        #"^(?:pause|stop|turn off|disable|suspend)\s+"# + memoryWords
+        + #"(?:\s+for\s+(?:(an?|one|\d{1,3})\s+(hours?|hrs?|minutes?|mins?)|the\s+(?:rest\s+of\s+the\s+)?day|today)|\s+until\s+tomorrow)?$"#)
+    private static let resumeMemoryRegex = try! NSRegularExpression(pattern:
+        #"^(?:resume|unpause|restart|turn on|enable|start)\s+"# + memoryWords + #"(?:\s+again)?$"#)
 
     // MARK: - Matching (pure)
 
@@ -97,6 +107,25 @@ enum SystemCommands {
                                    subtitle: force ? "Force-terminate the running app" : "Ask the app to quit",
                                    icon: "xmark.circle.fill", score: 0.92, action: .quitApp(app, force: force)))
             }
+        }
+
+        if let m = pauseMemoryRegex.firstMatch(in: q, range: full) {
+            var minutes: Int? = 60
+            if let nR = Range(m.range(at: 1), in: q), let uR = Range(m.range(at: 2), in: q) {
+                let n = max(1, Int(q[nR]) ?? 1)
+                minutes = q[uR].hasPrefix("h") ? n * 60 : n
+            } else if q.contains("day") || q.contains("tomorrow") {
+                minutes = nil
+            }
+            let when: String
+            if let m = minutes { when = m % 60 != 0 ? "\(m) minutes" : m == 60 ? "1 hour" : "\(m / 60) hours" }
+            else { when = "the rest of the day" }
+            out.append(Command(id: "sys:pause-memory", title: "Pause Screen Memory", subtitle: "Navi stops remembering your screen for \(when)",
+                               icon: "pause.circle.fill", score: 1.0, action: .pauseMemory(minutes: minutes)))
+        }
+        if resumeMemoryRegex.firstMatch(in: q, range: full) != nil {
+            out.append(Command(id: "sys:resume-memory", title: "Resume Screen Memory", subtitle: "Navi remembers your screen again",
+                               icon: "play.circle.fill", score: 1.0, action: .resumeMemory))
         }
 
         for spec in specs {
@@ -201,6 +230,15 @@ enum SystemCommands {
             return appleScript("tell application \"System Events\" to set visible of (every process whose visible is true and \(clause)) to false")
         case .showDesktop:
             return appleScript("tell application \"System Events\" to set visible of (every process whose visible is true and name is not \"Finder\" and name is not \"Navi\") to false")
+        case .pauseMemory(let minutes):
+            NaviSettings.shared.memoryPausedUntil = minutes.map { Date().addingTimeInterval(Double($0) * 60) }
+                ?? Calendar.current.startOfDay(for: Date().addingTimeInterval(86_400))
+            let span = minutes.map { "\($0) min" } ?? "rest of day"
+            Log.router.info("screen memory paused (\(span, privacy: .public))")
+            return .dismiss
+        case .resumeMemory:
+            NaviSettings.shared.memoryPausedUntil = nil
+            return .dismiss
         case .quitApp(let name, let force):
             let n = name.lowercased()
             let apps = NSWorkspace.shared.runningApplications.filter {

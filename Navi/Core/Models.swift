@@ -159,6 +159,9 @@ struct QueryContext: Sendable {
     /// The cloud run every call for this query is billed under (`X-Navi-Run`):
     /// one id per answer / task / voice command, however many model calls it takes.
     var runID = UUID()
+    /// Screen memory was searched for this query (a recall question): an answer with no
+    /// moments says memory has nothing for it, never that Navi cannot see the user's history.
+    var memorySearched = false
 
     static var empty: QueryContext {
         QueryContext(frontmostApp: nil, frontmostAppName: nil, frontmostWindowTitle: nil,

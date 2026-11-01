@@ -1226,6 +1226,16 @@ extension AppSkills {
             deepLinks: ["search": "https://stackoverflow.com/search?q=", "home": "https://stackoverflow.com"],
             aliases: ["stackoverflow", "stack overflow"]
         ),
+        // Router hook (bench "open desmos"): ⌘Space opens a named web app's page instead of answering.
+        AppSkill(
+            name: "Desmos", bundleIDs: [], hosts: ["desmos.com"],
+            howItWorks: ["The graphing calculator: an expression list on the left (one equation, function, point or slider per line, typed like y=x^2) and the graph on the right; the keyboard button at the bottom opens math keys; + adds an expression, folder, note or table."],
+            recipes: [.init(goal: "graph an equation", keywords: ["graph", "plot", "equation", "function"], steps: ["CLICK the first empty expression line", "TYPE_TEXT the equation", "DONE when its curve is drawn"])],
+            doneWhen: ["The expression is in the list and its curve is drawn on the graph"],
+            deepLinks: ["home": "https://www.desmos.com/calculator", "scientific": "https://www.desmos.com/scientific",
+                        "matrix": "https://www.desmos.com/matrix", "geometry": "https://www.desmos.com/geometry"],
+            aliases: ["desmos calculator", "desmos graphing calculator"]
+        ),
 
         // ── Video, music, social ──────────────────────────────────────────────
         AppSkill(
