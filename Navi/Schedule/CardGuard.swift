@@ -22,6 +22,9 @@ enum CardGuard {
         case otherPlace(String)
         /// A timer, alarm or stopwatch: the Clock app, not a reminder or an event.
         case timer
+        /// Something else to make ("make a note called groceries…", "add a checklist…"): a note, a
+        /// document, a list — the Notes app or the app in front, not a reminder or an event.
+        case otherThing
         /// An all-day or multi-day event ("nov 14-15 all day"): the card books timed events only.
         case allDayOrMultiDay
     }
@@ -36,6 +39,7 @@ enum CardGuard {
     static func veto(_ query: String, card: Card, explicitOpener: Bool = false, placeIsContent: Bool = false) -> Veto? {
         if !placeIsContent, let place = otherPlace(in: query) { return .otherPlace(place) }
         if !explicitOpener, mentionsTimer(query) { return .timer }
+        if !explicitOpener, makesOtherThing(query) { return .otherThing }
         if !explicitOpener, isCompound(query) { return .compound }
         if card == .schedule, isAllDayOrMultiDay(query) { return .allDayOrMultiDay }
         return nil
@@ -117,6 +121,16 @@ enum CardGuard {
 
     static func mentionsTimer(_ query: String) -> Bool {
         query.lowercased().range(of: #"\b(timer|timers|stopwatch|alarm|alarms|countdown)\b"#, options: .regularExpression) != nil
+    }
+
+    // MARK: Something else to make
+
+    /// "make a note …", "make a new note in my school folder", "create a doc", "add a checklist under it",
+    /// "write an email", "start a new spreadsheet" (bench native-040/071/080/041: the reminder or the
+    /// scheduler card took them). A note is not a reminder.
+    static func makesOtherThing(_ query: String) -> Bool {
+        query.lowercased().range(of: #"\b(make|create|write|start|take|jot|jot down|add|new|draft|open)\s+(a |an |the |my |me a |up a )?(new |quick |blank |short )?(note|notes|checklist|check list|list|document|doc|spreadsheet|sheet|presentation|slide|slides|email|e-mail|message|text|file|folder|page)\b"#,
+                                     options: .regularExpression) != nil
     }
 
     // MARK: All-day and multi-day events

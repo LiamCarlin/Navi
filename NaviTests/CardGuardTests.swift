@@ -26,6 +26,47 @@ import Testing
         #expect(CardGuard.veto(schoolwork026, card: .reminder) == .otherPlace("Notion"))
     }
 
+    // Batch 2 of the same bench.
+    @Test func benchBatch2QueriesAreNotCards() {
+        let notes = ["make a new note in my school folder titled pset 4 todo with a checklist of problems 1 through 5",  // native-071
+                     "make a note with the problem list from this pdf",                                                  // native-080
+                     "make a note called groceries with eggs milk and bread"]                                            // native-040
+        for q in notes {
+            #expect(ReminderParser.parse(q) == nil, Comment(rawValue: q))
+            #expect(ScheduleParser.parse(q) == nil, Comment(rawValue: q))
+            #expect(CardGuard.veto(q, card: .reminder) == .otherThing, Comment(rawValue: q))
+        }
+        // calendar-033: a reminder per assignment read off Canvas first.
+        let perAssignment = "make a reminder for every assignment due this week on canvas"
+        #expect(ReminderParser.parse(perAssignment) == nil)
+        #expect(CardGuard.veto(perAssignment, card: .reminder) == .otherPlace("Canvas"))
+        // native-053: an alarm is the Clock's.
+        for q in ["set an alarm for 7:30 am tomorrow", "wake me up with an alarm at 6", "set alarm 7am"] {
+            #expect(ReminderParser.parse(q) == nil, Comment(rawValue: q))
+            #expect(ScheduleParser.parse(q) == nil, Comment(rawValue: q))
+        }
+        // native-041: a checklist's items are no guests.
+        let checklist = "add a checklist under it with three items: slides, demo, q&a"
+        #expect(ScheduleParser.parse(checklist) == nil)
+        #expect(ReminderParser.parse(checklist) == nil)
+        // errand-042: a trip plan with a calendar hold at the end.
+        let trip = "plan a weekend trip to montreal nov 13-15: cheapest flight, a hotel under 200 near old port, and put both in my calendar as holds"
+        #expect(CardGuard.isCompound(trip))
+        #expect(CardGuard.veto(trip, card: .schedule) == .compound)
+        #expect(ScheduleParser.parse(trip) == nil)
+    }
+
+    @Test func aNoteIsNoReminderButARemindedNoteIs() {
+        #expect(CardGuard.makesOtherThing("make a note called groceries"))
+        #expect(CardGuard.makesOtherThing("add a checklist under it"))
+        #expect(CardGuard.makesOtherThing("write an email to the registrar"))
+        #expect(!CardGuard.makesOtherThing("buy milk tomorrow"))
+        #expect(!CardGuard.makesOtherThing("meeting with ana tomorrow at 3"))
+        // After a reminder opener the note is what to remember.
+        #expect(ReminderParser.parse("remind me to make a note of the parking spot")?.isExplicit == true)
+        #expect(ReminderParser.parse("buy milk tomorrow") != nil)
+    }
+
     // MARK: Several instructions
 
     @Test func compoundInstructions() {

@@ -438,9 +438,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     ⏎ once booked "Meeting with Its" for a Google Doc task, bench 2026-11-01): several instructions
     ("read…, make…, and block…"), another app/site to do it in ("in notion", "on canvas", "a google
     calendar event", "make a google doc"; Calendar/Reminders and meeting-link apps are the cards' own; a
-    mere mention is not), a timer/alarm/stopwatch (the Clock app), an all-day or multi-day event ("nov 14-15
-    all day" — the card books timed events). "with" + a pronoun/determiner ("with its title", "with my
-    notes") is never a guest (`ScheduleParser.notNames`).
+    mere mention is not), a timer/alarm/stopwatch (the Clock app), something else to make ("make a note
+    called groceries…", "add a checklist…", "write an email" — a note is no reminder), an all-day or
+    multi-day event ("nov 14-15 all day" — the card books timed events). "with" + a pronoun/determiner or a
+    count ("with its title", "with my notes", "with three items") is never a guest, nor is a list after a
+    colon ("…items: slides, demo, q&a") (`ScheduleParser.notNames`, `Word.colon`).
     Rows: you + each guest (Contacts: photo, work email by the calendar account's domain) over a
     9–18 timeline of busy blocks (EventKit: your writable calendars; a guest's shared calendar
     titled with their email, else only meetings you share = "Calendar not shared"). "Everyone's
