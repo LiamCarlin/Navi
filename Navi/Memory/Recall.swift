@@ -90,6 +90,13 @@ final class Recall: @unchecked Sendable {
         let today = calendar.startOfDay(for: now)
         func strip(_ phrase: String) { q = q.replacingOccurrences(of: " \(phrase) ", with: " ") }
         func dayInterval(_ start: Date) -> DateInterval { DateInterval(start: start, duration: day) }
+        /// From that part of today until now; before it has begun ("this morning" asked at 3 AM),
+        /// since midnight — a window that starts after now holds nothing.
+        func sinceToday(_ hour: Double) -> DateInterval {
+            let start = today.addingTimeInterval(hour * 3600)
+            return now > start ? DateInterval(start: start, end: now)
+                               : DateInterval(start: today, end: max(now, today.addingTimeInterval(1)))
+        }
 
         let phrases: [(String, () -> DateInterval)] = [
             ("day before yesterday", { dayInterval(today.addingTimeInterval(-2 * day)) }),
@@ -98,10 +105,10 @@ final class Recall: @unchecked Sendable {
             ("yesterday evening", { DateInterval(start: today.addingTimeInterval(-day + 17 * 3600), duration: 7 * 3600) }),
             ("last night", { DateInterval(start: today.addingTimeInterval(-day + 18 * 3600), duration: 9 * 3600) }),
             ("yesterday", { dayInterval(today.addingTimeInterval(-day)) }),
-            ("this morning", { DateInterval(start: today.addingTimeInterval(5 * 3600), end: max(now, today.addingTimeInterval(5 * 3600 + 1))) }),
-            ("this afternoon", { DateInterval(start: today.addingTimeInterval(12 * 3600), end: max(now, today.addingTimeInterval(12 * 3600 + 1))) }),
-            ("this evening", { DateInterval(start: today.addingTimeInterval(17 * 3600), end: max(now, today.addingTimeInterval(17 * 3600 + 1))) }),
-            ("tonight", { DateInterval(start: today.addingTimeInterval(17 * 3600), end: max(now, today.addingTimeInterval(17 * 3600 + 1))) }),
+            ("this morning", { sinceToday(5) }),
+            ("this afternoon", { sinceToday(12) }),
+            ("this evening", { sinceToday(17) }),
+            ("tonight", { sinceToday(17) }),
             ("earlier today", { DateInterval(start: today, end: now) }),
             ("today", { DateInterval(start: today, end: now) }),
             ("last week", {
@@ -132,6 +139,22 @@ final class Recall: @unchecked Sendable {
                 var back = (weekday - target + 7) % 7
                 if back == 0 { back = 7 }
                 window = dayInterval(today.addingTimeInterval(-Double(back) * day))
+                q.replaceSubrange(m, with: " ")
+            }
+        }
+        // A clock time ("at 3pm yesterday", "around 10:30 am"): the 90 minutes around it on that
+        // day (today, or yesterday when that time has not come yet). "3pm" is no search term.
+        if let m = q.range(of: #" (?:at |around |about |near |by )?(\d{1,2})(?: ([0-5]\d))? ?(am|pm|a m|p m) "#, options: .regularExpression) {
+            let parts = q[m].split(separator: " ").map(String.init)
+            let digits = parts.compactMap { p -> Int? in Int(p.prefix { $0.isNumber }) }
+            let pm = q[m].contains("pm") || q[m].contains("p m")
+            if let h = digits.first, (1...12).contains(h) {
+                let minute = digits.count > 1 ? digits[1] : 0
+                let hour = h % 12 + (pm ? 12 : 0)
+                let base = window.map { calendar.startOfDay(for: $0.start) } ?? today
+                var center = base.addingTimeInterval(Double(hour * 3600 + minute * 60))
+                if window == nil, center > now { center = center.addingTimeInterval(-day) }
+                window = DateInterval(start: center.addingTimeInterval(-45 * 60), end: center.addingTimeInterval(45 * 60))
                 q.replaceSubrange(m, with: " ")
             }
         }

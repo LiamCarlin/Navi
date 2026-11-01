@@ -74,6 +74,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `Intent.allCases` (+ `is_risky` noul, `needs_clarification` noul, `wants_memory` noul).
   - **Confidence-gated routing**: below `NaviSettings.jevConfidenceThreshold` show
     both the quick match and "Ask Navi".
+  - **⏎ performs the routed action, never the answer row** (taskbench 2026-11-01: "open youtube",
+    "open canvas", "open the last assignment I did" all answered "I can't open apps"). Every query
+    carries "Ask Navi" + a web search (`QueryRouter.isFallbackRow`); `PanelViewModel.merge` puts
+    them after the action rows for action intents (`QueryRouter.actionIntents`) and pins "Open it"
+    (own past work), browser key presses and "Do it in <app>" first (`isPinnedRow`);
+    `submitIndex` picks the first action row. An action intent with no row of its own falls back
+    (`actionFallbackRows`): the named web app's page (`webAppRow`: AppSkills start URL on the
+    user's own host — youtube.com, canvas.olin.edu, desmos.com/calculator), "Clarify" for "open
+    it", else a task row; a question keeps the answer. `ownThingRow` (UserKnowledge) leads file
+    matches for "open the hci notes". "pause screen memory for an hour" is a `SystemCommands` action.
   - **Agent gating** (`Agent`): after each Claude computer-use step, Jev answers
     `is_irreversible` (send/pay/delete), `task_complete`, `is_stuck` from the
     textual step log — cheap and fast, so the loop stays snappy.

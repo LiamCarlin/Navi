@@ -68,6 +68,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         rows += URLAndWeb.results(for: q)
         rows += SystemCommands.results(for: q, context: context)
         rows = Self.orderByKind(rows)
+        if let browser = Self.browserControlRow(for: q, context: context) { rows.insert(browser, at: 0) }
         rows.append(askRow(q, context: context, memory: []))
         rows.append(URLAndWeb.webSearchResult(for: q))
         return recording(rows, query: q)
@@ -326,6 +327,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         switch decision.intent {
         case .openApp:
             let apps = appIndex.results(for: q, limit: 5)
+            // "open youtube", "open canvas": a web app the user means when no installed app
+            // really matches (a loose subsequence match is no app name).
+            if (appIndex.search(q, limit: 1).first?.score ?? 0) < Self.strongAppScore, let web = Self.webAppRow(for: q) {
+                rows.append(web)
+            }
             rows += apps
             if let best = appIndex.search(q, limit: 1).first, let bid = best.entry.bundleID,
                let running = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bid }) {
@@ -352,6 +358,11 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
             rows.append(URLAndWeb.webSearchResult(for: q, score: decision.intent == .webSearch ? 0.9 : 0.3))
 
         case .calculate:
+            // "use the calculator to do 1200 / 16": the user asked for the app, not an inline sum.
+            if let app = Self.namesAppToUse(q) {
+                rows.append(taskRow(q, context: context, id: "app-task:\(q)", title: "Do it in \(app.name): \(q)",
+                                    risky: false, score: 1.0))
+            }
             rows += Calculator.results(for: q)
             if let req = Calculator.parseCurrency(q) {
                 do {
@@ -374,15 +385,7 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
             rows.append(URLAndWeb.webSearchResult(for: q, score: 0.2))
 
         case .computerTask:
-            let mode = NaviSettings.shared.agentApprovalMode.label
-            let agent = self.agent
-            agent.prepare(task: q, context: context)   // speculative: surface classification before ⏎
-            let riskNote = decision.isRisky ? " · may be hard to undo" : ""
-            rows.append(SearchResult(id: "task:\(q)", kind: .task, title: "Do it: \(q)",
-                                     subtitle: "Navi will control your Mac · \(mode)\(riskNote)",
-                                     icon: .system("cursorarrow.motionlines"), score: 0.95, shortcutHint: "⏎ Run") {
-                .runAgent(agent.run(task: q, context: context))
-            })
+            rows.append(taskRow(q, context: context, risky: decision.isRisky))
 
         case .recallMemory:
             // Recall gate (account workstream): without the entitlement the only row is the upsell.
@@ -394,7 +397,9 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
             rows.append(SearchResult(id: "ask-memory:\(q)", kind: .answer, title: "Ask about this: \(q)",
                                      subtitle: hits.isEmpty ? "No matching screen memories" : "Answer using \(hits.count) matching moment\(hits.count == 1 ? "" : "s")",
                                      icon: .system("clock.badge.questionmark"), score: 0.95, shortcutHint: "⏎ Ask") { [answers] in
-                .streamAnswer(answers.streamAnswer(query: q, context: context, memory: hits))
+                var ctx = context
+                ctx.memorySearched = true
+                return .streamAnswer(answers.streamAnswer(query: q, context: ctx, memory: hits))
             })
             rows += hits.enumerated().map { (i, h) in Self.memoryRow(h, score: 0.9 - Double(i) * 0.02) }
             if hits.isEmpty {
@@ -416,29 +421,209 @@ final class QueryRouter: QueryRouting, @unchecked Sendable {
         if decision.intent != .openFile, FileSearch.looksLikeFile(q) {
             rows += (await FileSearch.results(for: q, limit: 4)).map { r in var r = r; r.score = min(r.score, 0.45); return r }
         }
+        // "go back", "reload", "close this tab" with a browser in front: one key press there.
+        if let browser = Self.browserControlRow(for: q, context: context) { rows.insert(browser, at: 0) }
         // "Open the last assignment I did", "pull up the doc I was working on": the user's own
         // past work, which the agent finds in screen memory (`TaskGrounding`) and opens —
         // whatever intent the words read as ("that pdf from yesterday" looks like a file search).
-        if decision.intent != .computerTask, UserKnowledge.current != nil, TaskGrounding.reopensOwnWork(q, possessive: false) {
+        let reopen = decision.intent != .computerTask && UserKnowledge.current != nil
+            && Self.reopensOwnWork(q, intent: decision.intent)
+        // "open the hci notes": a document or project of the user's (`UserKnowledge`) is what they
+        // mean over a Spotlight file that shares a word (file rows score <= 0.7) — unless they named
+        // an installed app or a web app.
+        if Self.thingIntents.contains(decision.intent),
+           !rows.contains(where: { ($0.kind == .app && $0.score >= Self.strongAppScore) || $0.id.hasPrefix("webapp:") }),
+           let thing = await Self.ownThingRow(for: q) {
+            rows.insert(thing, at: 0)
+        }
+        // The routed action found nothing to do it with ("open youtube" with no YouTube app,
+        // "go to next week" read as date math, "show me the files changed" read as a file search):
+        // the named web app's page, else a question back for "open it", else a task — never the
+        // text answer, which can only say it can't open anything.
+        if Self.actionIntents.contains(decision.intent), !reopen, !rows.contains(where: { !Self.isFallbackRow($0) }) {
+            rows.insert(contentsOf: actionFallbackRows(q, context: context), at: 0)
+        }
+        // The "Open it" row leads (`PanelViewModel.merge` pins it): ⏎ opens it instead of answering about it.
+        if reopen {
             let agent = self.agent
             agent.prepare(task: q, context: context)
-            rows.append(SearchResult(id: "task:\(q)", kind: .task, title: "Open it: \(q)",
+            rows.insert(SearchResult(id: "open-it:\(q)", kind: .task, title: "Open it: \(q)",
                                      subtitle: "From your screen memory · Navi finds it and opens it",
                                      icon: .system("clock.arrow.circlepath"), score: 0.97, shortcutHint: "⏎ Open") {
                 .runAgent(agent.run(task: q, context: context))
-            })
-        }
-        if decision.needsClarification {
-            let answers = self.answers
-            rows.insert(SearchResult(id: "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
-                                     subtitle: "Navi needs one detail first — pick an interpretation or type one",
-                                     icon: .system("questionmark.bubble"), score: 1.0, shortcutHint: "⏎ Clarify") {
-                .clarify(ClarificationRequest(originalQuery: q) {
-                    try await answers.clarification(query: q, context: context)
-                })
             }, at: 0)
         }
+        if decision.needsClarification, !rows.contains(where: { $0.id.hasPrefix("clarify:") }) {
+            rows.insert(clarifyRow(q, context: context), at: 0)
+        }
         return recording(rows, query: q)
+    }
+
+    // MARK: - Action rows: ⏎ does what Jev routed (taskbench overnight-20261101)
+    //
+    // Every query also carries "Ask Navi" and a web search. When the routed intent was an
+    // action but produced no row for it, those were all that was left and ⏎ answered
+    // "I can't open apps" (web-001 "open youtube", schoolwork-001 "open canvas", memory-005…).
+
+    /// Intents whose rows are actions: ⏎ performs one of them, never the answer row.
+    static let actionIntents: Set<Intent> = [.openApp, .openURL, .openFile, .systemCommand, .calculate, .settings]
+    /// Intents where the words may name one of the user's own documents or projects.
+    static let thingIntents: Set<Intent> = [.openApp, .openURL, .openFile]
+    /// An app match at least this good is the app the user named (word start / acronym and up).
+    static let strongAppScore = 0.85
+
+    /// Rows that carry out nothing the query asked for: "Ask Navi", the web search,
+    /// "No files match", "Screen memory is empty".
+    static func isFallbackRow(_ r: SearchResult) -> Bool {
+        r.id.hasPrefix("ask:") || r.kind == .webSearch || r.id.hasPrefix("file-none:") || r.id == "memory-empty"
+    }
+
+    /// Rows that lead whatever the intent (`PanelViewModel.merge`): reopening the user's own
+    /// work, a browser key press, the task in the app the query names.
+    static func isPinnedRow(_ r: SearchResult) -> Bool {
+        r.id.hasPrefix("open-it:") || r.id.hasPrefix("browser:") || r.id.hasPrefix("app-task:")
+    }
+
+    /// What an action intent falls back to when it found nothing to act with.
+    enum FallbackAction: Equatable, Sendable {
+        /// A web app the query names: open its page ("open youtube" → youtube.com).
+        case openWebApp
+        /// "open it" with nothing selected: ask what "it" is.
+        case clarify
+        /// Anything else said as an instruction: the computer-use agent does it.
+        case task
+        /// A question: the answer row is the right default.
+        case keepAnswer
+    }
+
+    static func fallbackAction(for query: String, hasSelection: Bool) -> FallbackAction {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return .keepAnswer }
+        if let s = AppSkills.mentioned(in: q), !s.hosts.isEmpty { return .openWebApp }
+        if pointsAtScreenOnly(q) { return hasSelection ? .task : .clarify }
+        if looksLikeQuestion(q) { return .keepAnswer }
+        return .task
+    }
+
+    /// "open it", "open that", "show me this": the only object is a pronoun.
+    static func pointsAtScreenOnly(_ q: String) -> Bool {
+        let verbs: Set<String> = ["open", "launch", "start", "run", "show", "me", "pull", "bring", "up", "go", "to", "switch",
+                                  "do", "please", "can", "you", "the"]
+        let words = q.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+        let rest = words.drop(while: { verbs.contains($0) }).filter { $0 != "please" }
+        let pointers: Set<String> = ["it", "this", "that", "them", "these", "those", "one", "here", "there"]
+        return !rest.isEmpty && rest.allSatisfy { pointers.contains($0) }
+    }
+
+    /// Asked, not instructed: "what…", "when is…", "how do…", or a question mark.
+    static func looksLikeQuestion(_ q: String) -> Bool {
+        let lower = q.lowercased().trimmingCharacters(in: .whitespaces)
+        if lower.hasSuffix("?") { return true }
+        let first = lower.split(whereSeparator: { $0 == " " }).first.map(String.init) ?? ""
+        return ["what", "whats", "what's", "who", "whom", "whose", "when", "where", "why", "how", "is", "are", "was", "were",
+                "can", "could", "should", "would", "does", "did", "will", "which", "explain", "define"].contains(first)
+    }
+
+    /// "use the calculator to do 1200 / 16", "2+2 in calculator": a native app the query asks
+    /// to do it in (named after "use / in / on / with / open"), not just mentioned.
+    static func namesAppToUse(_ query: String) -> AppSkill? {
+        let lower = query.lowercased()
+        guard let s = AppSkills.mentioned(in: lower), s.hosts.isEmpty, !s.bundleIDs.isEmpty else { return nil }
+        let names = ([s.name] + s.aliases).map { NSRegularExpression.escapedPattern(for: $0.lowercased()) }.joined(separator: "|")
+        let pattern = #"\b(?:use|using|with|in|on|into|open|launch)\s+(?:the\s+|my\s+)?(?:"# + names + #")(?:\s+app)?\b"#
+        return lower.range(of: pattern, options: .regularExpression) != nil ? s : nil
+    }
+
+    /// "Open the last assignment I did" (explicit), or "the doc I was working on yesterday" —
+    /// no verb, but Jev read it as something to open.
+    static func reopensOwnWork(_ q: String, intent: Intent) -> Bool {
+        if TaskGrounding.reopensOwnWork(q, possessive: false) { return true }
+        guard thingIntents.contains(intent) else { return false }
+        let first = q.lowercased().split(separator: " ").first.map(String.init) ?? ""
+        return ["the", "that", "this", "my", "last", "yesterday's", "today's"].contains(first)
+            && TaskGrounding.reopensOwnWork("open " + q, possessive: false)
+    }
+
+    @MainActor
+    func actionFallbackRows(_ q: String, context: QueryContext) -> [SearchResult] {
+        let hasSelection = !(context.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        switch Self.fallbackAction(for: q, hasSelection: hasSelection) {
+        case .openWebApp:
+            if let row = Self.webAppRow(for: q) { return [row] }
+            return [taskRow(q, context: context, risky: false, score: 0.9)]
+        case .clarify: return [clarifyRow(q, context: context)]
+        case .task: return [taskRow(q, context: context, risky: false, score: 0.9)]
+        case .keepAnswer: return []
+        }
+    }
+
+    /// The page of the web app a query names, on the user's own host for it
+    /// ("open canvas" → canvas.olin.edu, `UserHabits.personalize`).
+    @MainActor
+    static func webAppRow(for q: String) -> SearchResult? {
+        guard let skill = AppSkills.mentioned(in: q), !skill.hosts.isEmpty, let raw = AppSkills.startURL(for: q) else { return nil }
+        let link = UserHabits.current?.cachedProfile().map { UserHabits.personalize(raw, profile: $0) } ?? raw
+        guard let url = URL(string: link), url.scheme?.hasPrefix("http") == true else { return nil }
+        return SearchResult(id: "webapp:\(link)", kind: .url, title: "Open \(skill.name)", subtitle: link,
+                            icon: .system("safari"), score: 0.97, shortcutHint: "⏎ Open") {
+            NSWorkspace.shared.open(url)
+            return .dismiss
+        }
+    }
+
+    /// A document or project of the user's the query names, by its page ("open the hci notes" →
+    /// the HCI doc, `UserKnowledge.startURL`). nil without screen memory (and under tests).
+    static func ownThingRow(for q: String) async -> SearchResult? {
+        guard UserKnowledge.current != nil else { return nil }
+        let link = await Task.detached(priority: .userInitiated) { UserKnowledge.liveStartURL(for: q) }.value
+        guard let link, let url = URL(string: link), url.scheme?.hasPrefix("http") == true else { return nil }
+        let name = AppIndex.normalize(q)
+        return SearchResult(id: "thing:\(link)", kind: .url, title: "Open “\(name.isEmpty ? q : name)”",
+                            subtitle: "From your work · \(url.host ?? link)", icon: .system("doc.richtext"),
+                            score: 0.96, shortcutHint: "⏎ Open") {
+            NSWorkspace.shared.open(url)
+            return .dismiss
+        }
+    }
+
+    /// "go back", "reload", "close this tab" with a browser in front (`BrowserControls`).
+    @MainActor
+    static func browserControlRow(for q: String, context: QueryContext) -> SearchResult? {
+        guard let front = context.frontmostApp, AXSnapshotter.isBrowser(front), let cmd = BrowserControls.match(q) else { return nil }
+        return SearchResult(id: "browser:\(cmd.title)", kind: .systemCommand, title: cmd.title,
+                            subtitle: "In \(context.frontmostAppName ?? "the browser")", icon: .system("safari"),
+                            score: 0.99, shortcutHint: "⏎ Run") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(200))   // the panel closes first
+                _ = await BrowserControls.perform(cmd, input: InputController())
+            }
+            return .dismiss
+        }
+    }
+
+    @MainActor
+    func taskRow(_ q: String, context: QueryContext, id: String? = nil, title: String? = nil,
+                 risky: Bool, score: Double = 0.95) -> SearchResult {
+        let mode = NaviSettings.shared.agentApprovalMode.label
+        let agent = self.agent
+        agent.prepare(task: q, context: context)   // speculative: surface classification before ⏎
+        let riskNote = risky ? " · may be hard to undo" : ""
+        return SearchResult(id: id ?? "task:\(q)", kind: .task, title: title ?? "Do it: \(q)",
+                            subtitle: "Navi will control your Mac · \(mode)\(riskNote)",
+                            icon: .system("cursorarrow.motionlines"), score: score, shortcutHint: "⏎ Run") {
+            .runAgent(agent.run(task: q, context: context))
+        }
+    }
+
+    func clarifyRow(_ q: String, context: QueryContext) -> SearchResult {
+        let answers = self.answers
+        return SearchResult(id: "clarify:\(q)", kind: .answer, title: "Clarify: \(q)",
+                            subtitle: "Navi needs one detail first — pick an interpretation or type one",
+                            icon: .system("questionmark.bubble"), score: 1.0, shortcutHint: "⏎ Clarify") {
+            .clarify(ClarificationRequest(originalQuery: q) {
+                try await answers.clarification(query: q, context: context)
+            })
+        }
     }
 
     // MARK: - Row builders
