@@ -287,6 +287,8 @@ struct CodeBlockView: View {
     let language: String?
     let code: String
     var showsCaret: Bool = false
+    @State private var hover = false
+    @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -314,5 +316,37 @@ struct CodeBlockView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.055)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+        .overlay(alignment: .topTrailing) {
+            if (hover || copied) && !showsCaret && !code.isEmpty { copyButton.padding(6).transition(.opacity) }
+        }
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.15), value: hover)
+        .animation(.easeOut(duration: 0.15), value: copied)
+    }
+
+    /// Hover a finished block: copy just the code (ChatGPT/Claude style).
+    private var copyButton: some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(code, forType: .string)
+            copied = true
+            Task { try? await Task.sleep(for: .seconds(1.4)); copied = false }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
+                Text(copied ? "Copied" : "Copy")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .background(Capsule().fill(.regularMaterial))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .help("Copy code")
     }
 }

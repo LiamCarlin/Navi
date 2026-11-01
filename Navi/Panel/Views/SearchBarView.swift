@@ -35,6 +35,13 @@ struct SearchBarView: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .allowsHitTesting(false)
+                } else if vm.query.isEmpty, vm.isFollowingUp {
+                    Text("Ask a follow-up…")
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
                 } else if vm.query.isEmpty {
                     Text(Self.hints[hintIndex])
                         .font(.system(size: 26, weight: .light))
@@ -85,6 +92,9 @@ struct SearchBarView: View {
             if let toast = vm.toast, !vm.hasContent {
                 ToastPill(text: toast)
                     .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
+            } else if vm.isFollowingUp {
+                FollowUpPill()
+                    .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
             } else if let d = vm.decision, !vm.query.isEmpty,
                       let text = PanelWording.pillText(d, developer: DeveloperMode.showsEngineDetails) {
                 IntentPill(decision: d, text: text, developer: DeveloperMode.showsEngineDetails)
@@ -94,6 +104,7 @@ struct SearchBarView: View {
         .animation(PanelStyle.pillSpring, value: vm.decision?.intent)
         .animation(PanelStyle.pillSpring, value: vm.decision?.source)
         .animation(PanelStyle.pillSpring, value: vm.toast)
+        .animation(PanelStyle.pillSpring, value: vm.isFollowingUp)
     }
 
     private func focus() {
@@ -227,6 +238,24 @@ struct IntentPill: View {
         case .cache: return "Jev (cached) · \(decision.intent.displayName)"
         case .jev: return "Jev · \(decision.intent.displayName) · \(decision.latencyMs) ms"
         }
+    }
+}
+
+/// "Follow-up" while the bar is the follow-up box for the answer below it.
+struct FollowUpPill: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.turn.down.right").font(.system(size: 9, weight: .bold))
+            Text("Follow-up")
+        }
+        .font(.system(size: 11, weight: .semibold, design: .rounded))
+        .foregroundStyle(.indigo)
+        .padding(.horizontal, 10)
+        .frame(height: 24)
+        .background(Capsule().fill(Color.indigo.opacity(0.12)))
+        .overlay(Capsule().strokeBorder(Color.indigo.opacity(0.26)))
+        .fixedSize()
+        .help("Navi keeps this answer in mind. esc to go back")
     }
 }
 

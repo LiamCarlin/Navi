@@ -28,6 +28,18 @@ final class PanelViewModel: ObservableObject {
     @Published private(set) var mode: Mode = .results
     @Published private(set) var answerText: String = ""
     @Published private(set) var isAnswering = false
+    /// The question the shown answer answers (the bar's text when it started).
+    @Published private(set) var answeredQuery: String = ""
+    /// Earlier turns of this answer thread ("“q” → answer"), oldest first; a
+    /// follow-up's answer gets them as `QueryContext.conversation`.
+    @Published private(set) var answerThread: [String] = []
+    /// ⇥ on a finished answer: the bar is the follow-up box — typing stays on the
+    /// answer instead of switching to results, ⏎ asks with the thread.
+    @Published private(set) var isFollowingUp = false
+    /// The row whose answer is shown, so Retry re-runs it with the same memory hits.
+    private var lastAnswerResult: SearchResult?
+    /// ⌘ is held: rows show their ⌘1–9 quick keys (set by `PanelController`).
+    @Published var commandHeld = false
     @Published private(set) var agentRun: AgentRunHandle?
     @Published private(set) var agentEvents: [AgentEvent] = []
     /// The finished run's typed outcome (`AgentRunHandle.verdict`); `.needsUser` shows as a question, not a failure.
@@ -110,6 +122,11 @@ final class PanelViewModel: ObservableObject {
     private var clarifyTask: Task<Void, Never>?
     private var context: QueryContext = .empty
     private var recentQueries: [String] = []
+    /// ↑ on an empty bar walks the saved searches (`QueryRouter.recentQueries`); the
+    /// index of the one in the bar, until the user edits it.
+    private var historyIndex: Int?
+    /// The query is being set by Navi (history, a cancelled follow-up), not typed.
+    private var settingQuery = false
 
     init(services: NaviServices) {
         self.services = services
@@ -242,6 +259,9 @@ final class PanelViewModel: ObservableObject {
         decision = nil
         answerText = ""
         isAnswering = false
+        endAnswerThread()
+        historyIndex = nil
+        commandHeld = false
         clearClarification()
         scheduler = nil
         schedulerDismissed = false
@@ -258,6 +278,9 @@ final class PanelViewModel: ObservableObject {
     // MARK: - Query pipeline
 
     private func queryChanged() {
+        if !settingQuery { historyIndex = nil }
+        // Writing a follow-up: the answer stays up, nothing is routed until ⏎.
+        if isFollowingUp, mode == .answer { return }
         routeTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         // A paused task's question is up: what the user types is their answer, never a new query
@@ -374,8 +397,36 @@ final class PanelViewModel: ObservableObject {
             clarifySelection = (clarifySelection + delta + n) % n
             return
         }
+        if mode == .results, delta < 0, query.isEmpty || (historyIndex != nil && selectedIndex == 0),
+           recallHistory(back: true) { return }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
+    }
+
+    /// ↑ on an empty bar (or on a recalled search's top row): the previous saved
+    /// search, like a shell. False when there is none further back.
+    @discardableResult
+    func recallHistory(back: Bool) -> Bool {
+        let recent = QueryRouter.recentQueries()
+        let next = back ? (historyIndex.map { $0 + 1 } ?? 0) : (historyIndex.map { $0 - 1 } ?? -1)
+        guard recent.indices.contains(next) else { return historyIndex != nil }
+        setQuery(recent[next])
+        historyIndex = next
+        return true
+    }
+
+    /// Sets the bar's text without counting as an edit (history stays where it is).
+    private func setQuery(_ text: String) {
+        settingQuery = true
+        query = text
+        settingQuery = false
+    }
+
+    /// ⌘1–9: perform the nth row.
+    func performRow(_ index: Int) {
+        guard mode == .results, results.indices.contains(index) else { return }
+        selectedIndex = index
+        perform(results[index])
     }
 
     func performSelected() {
@@ -386,6 +437,11 @@ final class PanelViewModel: ObservableObject {
             return
         }
         if mode == .remind, let r = reminder { r.add(); return }
+        if mode == .answer, isFollowingUp {
+            let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !q.isEmpty { askNavi(q, followUp: true) }
+            return
+        }
         guard !results.isEmpty, results.indices.contains(selectedIndex) else {
             // Nothing matched yet: treat ⏎ as "ask Navi".
             if !query.isEmpty { askNavi(query) }
@@ -408,7 +464,9 @@ final class PanelViewModel: ObservableObject {
         Task { @MainActor in
             let outcome = await result.perform()
             if case .keepOpen = outcome, result.kind == .calculation { showToast("Copied") }
+            if case .streamAnswer = outcome { endAnswerThread() }
             handle(outcome)
+            if case .streamAnswer = outcome { lastAnswerResult = result }
         }
     }
 
@@ -431,14 +489,23 @@ final class PanelViewModel: ObservableObject {
         }
     }
 
-    func askNavi(_ q: String) {
+    /// Answers `q`. `followUp` keeps the thread (the earlier turns ride along as
+    /// the conversation); otherwise a new thread starts.
+    func askNavi(_ q: String, followUp: Bool = false) {
         guard accountAllows(.answer) else { return }
+        if !followUp { endAnswerThread() }
         let hits: [MemoryHit] = []
-        startAnswer(services.answers.streamAnswer(query: q, context: context, memory: hits))
+        var ctx = context
+        ctx.conversation = answerThread
+        ctx.runID = UUID()
+        startAnswer(services.answers.streamAnswer(query: q, context: ctx, memory: hits))
     }
 
     func startAnswer(_ stream: AsyncThrowingStream<String, Error>) {
         answerTask?.cancel()
+        answeredQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        isFollowingUp = false
+        lastAnswerResult = nil
         answerText = ""
         isAnswering = true
         mode = .answer
@@ -455,6 +522,54 @@ final class PanelViewModel: ObservableObject {
             }
             self?.isAnswering = false
         }
+    }
+
+    /// ⌘. while an answer streams: keep what arrived, stop the rest.
+    func stopAnswer() {
+        guard isAnswering else { return }
+        answerTask?.cancel()
+        isAnswering = false
+    }
+
+    /// ⌘R: ask the same question again (the same row, so memory answers keep their moments).
+    func retryAnswer() {
+        guard mode == .answer, !isFollowingUp, !answeredQuery.isEmpty else { return }
+        let q = answeredQuery
+        if let row = lastAnswerResult { perform(row) } else { askNavi(q, followUp: true) }
+    }
+
+    /// True when ⇥ can turn the bar into a follow-up box.
+    var canFollowUp: Bool {
+        mode == .answer && !isAnswering && !isFollowingUp
+            && !answerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// ⇥ on a finished answer: the bar empties and becomes the follow-up box.
+    func beginFollowUp() {
+        guard canFollowUp else { return }
+        answerThread = Array((answerThread + [Self.threadTurn(question: answeredQuery, answer: answerText)]).suffix(4))
+        isFollowingUp = true
+        setQuery("")
+        requestFocus()
+    }
+
+    /// ⎋ while writing a follow-up: back to the answer as it was.
+    private func cancelFollowUp() {
+        setQuery(answeredQuery)   // still following up: the restored text doesn't re-route
+        isFollowingUp = false
+        if !answerThread.isEmpty { answerThread.removeLast() }
+    }
+
+    private func endAnswerThread() {
+        answerThread = []
+        isFollowingUp = false
+    }
+
+    /// One earlier turn for the follow-up's conversation; long answers are cut.
+    nonisolated static func threadTurn(question: String, answer: String) -> String {
+        let a = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cut = a.count > 1500 ? String(a.prefix(1500)) + "…" : a
+        return "“\(question)” → \(cut)"
     }
 
     func startAgent(_ handle: AgentRunHandle) {
@@ -699,6 +814,7 @@ final class PanelViewModel: ObservableObject {
             query = ""   // ⎋ first clears a half-typed answer; the card stays
             return
         }
+        if mode == .answer, isFollowingUp { cancelFollowUp(); return }
         if mode != .results {
             answerTask?.cancel()
             isAnswering = false
@@ -707,6 +823,8 @@ final class PanelViewModel: ObservableObject {
             mode = .results
             return
         }
+        // Like Spotlight: the first ⎋ clears what was typed, the second closes.
+        if !query.isEmpty { query = ""; return }
         onDismiss?()
     }
 }
@@ -754,6 +872,7 @@ extension PanelViewModel {
         vm.mode = mode
         vm.answerText = answer
         vm.isAnswering = isAnswering
+        if mode == .answer { vm.answeredQuery = query }
         vm.agentEvents = agentEvents
         vm.agentScreenshot = agentScreenshot
         vm.pendingApproval = pendingApproval

@@ -14,6 +14,10 @@ struct AnswerView: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let earlier = earlierQuestion {
+                        ThreadCaption(question: earlier, turns: vm.answerThread.count)
+                            .padding(.bottom, 10)
+                    }
                     if vm.answerText.isEmpty && vm.isAnswering {
                         ThinkingRow()
                     } else {
@@ -34,6 +38,33 @@ struct AnswerView: View {
                 proxy.scrollTo("answer-bottom", anchor: .bottom)
             }
         }
+    }
+}
+
+extension AnswerView {
+    /// The question the thread started from, shown above a follow-up's answer
+    /// (not while the follow-up is still being written: the answer below is that question's).
+    fileprivate var earlierQuestion: String? {
+        guard !vm.isFollowingUp, let first = vm.answerThread.first,
+              let q = first.split(separator: "”", maxSplits: 1).first else { return nil }
+        return String(q.drop(while: { $0 == "“" }))
+    }
+}
+
+/// "↳ Following up on “why is the sky blue”" above a follow-up's answer.
+struct ThreadCaption: View {
+    let question: String
+    let turns: Int
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.system(size: 9.5, weight: .semibold))
+            Text(turns > 1 ? "Following up on “\(question)” and \(turns - 1) more" : "Following up on “\(question)”")
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(.tertiary)
     }
 }
 

@@ -22,6 +22,7 @@ final class PanelController {
     var notchIsBusy: () -> Bool = { false }
     private var localMonitor: Any?
     private var globalMonitor: Any?
+    private var flagsMonitor: Any?
     private var previousApp: NSRunningApplication?
 
     /// Width of the glass card (Spotlight's width).
@@ -159,6 +160,9 @@ final class PanelController {
         return NSRect(x: ins.left, y: h - ins.top - cardH, width: Self.width, height: cardH)
     }
 
+    /// Key codes of the number row's 1–9 → row index 0–8.
+    private static let digitKeys: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7, 25: 8]
+
     private func installMonitors() {
         removeMonitors()
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
@@ -193,10 +197,25 @@ final class PanelController {
             case 8 where cmd && vm.mode == .answer:                        // ⌘C in answer mode: copy the answer
                 if vm.copyAnswer() { return nil }
                 return ev
+            case 15 where cmd && vm.mode == .answer && !vm.isAnswering:    // ⌘R: ask again
+                vm.retryAnswer(); return nil
+            case 47 where cmd && vm.isAnswering:                           // ⌘.: stop the answer
+                vm.stopAnswer(); return nil
+            case 48 where !cmd && vm.canFollowUp:                          // ⇥: follow up on the answer
+                vm.beginFollowUp(); return nil
+            case let k where cmd && vm.mode == .results && Self.digitKeys[k] != nil:   // ⌘1–9: that row
+                vm.performRow(Self.digitKeys[k]!); return nil
             case 43 where cmd:                                             // ⌘,
                 AppDelegate.shared?.openMainWindow(); self.hide(); return nil
             default: return ev
             }
+        }
+        // Holding ⌘ shows each row's ⌘1–9 key (as Alfred and Raycast do).
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] ev in
+            let flags = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let held = flags == .command
+            if self?.viewModel.commandHeld != held { self?.viewModel.commandHeld = held }
+            return ev
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.hide()
@@ -206,6 +225,8 @@ final class PanelController {
     private func removeMonitors() {
         if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor); self.flagsMonitor = nil }
+        viewModel.commandHeld = false
     }
 }
 
