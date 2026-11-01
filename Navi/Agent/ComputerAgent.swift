@@ -825,10 +825,22 @@ final class AgentRun: @unchecked Sendable {
         }
     }
 
+    /// A later clause of the goal that acts ("… and open the first video", "…, then add it to the cart",
+    /// "… and play it"), as opposed to one that reads back ("… and tell me the price").
+    static func endsWithEffect(_ goal: String) -> Bool {
+        goal.lowercased().range(of: #"(\band\b|\bthen\b|,)\s+(then\s+)?(open|add|put|play|watch|click|tap|select|choose|pick|buy|order|book|reserve|send|text|message|email|reply|share|post|save|download|subscribe|like|start|create|make|set|turn|fill|submit|bookmark|follow|join|sign up|apply|go to|navigate to|leave it open|keep it open)\b"#,
+                                    options: .regularExpression) != nil
+    }
+
     /// Does this goal ask for information rather than an effect? Then the
     /// completion must carry what was found, not just what was clicked.
     static func isLookup(_ goal: String) -> Bool {
         let g = goal.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // "Search YouTube for X and open the first video", "Find a PS5 at Target and add it to the cart": it
+        // starts like a lookup, but its last clause does something — the page it ends on is the result. As a
+        // lookup its background tab was closed when it completed (`tabPolicy` "close"; bench web-020,
+        // errand-025: the video / the cart were gone at the end).
+        if Self.endsWithEffect(g) { return false }
         let starters = ["find", "get", "look up", "lookup", "check", "search", "see if", "see whether", "what", "whats", "what's",
                         "how", "when", "where", "who", "which", "is ", "are ", "does ", "do ", "tell me", "show me", "give me",
                         "can you find", "can you get", "can you check", "can you look", "can you see", "can you tell", "could you find"]

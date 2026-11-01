@@ -570,7 +570,11 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     user's words), a doc app in front (a PDF in Preview) replaces a step that would Google its words. A
     task about the front tab never restarts elsewhere on an early BLOCKED. A typed browser control
     ("reload this page", "go back", "bookmark this page") is one key press in the browser in front —
-    Safari too (`AgentRun.browserControl`). The runner attaches to the *visible* tab among several on the
+    Safari too (`AgentRun.browserControl`); a typed window control ("make this full screen", "minimize
+    this", "hide Music" — never quit/close) is `WindowControls` on the window in front
+    (`AgentRun.typedWindowCommand`). A goal that starts like a lookup but ends doing something ("search
+    YouTube for X and open the first video", "find a PS5 at Target and add it to the cart":
+    `AgentRun.endsWithEffect`) is an effect: its tab is revealed, not closed. The runner attaches to the *visible* tab among several on the
     same URL (`find_open_tab`), and a DONE before any action is always judged — unconfirmed it is a
     partial stop, never "completed: Nothing to do. (0 steps)" (`should_judge_done(acted=)`,
     `UltrafastBridge.isUnverifiedZeroStepDone`). Live (2026-10-30):

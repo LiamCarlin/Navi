@@ -52,4 +52,22 @@ struct PageActionStartTests {
         #expect(AgentRun.typedWindowCommand("make this full screen and turn on captions", runningApps: apps) == nil)
         #expect(AgentRun.typedWindowCommand("turn on captions and make it 1.5x", runningApps: apps) == nil)
     }
+
+    // MARK: The run's tab is the result of "… and open / add …"
+
+    @Test func aLookupThatEndsInAnEffectKeepsItsTab() {
+        // web-020, errand-025: the planner's goals; as lookups their background tab was closed when done.
+        for g in ["Search YouTube for '3blue1brown fourier' and open the first video",
+                  "Find a PS5 Slim Digital at Target and add it to the cart",
+                  "find the cheapest flight to denver next friday, then book it",
+                  "look up lofi beats on youtube and play the first one"] {
+            #expect(!AgentRun.isLookup(g), Comment(rawValue: g))
+            #expect(UltrafastBridge.tabPolicy(task: g, background: true, revealWhenDone: true) == "reveal", Comment(rawValue: g))
+        }
+        // Lookups stay lookups — reading something back is no effect.
+        for g in ["find the score of the patriots game", "search for the weather in boston and tell me if it will rain",
+                  "check whether the store is open"] {
+            #expect(AgentRun.isLookup(g), Comment(rawValue: g))
+        }
+    }
 }
