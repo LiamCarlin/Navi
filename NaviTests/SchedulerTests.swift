@@ -112,7 +112,7 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(ScheduleParser.parse("") == nil)
         #expect(!parse("call mom").isExplicit)
         #expect(!parse("book a flight to paris").isExplicit)
-        #expect(!parse("set a timer for 10 minutes").isExplicit)
+        #expect(ScheduleParser.parse("set a timer for 10 minutes") == nil)   // the Clock's (`CardGuard`)
     }
 
     @Test func eventWordWithATimeIsExplicit() {
@@ -224,7 +224,7 @@ private typealias Clock = ScheduleRequest.ClockTime
         let focus = parse("Focus time tomorrow morning for 2h")       // the event word came first
         #expect(focus.activity == "Focus time")
         #expect(focus.durationMinutes == 120)
-        #expect(!parse("set a timer for 10 minutes").isExplicit)
+        #expect(ScheduleParser.parse("set a timer for 10 minutes") == nil)   // the Clock's (`CardGuard`)
     }
 }
 

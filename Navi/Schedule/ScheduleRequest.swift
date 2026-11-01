@@ -276,6 +276,9 @@ enum ScheduleParser {
     /// search, an edit). Otherwise the parse, with `isExplicit` saying whether
     /// it plainly is one.
     static func parse(_ query: String) -> ScheduleRequest? {
+        // Several instructions, another app to do it in, a timer, an all-day or multi-day event: not the
+        // card's (`CardGuard`) — ⏎ on it once booked "Meeting with Its" for a Google Doc task.
+        if CardGuard.veto(query, card: .schedule) != nil { return nil }
         let ws = words(in: query)
         var i = 0
         while i < ws.count, fillers.contains(ws[i].lower) { i += 1 }

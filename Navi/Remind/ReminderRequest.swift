@@ -110,9 +110,16 @@ enum ReminderParser {
         guard i < ws.count, !ScheduleParser.rejects.subtracting(["remind"]).contains(ws[i].lower) else { return nil }
 
         var request = ReminderRequest(title: "")
-        if let lead = leadIns.first(where: { phrase in
+        let lead = leadIns.first(where: { phrase in
             i + phrase.count <= ws.count && zip(phrase, ws[i...]).allSatisfy { $0 == $1.lower }
-        }) {
+        })
+        // "Set a timer for 10 minutes" (Clock), "in notion add a todo…" (Notion), several instructions:
+        // not a reminder (`CardGuard`). After an opener the rest is the reminder's own text — after "remind
+        // me…"/"don't forget…" even a place ("remind me to submit it on canvas"); "add a todo in notion" is Notion's.
+        let opener = lead?.joined(separator: " ") ?? ""
+        let remindsOutright = opener.contains("remind") || opener.contains("forget")
+        if CardGuard.veto(query, card: .reminder, explicitOpener: lead != nil, placeIsContent: remindsOutright) != nil { return nil }
+        if let lead {
             i += lead.count
             let hasRest = i < ws.count
             request.isExplicit = hasRest || standaloneLeadIns.contains(lead.joined(separator: " "))
