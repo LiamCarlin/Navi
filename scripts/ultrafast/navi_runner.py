@@ -1214,6 +1214,56 @@ def json_object(text):
     return out
 
 
+def salvage_json(text):
+    """The JSON object in a reply that was cut off ("Unterminated string" — the judge ran out of tokens
+    mid-answer): every complete member before the cut, the open string closed, the braces balanced.
+    Raises ValueError when there is no object to salvage."""
+    try:
+        return json_object(text)
+    except ValueError:
+        pass
+    text = (text or "").strip()
+    a = text.find("{")
+    if a < 0:
+        raise ValueError("no JSON object in the reply")
+    text = text[a:]
+    stack, in_string, escaped, cuts = [], False, False, []
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if not stack:
+                text = text[:i + 1]
+                break
+        elif ch == "," and stack:
+            cuts.append((i, list(stack)))
+    candidates = []
+    if in_string:
+        candidates.append(text + ('\\' if escaped else '') + '"' + "".join(reversed(stack)))
+    candidates.append(text + "".join(reversed(stack)))
+    candidates += [text[:i] + "".join(reversed(st)) for i, st in reversed(cuts)]
+    for c in candidates:
+        try:
+            out = json.loads(c)
+        except ValueError:
+            continue
+        if isinstance(out, dict):
+            return out
+    raise ValueError("no JSON object in the reply")
+
+
 def jpeg_size(data):
     """(width, height) of a JPEG from its SOF marker, else None."""
     i = 2
@@ -1260,9 +1310,9 @@ VERDICTS = ("achieved", "partial", "not_achieved", "impossible", "needs_user")
 
 JUDGE_SYSTEM = """You check where a web task stands for Navi, an assistant that works in the user's browser. You get the user's goal, a screenshot of the browser tab now (when available), the page's URL, title and visible text, the actions taken so far, and why you were asked.
 
-Reply ONLY with JSON: {"answer": "...", "next_step": "...", "verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user", "question": "...", "question_kind": "choice" | "do_it", "question_choices": ["...", ...]}
+Reply ONLY with one compact JSON object on one line — no markdown fence, nothing before or after it, answer under 60 words: {"verdict": "achieved" | "partial" | "not_achieved" | "impossible" | "needs_user", "answer": "...", "next_step": "...", "question": "...", "question_kind": "choice" | "do_it", "question_choices": ["...", ...]}
 
-- achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag or checkout is reached — Navi never pays; the user places the order. For a sign-in, the account is signed in.
+- achieved: the screen shows every part of the goal done. For information, the information is on this screen and the answer states it. For a purchase or order, the item is in the cart/bag (or checkout is reached) — that is achieved even though checkout, signing in to check out and placing the order are not done: Navi never checks out or pays; the user places the order. Never partial or needs_user for those. For a sign-in, the account is signed in.
 - partial: some parts are done, others not yet.
 - not_achieved: not done yet, but doable from here or on this site.
 - impossible: it cannot be done on this site at all (say why).
@@ -1271,7 +1321,8 @@ answer: one to three plain sentences for the user, true to the screen. Never cla
 next_step: the single next move toward the goal on this screen, naming the control to use (empty when achieved or impossible). Never include credentials or payment details.
 question, question_kind, question_choices — only with needs_user (else "", "", []); Navi pauses the task and puts this to the user:
 - "choice" when the user must decide something the goal leaves open: question is one short question ("Which size do you want?"), question_choices 2–4 short answers — the options the page itself offers, as labelled there, the likeliest first.
-- "do_it" when only the user can do the next step on screen (their password or a code, a captcha, an account to pick in a sign-in window): question says what to do in one sentence ("Sign in to DoorDash in this tab."), question_choices is [].
+- "do_it" when only the user can do the next step on screen (signing in, their password or a code, a captcha, an account to pick in a sign-in window): question says what to do in one sentence ("Sign in to DoorDash in this tab."), question_choices is [].
+facts.today is today's date: a date the goal names without a year means its next occurrence; never offer a date before today as a choice, and never suggest the user meant a past year.
 Never ask about paying or placing the order: an item in the cart/bag is achieved, and the order is the user's to place.
 user_said, when present, holds what the user already answered in this task: follow it, and never ask the same thing again."""
 
@@ -1285,19 +1336,88 @@ def says_could_not(text):
     return bool(COULD_NOT.search(text or ""))
 
 
-def normalize_verdict(out):
-    """A judge reply as {verdict, answer, next_step}: an unknown verdict reads as not_achieved, and
-    an "achieved" whose own words say it was not done is not believed."""
+IN_CART = re.compile(r"\b(added to (your |the )?([\w'’&-]+ ){0,2}(cart|bag|basket)|(is|are|now|sits?|was|were|it's|its) (now |already )?in "
+                     r"(your |the )?([\w'’&-]+ )?(cart|bag|basket)|(cart|bag|basket) (now )?(has|holds|contains|shows) )", re.I)
+NOT_IN_CART = re.compile(r"(\bnot|n't|\bnever|\bno longer|\bcould not|\bfailed to)\b[^.;,]{0,30}\b(added|in (your |the )?(cart|bag|basket))|"
+                         r"\b(nothing|no items?)\b[^.;,]{0,20}\b(cart|bag|basket)|\b(cart|bag|basket) (is |was )?(still )?empty\b", re.I)
+LEFT_FOR_USER = re.compile(r"\b(check ?out|checkout|place (the |your )?order|placed|placing|pay|paid|payment|purchase|sign(ed|ing)? ?in|"
+                           r"log(ged|ging)? ?in|account|deliver(y|ed)?|total|taxes|fees?)\b", re.I)
+STILL_TO_DO = re.compile(COULD_NOT.pattern + r"|\b(not yet|yet to|hasn't|haven't|isn't|aren't|still|remains?|needs?|requires?|missing|"
+                         r"must|have to|has to)\b", re.I)
+
+
+def cart_is_the_end(goal, answer):
+    """A purchase goal whose judge answer says the item went into the cart, and that only checkout, signing
+    in, paying or placing the order is left (bench errand-030: "partial — the item is in the cart but checkout
+    hasn't been completed", then the takeover went to checkout). The cart is where Navi's purchase ends."""
+    answer = answer or ""
+    if not is_purchase_goal(goal) or not IN_CART.search(answer) or NOT_IN_CART.search(answer):
+        return False
+    for clause in re.split(r"[.;!?,]\s|\bbut\b|\bhowever\b", answer):
+        if STILL_TO_DO.search(clause) and not LEFT_FOR_USER.search(clause):
+            return False
+    return True
+
+
+MONTHS = {m: i for i, ms in enumerate([("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
+                                         ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
+                                         ("oct", "october"), ("nov", "november"), ("dec", "december")], 1) for m in ms}
+MONTH_RX = r"(" + "|".join(sorted(MONTHS, key=len, reverse=True)) + r")\.?"
+
+
+def dates_named(text):
+    """The calendar dates a short text names with a year: "December 5, 2025", "5 Dec 2025", "2025-12-05",
+    "12/05/2025", or a month alone ("December 2025" → its last day)."""
+    import calendar as _cal
+    import datetime as _dt
+    t = (text or "").lower()
+    found = []
+
+    def add(y, m, d):
+        try:
+            found.append(_dt.date(int(y), int(m), int(d)))
+        except ValueError:
+            pass
+    spans = []
+    for m in re.finditer(MONTH_RX + r"\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})\b", t):
+        add(m.group(4), MONTHS[m.group(1)], m.group(2)); spans.append(m.span())
+    for m in re.finditer(r"\b(\d{1,2})(st|nd|rd|th)?\s+(of\s+)?" + MONTH_RX + r",?\s+(\d{4})\b", t):
+        add(m.group(5), MONTHS[m.group(4)], m.group(1)); spans.append(m.span())
+    for m in re.finditer(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t):
+        add(m.group(1), m.group(2), m.group(3))
+    for m in re.finditer(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", t):
+        add(m.group(3), m.group(1), m.group(2))
+    for m in re.finditer(r"\b" + MONTH_RX + r",?\s+(\d{4})\b", t):
+        if not any(a <= m.start() < b for a, b in spans):
+            y, mo = int(m.group(2)), MONTHS[m.group(1)]
+            if 1 <= y <= 9999:
+                add(y, mo, _cal.monthrange(y, mo)[1])
+    return found
+
+
+def names_past_date(text, today=None):
+    """Does this answer name a date that has already gone by (bench errand-031 offered "December 5, 2025")?"""
+    import datetime as _dt
+    today = today or _dt.date.today()
+    return any(d < today for d in dates_named(text))
+
+
+def normalize_verdict(out, goal=None, today=None):
+    """A judge reply as {verdict, answer, next_step}: an unknown verdict reads as not_achieved, an
+    "achieved" whose own words say it was not done is not believed, and a purchase whose item is in the
+    cart is achieved whatever is left for the user (checkout, signing in, paying)."""
     verdict = str(out.get("verdict") or "").strip().lower().replace(" ", "_").replace("-", "_")
     if verdict not in VERDICTS:
         verdict = "not_achieved"
     answer = str(out.get("answer") or "").strip()
     if verdict == "achieved" and says_could_not(answer):
         verdict = "partial"
+    if verdict in {"partial", "not_achieved", "needs_user"} and goal and cart_is_the_end(goal, answer):
+        verdict = "achieved"
     result = {"verdict": verdict, "answer": answer[:800], "next_step": str(out.get("next_step") or "").strip()[:300]}
     if verdict == "needs_user":
         # Adaptation 37: what to put to the user. An unnamed kind follows the choices it came with.
-        choices = tidy_choices(out.get("question_choices"))
+        choices = tidy_choices(out.get("question_choices"), today=today)
         kind = str(out.get("question_kind") or "").strip().lower().replace(" ", "_").replace("-", "_")
         if kind not in {"choice", "do_it"}:
             kind = "choice" if len(choices) >= 2 else "do_it"
@@ -1309,12 +1429,13 @@ def normalize_verdict(out):
 MAX_CHOICES = 4
 
 
-def tidy_choices(raw):
-    """Up to four distinct, short, non-empty answers (the same rule as Navi's `AgentQuestion.tidy`)."""
+def tidy_choices(raw, today=None):
+    """Up to four distinct, short, non-empty answers (the same rule as Navi's `AgentQuestion.tidy`); an
+    answer naming a date that has gone by is never offered."""
     out, seen = [], set()
     for c in raw if isinstance(raw, list) else []:
         t = str(c or "").strip().strip("•-– ")
-        if t and len(t) <= 80 and t.lower() not in seen:
+        if t and len(t) <= 80 and t.lower() not in seen and not names_past_date(t, today):
             seen.add(t.lower())
             out.append(t)
         if len(out) == MAX_CHOICES:
@@ -1367,16 +1488,29 @@ def judge(goal, page, history, why, screenshot_b64=None):
     said = user_said_from_env()
     if said:
         state["user_said"] = said
+    state["facts"] = date_facts(goal)
     content = []
     if screenshot_b64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": screenshot_b64}})
     content.append({"type": "text", "text": json.dumps(state, sort_keys=True, ensure_ascii=False)})
     model = os.environ.get("NAVI_AGENT_MODEL", "claude-sonnet-5")
-    result = claude_post({"model": model, "max_tokens": 600, "system": JUDGE_SYSTEM,
-                          "messages": [{"role": "user", "content": content}]}, timeout=60, what="Claude's check")
-    return normalize_verdict(json_object(message_text(result)))
+    messages = [{"role": "user", "content": content}]
+    for attempt in range(2):
+        result = claude_post({"model": model, "max_tokens": JUDGE_MAX_TOKENS, "system": JUDGE_SYSTEM,
+                              "messages": messages}, timeout=60, what="Claude's check")
+        text = message_text(result)
+        try:
+            # A reply cut off mid-string keeps every complete member (bench: "Unterminated string").
+            return normalize_verdict(salvage_json(text), goal=goal)
+        except ValueError:
+            if attempt:
+                raise
+            # Prose, or nothing usable: ask once more for the object alone.
+            messages = messages + [{"role": "assistant", "content": text or "(no reply)"},
+                                   {"role": "user", "content": "Reply with the JSON object only, on one line."}]
 
 
+JUDGE_MAX_TOKENS = 1200
 JUDGE_DONE_BELOW = 0.85
 JUDGE_SETTLE_S = 0.6        # a beat for a dialog that just opened before the judge looks
 
