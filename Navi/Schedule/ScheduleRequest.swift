@@ -149,6 +149,8 @@ enum ScheduleParser {
         var length: Int
         /// A comma followed the word ("with jilles, harshil").
         var comma = false
+        /// A colon ended the word ("with three items: slides, demo"): what follows is a list.
+        var colon = false
     }
 
     /// Splits on whitespace and commas; "&" is its own word ("and"); trailing
@@ -159,9 +161,10 @@ enum ScheduleParser {
         var bufferStart = 0
         func flush() {
             var text = buffer
+            let colon = text.count > 1 && text.hasSuffix(":")
             while text.count > 1, let last = text.last, ".!?;:".contains(last) { text.removeLast() }
             if !text.isEmpty, text != "." {
-                out.append(Word(text: text, lower: text.lowercased(), start: bufferStart, length: text.count))
+                out.append(Word(text: text, lower: text.lowercased(), start: bufferStart, length: text.count, colon: colon))
             }
             buffer = ""
         }
@@ -379,6 +382,9 @@ enum ScheduleParser {
                 if ws[end - 1].comma { break }
             }
             guard end > j else { break }
+            // "with three items: slides, demo, q&a" — a word before a colon introduces a list, and what
+            // follows are its items, not guests (bench native-041 booked "Meeting with Three, Demo & Q").
+            if ws[j..<end].contains(where: \.colon) { return end }
             req.people.append(ws[j..<end].map(\.text).joined(separator: " "))
             req.tokens.append(token(.person, ws, j, end - 1))
             let comma = ws[end - 1].comma
@@ -395,6 +401,9 @@ enum ScheduleParser {
         "it", "its", "it's", "this", "that", "these", "those", "them", "him", "her", "his", "their", "theirs", "our",
         "ours", "your", "yours", "my", "mine", "me", "us", "you", "some", "any", "all", "each", "no", "one",
         "someone", "somebody", "anyone", "anybody", "everyone", "everybody", "nobody", "people", "whoever",
+        // A count of things ("with three items", "with both"), never a person.
+        "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "both", "few", "several", "many",
+        "items", "things", "points", "steps", "tasks", "questions", "problems",
     ]
 
     static func isNameWord(_ ws: [Word], at k: Int) -> Bool {

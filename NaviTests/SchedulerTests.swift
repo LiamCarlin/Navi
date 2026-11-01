@@ -465,4 +465,14 @@ private typealias Clock = ScheduleRequest.ClockTime
         #expect(ScheduleParser.parse("meeting with jilles and harshil")?.people == ["jilles", "harshil"])
         #expect(ScheduleParser.parse("lunch with Will and Mark friday")?.people == ["Will", "Mark"])
     }
+
+    // Bench native-041: "…with three items: slides, demo, q&a" became guests "Three, Demo & Q".
+    @Test func listItemsAreNoGuests() {
+        #expect(ScheduleParser.parse("review with three items: slides, demo, q&a")?.people == [])
+        #expect(ScheduleParser.parse("prep session with the agenda: slides, demo, q&a")?.people == [])
+        #expect(ScheduleParser.parse("standup with both teams tomorrow")?.people == [])
+        // A colon elsewhere is no list header: "with ana at 10:30" keeps Ana.
+        #expect(ScheduleParser.parse("meeting with ana at 10:30")?.people == ["ana"])
+        #expect(ScheduleParser.parse("agenda: sync with jilles, harshil tomorrow")?.people == ["jilles", "harshil"])
+    }
 }
