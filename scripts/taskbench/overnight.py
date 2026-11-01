@@ -53,6 +53,9 @@ CONTEXT_OVERRIDES = {
 # Not run unattended, beyond the guard: 1-click purchases, real files/settings/mail state, sign-ins, forms with
 # personal data, third-party downloads, anything that builds/launches a second Navi.
 SKIP_IDS = {
+    "web-013": "toggle on the account: a rerun un-likes the video the first run liked",
+    "web-017": "toggle on the account: subscribe/unsubscribe", "errand-014": "toggle on the account: Etsy favorite",
+    "calendar-013": "moves a real calendar event",
     "edge-001": "Amazon 'buy it now' — 1-click could place a real order",
     "edge-008": "bank sign-in", "edge-016": "bank sign-in", "edge-015": "submits a sign-up form with personal data",
     "native-064": "moves real files out of Downloads", "native-083": "reorganises the real Desktop",
