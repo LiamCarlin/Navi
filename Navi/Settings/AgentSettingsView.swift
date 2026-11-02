@@ -46,6 +46,13 @@ struct AgentSettingsView: View {
             }
 
             Section {
+                Toggle("Show Navi's cursor", isOn: $settings.agentShowsCursor)
+                caption("A Navi cursor glides to everything Navi clicks, on the window it is working in — behind your own windows when it works in the background. Your cursor is never moved for it.")
+            } header: {
+                Text("Cursor")
+            }
+
+            Section {
                 Toggle("Typing sounds", isOn: $settings.agentTypingSounds)
                 HStack {
                     Slider(value: $settings.agentTypingSoundsVolume, in: 0.05...1) {

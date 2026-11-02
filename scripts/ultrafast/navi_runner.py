@@ -190,6 +190,35 @@ def emit(event, **fields):
     sys.stdout.flush()
 
 
+# Navi's logo cursor: where a click lands, in screen points, for a tab the user can see.
+# CSS → screen: Chrome's outerWidth/screenX are in points, innerWidth in CSS pixels (page zoom).
+POINTER_GEOMETRY_JS = """(() => document.visibilityState !== 'visible' ? null :
+  {sx: screenX, sy: screenY, ow: outerWidth, oh: outerHeight, iw: innerWidth, ih: innerHeight})()"""
+_pointer_geometry = {}
+
+
+def show_pointer(call, x, y, key=None, click=True):
+    """Emits a `pointer` event for the click at viewport (x, y) so Navi draws its cursor there.
+    Read once a second per tab, never fatal, never for a hidden tab (`NAVI_POINTER=0` turns it off)."""
+    if os.environ.get("NAVI_POINTER") == "0":
+        return
+    try:
+        now = time.monotonic()
+        cached = _pointer_geometry.get(key)
+        if cached is None or now - cached[0] > 1.0:
+            r = call("Runtime.evaluate", expression=POINTER_GEOMETRY_JS, returnByValue=True)
+            cached = (now, (r.get("result") or {}).get("value"))
+            _pointer_geometry[key] = cached
+        g = cached[1]
+        if not g or not g.get("iw") or not g.get("ow"):
+            return
+        scale = g["ow"] / g["iw"]
+        top = g["sy"] + g["oh"] - g["ih"] * scale
+        emit("pointer", x=round(g["sx"] + x * scale, 1), y=round(top + y * scale, 1), click=click)
+    except Exception:
+        pass
+
+
 # --- Adaptation 1: Jev via Vercel AI Gateway --------------------------------
 
 VERCEL_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
@@ -1954,6 +1983,7 @@ class Takeover:
                     return self.result(block, text=refusal, error=True), None
                 button = {"right_click": "right", "middle_click": "middle"}.get(name, "left")
                 count = {"double_click": 2, "triple_click": 3}.get(name, 1)
+                show_pointer(browser.call, x, y, key=id(browser))
                 mouse("mouseMoved", x, y)
                 for n in range(1, count + 1):
                     mouse("mousePressed", x, y, button=button, clickCount=n)
@@ -1965,6 +1995,7 @@ class Takeover:
                 return self.result(block), (f"{verb} ‘{label}’" if label else f"{verb} at {inp.get('coordinate')}")
             if name == "left_click_drag":
                 (ax, ay), (bx, by) = self.point(inp.get("start_coordinate")), self.point(inp.get("coordinate"))
+                show_pointer(browser.call, ax, ay, key=id(browser))
                 mouse("mousePressed", ax, ay, button="left", clickCount=1)
                 mouse("mouseMoved", bx, by, button="left")
                 mouse("mouseReleased", bx, by, button="left", clickCount=1)
@@ -2667,6 +2698,7 @@ def browser_operation_navi(request):
         if target is None:
             raise StalePage("Target changed or is covered. Observe again.")
         x, y = target["x"], target["y"]
+    show_pointer(call, x, y, key=session)
     for event in ("mousePressed", "mouseReleased"):
         call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
     if action.get("dblclick"):
@@ -2882,6 +2914,7 @@ def pick_recipient(call, node, typed, recent=""):
         if seen:
             return f"error: no suggestion matches ‘{typed}’ (saw: {'; '.join(seen)}) — recipient NOT set"
         return f"error: no contact suggestion came up for ‘{typed}’ (recipient NOT set)"
+    show_pointer(call, choice["x"], choice["y"], key=id(call))
     for event in ("mousePressed", "mouseReleased"):
         call("Input.dispatchMouseEvent", type=event, x=choice["x"], y=choice["y"], button="left", clickCount=1)
     name = suggestion_name(choice["label"])

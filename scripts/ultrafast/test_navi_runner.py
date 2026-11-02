@@ -195,10 +195,11 @@ try:
     nr.browser_operation_navi({"operation": "act", "session": "s", "text": "Patriots 20, Steelers 3",
                                "action": {"id": "e5", "node": 5, "kind": "fill", "docs_body": True, "label": "Document body"}})
     kinds = [m for m, _ in calls]
-    assert kinds == ["Runtime.evaluate", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent",
+    # click point, the logo cursor's tab geometry (`show_pointer`), then the click and the typing
+    assert kinds == ["Runtime.evaluate", "Runtime.evaluate", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent",
                      "Input.dispatchKeyEvent", "Input.dispatchKeyEvent", "Input.insertText"], kinds
     assert all("commands" not in p for m, p in calls if m == "Input.dispatchKeyEvent")   # no select-all in a document
-    assert calls[3][1]["key"] in {"ArrowDown", "End"} and calls[-1][1]["text"] == "Patriots 20, Steelers 3"
+    assert calls[4][1]["key"] in {"ArrowDown", "End"} and calls[-1][1]["text"] == "Patriots 20, Steelers 3"
     calls.clear()
     nr.browser_operation_navi({"operation": "act", "session": "s", "text": "Q3 report",
                                "action": {"id": "e2", "node": 2, "kind": "fill", "label": "Rename"}})
@@ -996,3 +997,30 @@ os.environ.pop("NAVI_USER_SAID_JSON")
 targets = [{"type": "page", "targetId": "T1", "url": "https://identity.doordash.com/"}, {"type": "iframe", "targetId": "T2"}]
 assert nr.find_target("T1", targets) == "T1" and nr.find_target("T2", targets) is None and nr.find_target("T9", targets) is None
 print("questions and answers (adaptation 37) ok")
+# Navi's logo cursor: a click's viewport point in screen points, never for a hidden tab.
+emitted = []
+real_emit = nr.emit
+nr.emit = lambda event, **f: emitted.append((event, f))
+try:
+    geometry = {"sx": 100, "sy": 50, "ow": 1200, "oh": 800, "iw": 1200, "ih": 700}   # 100 pt of toolbar
+    calls = []
+    def geo_call(method, **params):
+        calls.append(method)
+        return {"result": {"value": geometry}}
+    nr.show_pointer(geo_call, 10, 20, key="tab-a")
+    assert emitted[-1] == ("pointer", {"x": 110, "y": 170, "click": True}), emitted
+    nr.show_pointer(geo_call, 30, 40, key="tab-a")                     # geometry read once a second per tab
+    assert calls == ["Runtime.evaluate"] and emitted[-1][1]["y"] == 190
+    geometry = {"sx": 0, "sy": 0, "ow": 1000, "oh": 900, "iw": 2000, "ih": 1600}   # zoomed out to 50 %
+    nr.show_pointer(geo_call, 400, 200, key="tab-b")
+    assert emitted[-1][1] == {"x": 200, "y": 200, "click": True}, emitted[-1]
+    n = len(emitted)
+    nr.show_pointer(lambda m, **p: {"result": {"value": None}}, 5, 5, key="hidden")   # background tab
+    nr.show_pointer(lambda m, **p: (_ for _ in ()).throw(RuntimeError("gone")), 5, 5, key="dead")
+    os.environ["NAVI_POINTER"] = "0"
+    nr.show_pointer(geo_call, 5, 5, key="tab-c")
+    os.environ.pop("NAVI_POINTER")
+    assert len(emitted) == n, emitted[n:]
+finally:
+    nr.emit = real_emit
+print("logo cursor pointer ok")

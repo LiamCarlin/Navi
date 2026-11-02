@@ -387,6 +387,7 @@ final class AgentRun: @unchecked Sendable {
                     self.overlay?.hide()
                 }
                 self.overlay = nil
+                NaviCursor.hide()
             }
             handle.finish()
         }

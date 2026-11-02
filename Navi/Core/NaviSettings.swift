@@ -68,6 +68,8 @@ final class NaviSettings: ObservableObject {
     /// Read via UserDefaults off the main actor.
     @Published var agentTypingSounds: Bool { didSet { d.set(agentTypingSounds, forKey: TypingSoundPlayer.enabledKey) } }
     @Published var agentTypingSoundsVolume: Double { didSet { d.set(agentTypingSoundsVolume, forKey: TypingSoundPlayer.volumeKey) } }
+    /// The Navi-logo cursor on the window a task works in (`NaviCursor`). Read via UserDefaults off the main actor.
+    @Published var agentShowsCursor: Bool { didSet { d.set(agentShowsCursor, forKey: NaviCursor.enabledKey) } }
 
     // MARK: Voice control (the notch island)
     /// BCP-47 locale for on-device recognition; "" ⇒ the system locale.
@@ -153,6 +155,7 @@ final class NaviSettings: ObservableObject {
             "agentHideChromeAutomationBar": true,
             TypingSoundPlayer.enabledKey: false,
             TypingSoundPlayer.volumeKey: TypingSoundPlayer.defaultVolume,
+            NaviCursor.enabledKey: true,
             "voiceLocale": "",
             "voiceBringsAppsForward": true,
             "voiceSounds": true,
@@ -203,6 +206,7 @@ final class NaviSettings: ObservableObject {
         agentHideChromeAutomationBar = d.bool(forKey: "agentHideChromeAutomationBar")
         agentTypingSounds = d.bool(forKey: TypingSoundPlayer.enabledKey)
         agentTypingSoundsVolume = d.double(forKey: TypingSoundPlayer.volumeKey)
+        agentShowsCursor = d.bool(forKey: NaviCursor.enabledKey)
         voiceLocale = d.string(forKey: "voiceLocale") ?? ""
         voiceBringsAppsForward = d.bool(forKey: "voiceBringsAppsForward")
         voiceSounds = d.bool(forKey: "voiceSounds")

@@ -29,6 +29,13 @@ final class ActionExecutor: @unchecked Sendable {
         input.route = .process(pid: target.pid, window: target.window(for: snapshot)?.id)
     }
 
+    /// Shows the logo cursor (`NaviCursor`) on an element an AX action just pressed or
+    /// focused — no mouse event carries it there. Mouse fallbacks show it themselves.
+    private func showCursor(at point: CGPoint, pid: pid_t) {
+        if case .process(_, let window?) = input.route { NaviCursor.show(at: point, on: .window(window), clicking: true) }
+        else { NaviCursor.show(at: point, on: .pid(pid), clicking: true) }
+    }
+
     func perform(_ action: AgentAction, text: String?, snapshot: AXSnapshot) async throws {
         aim(at: snapshot)
         let unreliablePress = AXSnapshotter.pressIsUnreliable(bundleID: snapshot.bundleID)
@@ -104,6 +111,7 @@ final class ActionExecutor: @unchecked Sendable {
         if !realClick, let ref = el.ref, el.hasPress {
             let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
             if err == .success {
+                if !el.frame.isEmpty { showCursor(at: el.center, pid: el.pid) }
                 if el.isMenuBarItem { try? await Task.sleep(for: .milliseconds(120)) }
                 return
             }
@@ -123,6 +131,7 @@ final class ActionExecutor: @unchecked Sendable {
         if let ref = el.ref {
             focused = await AXQueue.run { AXUIElementSetAttributeValue(ref, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success }
         }
+        if focused, !el.frame.isEmpty { showCursor(at: el.center, pid: el.pid) }
         if !focused { try await click(el, realClick: realClick) }
         try? await Task.sleep(for: .milliseconds(80))
         if await focusIsSecure() { throw NaviError.other(Self.refuseSecure) }
@@ -227,7 +236,10 @@ final class ActionExecutor: @unchecked Sendable {
     func clickSuggestion(_ s: RecipientPicker.Suggestion, realClick: Bool) async {
         if !realClick, let ref = s.ref {
             let err = await AXQueue.run { AXUIElementPerformAction(ref, kAXPressAction as CFString) }
-            if err == .success { return }
+            if err == .success {
+                if !s.frame.isEmpty { showCursor(at: CGPoint(x: s.frame.midX, y: s.frame.midY), pid: s.pid) }
+                return
+            }
         }
         guard !s.frame.isEmpty else { return }
         await activate(pid: s.pid)
