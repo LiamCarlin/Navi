@@ -457,7 +457,23 @@ enum TaskPlanner {
         plan = prune(plan, task: task)
         plan.steps = Array(plan.steps.prefix(maxReplanSteps))
         plan.source = "replan"
-        return plan.steps.isEmpty ? nil : plan
+        return plan.steps.isEmpty ? nil : continueOnScreen(plan, screen: screen)
+    }
+
+    /// A re-planned first browser step with no page of its own — or a web search for the task's words,
+    /// which the model wrote once for "Open Onshape and export the plate…" from an Onshape tab — goes on
+    /// in the tab it was planned from; a page or site the step names is kept.
+    static func continueOnScreen(_ plan: Plan, screen: FrontmostProbe.Info) -> Plan {
+        guard let first = plan.steps.first, first.surface == .browser, !first.useCurrentTab,
+              ScreenInFront.frontTab(screen) != nil else { return plan }
+        let bare = first.url == nil && first.query == nil
+        let search = first.url.map(isWebSearch) ?? false
+        guard bare || search || first.query != nil && first.url == nil else { return plan }
+        var p = plan
+        p.steps[0].useCurrentTab = true
+        p.steps[0].url = nil
+        p.steps[0].query = nil
+        return p
     }
 
     // MARK: Prefetch (router → agent, before ⏎)

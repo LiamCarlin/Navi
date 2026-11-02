@@ -438,6 +438,24 @@ enum SkillSynthesizer {
         }
     }
 
+    /// Before a browser run: when the start page's site has a generated playbook with no recipe for this
+    /// goal, one is asked for and waited on briefly (`recipeWait`), so this run — not the next — starts
+    /// with it. Nothing happens for library sites or sites with no playbook yet.
+    static let recipeWait: TimeInterval = 2.5
+    static func recipeBeforeRun(task: String, url: String?) async {
+        lock.lock(); let r = registered; lock.unlock()
+        guard let r, let url, url.hasPrefix("http") else { return }
+        let hosts = hosts(for: url)
+        guard let key = GeneratedSkillStore.key(bundleID: "com.google.Chrome", host: hosts.first), let stored = GeneratedSkillStore.shared.stored(key: key),
+              AppSkills.recipes(for: stored.skill, goal: task).isEmpty else { return }
+        ensureRecipe(for: task, bundleID: "com.google.Chrome", url: url, manual: nil, labels: [], claude: r.claude)
+        let deadline = Date().addingTimeInterval(recipeWait)
+        while Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            if let now = GeneratedSkillStore.shared.stored(key: key), !AppSkills.recipes(for: now.skill, goal: task).isEmpty { return }
+        }
+    }
+
     // MARK: Learning from runs
 
     /// A run in a generated-skill app ended: `achieved` ⇒ its actions become a `learned` recipe

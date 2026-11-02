@@ -174,4 +174,23 @@ enum ScreenInFront {
         if p != plan { p.source = plan.source + "+front" }
         return p
     }
+
+    /// The plan, with its first browser step sent to the page of the user's own thing the task names
+    /// ("export the yarn bowl as an stl" → the Yarn Bowl document, `ownPage` = `UserKnowledge.liveStartURL`)
+    /// when the tab in front is another page — even one on the same site: the planner, told to keep
+    /// a site's task on the site's open tab, ran the Yarn Bowl export in the Wing document that was in
+    /// front (2026-11-02). A task that points at the screen or acts on the page keeps the tab; a tab that
+    /// already shows the thing is kept; a plan whose first step is not a browser step is unchanged.
+    static func ownWork(_ plan: TaskPlanner.Plan, task: String, frontmost: FrontmostProbe.Info, ownPage: String?) -> TaskPlanner.Plan {
+        guard let page = ownPage, page.hasPrefix("http"), let first = plan.steps.first, first.surface == .browser,
+              !pointsAtScreen(task), !isPageAction(task) else { return plan }
+        if let tab = frontTab(frontmost), TaskPlanner.samePage(tab, page) { return plan }
+        if let u = first.url, TaskPlanner.samePage(u, page), !first.useCurrentTab { return plan }
+        var p = plan
+        p.steps[0].url = page
+        p.steps[0].useCurrentTab = false
+        p.steps[0].query = nil
+        p.source = plan.source + "+own"
+        return p
+    }
 }

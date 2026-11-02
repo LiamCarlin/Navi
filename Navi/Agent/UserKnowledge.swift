@@ -81,6 +81,10 @@ final class UserKnowledge: @unchecked Sendable {
     }
 
     static let window: TimeInterval = 30 * 86_400
+    /// How far back a document or project the task names outright is still the user's own: the Yarn
+    /// Bowl model last opened 32 days ago is what "export the yarn bowl" means (2026-11-02, the run
+    /// worked in the Wing document in front instead). People and rankings keep the short window.
+    static let longWindow: TimeInterval = 180 * 86_400
     static let ttl: TimeInterval = 600
     static let minSessions = 2
     static let maxThings = 400
@@ -148,6 +152,30 @@ final class UserKnowledge: @unchecked Sendable {
     /// Everything known, most seen first, cached for `ttl`.
     func things(now: Date = Date()) -> [Thing] { snapshot(now: now).things }
 
+    private var olderCached: (things: [Thing], at: Date)?
+
+    /// Documents and projects with a page of their own from before `window` (back to `longWindow`),
+    /// built on first need and cached for `ttl`: what a task may still name by name.
+    func olderThings(now: Date = Date()) -> [Thing] {
+        cacheLock.lock()
+        if let c = olderCached, now.timeIntervalSince(c.at) < Self.ttl { cacheLock.unlock(); return c.things }
+        cacheLock.unlock()
+        let interval = DateInterval(start: now.addingTimeInterval(-Self.longWindow), end: now.addingTimeInterval(-Self.window))
+        let sessions = (try? store.sessions(in: interval, limit: 20_000)) ?? []
+        let things = Self.build(sessions: sessions, selfNames: Self.selfNames).filter { $0.type != "person" && $0.url != nil }
+        cacheLock.lock(); olderCached = (things, now); cacheLock.unlock()
+        return things
+    }
+
+    /// `matches`, and when none of them is a document or project with a page, the older ones the
+    /// task names (`olderThings`).
+    func matchesIncludingOlder(for task: String, now: Date = Date()) -> [Match] {
+        let fresh = matches(for: task)
+        if fresh.contains(where: { $0.thing.type != "person" && $0.thing.url != nil && $0.coverage >= 0.5 }) { return fresh }
+        let older = Self.matches(task: task, in: olderThings(now: now)).filter { $0.thing.type != "person" && $0.thing.url != nil }
+        return fresh + older
+    }
+
     /// How the user reaches people (`UserContacts`): open conversations in Messages'
     /// window titles and in clicks on chat rows, and `Name <address>` in their mail.
     static func loadSignals(store: MemoryStore, since: Date) -> UserContacts.Signals {
@@ -174,7 +202,7 @@ final class UserKnowledge: @unchecked Sendable {
     func matches(for task: String) -> [Match] { Self.matches(task: task, in: things()) }
 
     /// Drops the cache (after a digest run added sessions).
-    func invalidate() { cacheLock.lock(); cached = nil; cacheLock.unlock() }
+    func invalidate() { cacheLock.lock(); cached = nil; olderCached = nil; cacheLock.unlock() }
 
     // MARK: Live helpers (nil / [] when knowledge is off)
 
@@ -208,7 +236,7 @@ final class UserKnowledge: @unchecked Sendable {
     static func startURL(for task: String, knowledge k: UserKnowledge, grounded g: TaskGrounding.Grounded? = nil) -> String? {
         if let g, let u = g.thing.url, !TaskGrounding.isCommunication(task), !TaskGrounding.isErrand(task),
            !tokens(task).contains(where: creationWords.contains) { return u }
-        return startURL(task: task, matches: k.matches(for: task), things: k.things())
+        return startURL(task: task, matches: k.matchesIncludingOlder(for: task), things: k.things())
     }
 
     /// Pages of the things the task names, for Jev's OPEN_URL head.

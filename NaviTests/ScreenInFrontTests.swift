@@ -196,4 +196,31 @@ struct ScreenInFrontTests {
         #expect(BrowserControls.match("bookmark this page")?.key == "cmd+d")
         #expect(BrowserControls.match("reload the page and order a pizza") == nil)
     }
+
+    // MARK: The user's own thing the task names
+
+    @Test func theUsersOwnThingWinsOverTheTabInFront() {
+        let wing = "https://cad.onshape.com/documents/aaa/w/bbb/e/ccc"
+        let bowl = "https://cad.onshape.com/documents/ddd/w/eee/e/fff"
+        let task = "export the yarn bowl as an stl"
+        var onTab = TaskPlanner.Plan(steps: [browserStep(task)], source: "claude")
+        onTab.steps[0].useCurrentTab = true
+        // The planner kept the Onshape task on the Onshape tab in front (the Wing doc): the Yarn Bowl's own page wins.
+        let p = ScreenInFront.ownWork(onTab, task: task, frontmost: chrome(wing, "Wing | Main"), ownPage: bowl)
+        #expect(p.steps[0].url == bowl && !p.steps[0].useCurrentTab && p.steps[0].query == nil && p.source == "claude+own")
+        // A plan that searched for it goes there too.
+        let searched = TaskPlanner.Plan(steps: [browserStep(task, query: "onshape yarn bowl export stl")], source: "claude")
+        #expect(ScreenInFront.ownWork(searched, task: task, frontmost: chrome(wing), ownPage: bowl).steps[0].url == bowl)
+        // The tab already shows the thing: kept.
+        #expect(ScreenInFront.ownWork(onTab, task: task, frontmost: chrome(bowl, "Yarn Bowl | Main"), ownPage: bowl) == onTab)
+        // The task points at the screen or acts on the page: the tab in front is what it means.
+        #expect(ScreenInFront.ownWork(onTab, task: "export this as an stl", frontmost: chrome(wing), ownPage: bowl) == onTab)
+        #expect(ScreenInFront.ownWork(onTab, task: "click export", frontmost: chrome(wing), ownPage: bowl) == onTab)
+        // Nothing of the user's named, or no browser step: unchanged.
+        #expect(ScreenInFront.ownWork(onTab, task: task, frontmost: chrome(wing), ownPage: nil) == onTab)
+        let app = TaskPlanner.Plan(steps: [TaskPlanner.Step(surface: .app, app: "Notes", goal: "note it")], source: "claude")
+        #expect(ScreenInFront.ownWork(app, task: task, frontmost: chrome(wing), ownPage: bowl) == app)
+        // Another app in front: still the own page.
+        #expect(ScreenInFront.ownWork(onTab, task: task, frontmost: preview, ownPage: bowl).steps[0].url == bowl)
+    }
 }

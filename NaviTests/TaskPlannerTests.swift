@@ -82,4 +82,24 @@ import Testing
         let one = TaskPlanner.parse(#"{"steps":[{"surface":"app","app":"ChatGPT","goal":"Tell me a joke"}]}"#)!
         #expect(TaskPlanner.prune(one, task: "tell me a joke").steps.count == 1)
     }
+
+    @Test func aReplannedFirstStepContinuesOnTheScreenItWasPlannedFrom() {
+        let onshape = FrontmostProbe.Info(bundleID: "com.google.Chrome", appName: "Google Chrome", windowTitle: "Wing", url: "https://cad.onshape.com/documents/x")
+        func plan(_ step: TaskPlanner.Step) -> TaskPlanner.Plan { TaskPlanner.Plan(steps: [step], source: "replan") }
+        // A web search for the task's own words, or no page at all: the tab it was planned from.
+        let searched = plan(TaskPlanner.Step(surface: .browser, goal: "Open Onshape and export the plate", url: "https://www.google.com/search?q=Open+Onshape+and+export"))
+        let p = TaskPlanner.continueOnScreen(searched, screen: onshape)
+        #expect(p.steps[0].useCurrentTab && p.steps[0].url == nil && p.steps[0].query == nil)
+        let bare = plan(TaskPlanner.Step(surface: .browser, goal: "export the plate"))
+        #expect(TaskPlanner.continueOnScreen(bare, screen: onshape).steps[0].useCurrentTab)
+        let queried = plan(TaskPlanner.Step(surface: .browser, goal: "export the plate", query: "onshape export stl"))
+        #expect(TaskPlanner.continueOnScreen(queried, screen: onshape).steps[0].useCurrentTab)
+        // A page or site the step names is kept; an app step and a non-browser screen are untouched.
+        let named = plan(TaskPlanner.Step(surface: .browser, goal: "open the bowl", url: "https://cad.onshape.com/documents/y"))
+        #expect(TaskPlanner.continueOnScreen(named, screen: onshape) == named)
+        let app = plan(TaskPlanner.Step(surface: .app, app: "Notes", goal: "note it"))
+        #expect(TaskPlanner.continueOnScreen(app, screen: onshape) == app)
+        let finder = FrontmostProbe.Info(bundleID: "com.apple.finder", appName: "Finder", windowTitle: nil, url: nil)
+        #expect(TaskPlanner.continueOnScreen(searched, screen: finder) == searched)
+    }
 }
