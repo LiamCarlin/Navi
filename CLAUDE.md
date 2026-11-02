@@ -133,6 +133,14 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     `how_this_user_works_here`. (4) **Runs refine the file**: achieved ⇒ a `learned` recipe; not ⇒ the matching
     recipe's `failed` + an `avoid` line; two failures without a success withdraw it. Web skills reach the runner
     via `NAVI_PLAYBOOKS_JSON` from the run after the one that wrote them. Tests: `NaviTests/AppManualTests.swift`.
+    **Plans with checks** (`Agent/PlanLedger`; tier-5 tasks were 0/10 and Navi's own "completed" wrong 20/45): every
+    planner step carries `done_when` (visible evidence) and `must_not`; the ledger (✓ done + what it produced, → current
+    + its evidence, pending) rides in Jev's state (`plan`) and the writer's packet, both told that `done`/achieved mean
+    *this step's* evidence; a `step_done` noul rides in the same Jev call and Jev's own `done` ends an effect step
+    unread only at ≥ 0.9 and `step_done` ≥ 0.7 (`PlanLedger.acceptsDone`), else the writer reads. A step that stops
+    short (not_achieved/partial) re-plans the remaining steps from the screen as it is now, once per run
+    (`TaskPlanner.replan`: steps done + findings, the failed step + what happened, `screen_now`), never redoing a done
+    step. Not on the Chrome CDP runner's steps yet. Tests: `NaviTests/PlanLedgerTests.swift`.
   - **Recipients are contacts, not text** (`Agent/RecipientPicker`; runner adaptation 18):
     after TYPE_TEXT into To/Cc/Bcc/invitees the driver waits for the app's suggestion list
     (~0.5 s, fills in stages), picks the entry for the name (a person over a group that

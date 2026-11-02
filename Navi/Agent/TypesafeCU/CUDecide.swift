@@ -133,6 +133,10 @@ enum CUDecide {
         var playbook: [String: Any]?
         /// `AppManual.state`: the app's menus, so Jev knows the app's shape even without a playbook.
         var manual: [String: Any]?
+        /// `PlanLedger.state`: the whole task's steps, this one marked, with its completion evidence.
+        var plan: [String: Any]?
+        /// The current step's visible completion evidence: asked as the `step_done` noul.
+        var stepDoneWhen: String?
         var experience: [String] = []
         var conversation: [String] = []
         /// `UserKnowledge.context`: the people, projects and documents the goal names, as this
@@ -217,6 +221,7 @@ enum CUDecide {
         }
         if let p = input.playbook { state["playbook"] = p }
         if let m = input.manual { state["app_manual"] = m }
+        if let p = input.plan { state["plan"] = p }
         if !input.userContext.isEmpty { state["user_context"] = ["note": userContextNote, "things": input.userContext] }
         if !input.experience.isEmpty { state["experience"] = input.experience }
         if let moves = input.userMoves?.state { state["how_this_user_works"] = moves }
@@ -336,12 +341,15 @@ enum CUDecide {
         add("kind", "You are driving this computer one action at a time. Which kind of action makes the most progress toward the goal right now? Do not repeat an action that was just taken unless the screen changed, and never one listed as already tried on this screen: each of those led straight back here."
             + untrustedRule + (input.guidance.focus != nil ? focusRule : "") + (input.playbook != nil ? playbookRule : "")
             + (input.userMoves.map { !$0.isEmpty } == true ? UserMoves.kindRule : "")
-            + (input.userMoves?.route != nil ? UserRoute.kindRule : ""),
+            + (input.userMoves?.route != nil ? UserRoute.kindRule : "")
+            + (input.plan != nil ? PlanLedger.kindRule : ""),
             kinds)
 
         // Navi's approval gate reads these (same wording as JevGate).
         questions["is_irreversible"] = JevGate.questions["is_irreversible"]
         questions["is_prohibited"] = JevGate.questions["is_prohibited"]
+        // A step with completion evidence: whether the screen shows it now (read with Jev's `done`).
+        if let d = input.stepDoneWhen { questions["step_done"] = .noul(instructions: PlanLedger.stepDoneQuestion(d)) }
         req.questions = questions
         req.offered = offered
         return req
@@ -370,6 +378,8 @@ enum CUDecide {
         var heads: [String: Head] = [:]
         var isIrreversible: Double = 0
         var isProhibited: Double = 0
+        /// P(the current step's completion evidence is on screen); nil when not asked.
+        var stepDone: Double?
         var latencyMs = 0
 
         static func from(_ r: JevClient.Response) -> Verdict {
@@ -379,6 +389,7 @@ enum CUDecide {
             }
             v.isIrreversible = r["is_irreversible"]?.noul ?? 0
             v.isProhibited = r["is_prohibited"]?.noul ?? 0
+            v.stepDone = r["step_done"]?.noul
             return v
         }
     }

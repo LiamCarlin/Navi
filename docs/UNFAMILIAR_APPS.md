@@ -181,7 +181,7 @@ the existing call. Layer 4 is local. Jev's input cap: ≤ 40 manual items, the l
 
 ## What is built (2026-11-02, this branch)
 
-Layers 1, 2 and 4b, with the learning half of 4:
+Layers 1, 2, 3 and 4b, with the learning half of 4:
 
 | piece | where |
 |---|---|
@@ -193,12 +193,16 @@ Layers 1, 2 and 4b, with the learning half of 4:
 | Learning from runs: `learned` recipes, failure counts, `avoid` | `SkillSynthesizer.learn`, called from `AgentRun` `remember()` / `conclude` |
 | While typing: the manual + playbook of the app in front and of a running app the task names | `AppKnowledge.prepare` from `ComputerAgent.prepare` |
 | "Delete everything" removes manuals and generated skills | `PrivacyData` |
-| Tests | `NaviTests/AppManualTests.swift` |
+| Planner steps carry `done_when` (visible evidence) and `must_not`; `PlanLedger` puts the whole plan in Jev's state (`plan`: ✓ done with what it produced, → current with its evidence, pending) and in the writer's packet; Jev's `kind` rule and the writer's system prompt say `done` / achieved mean the current step's evidence; a `step_done` noul rides in the same call, and Jev's own `done` ends an effect step unread only at ≥ 0.9 **and** `step_done` ≥ 0.7 when the step has evidence (else the writer reads) | `Agent/PlanLedger.swift`, `TaskPlanner.Step`, `CUDecide.Input.plan/stepDoneWhen`, `CUDecide.Verdict.stepDone`, `AgentRun.execute/handOff/startReview` |
+| A step that stops short (not_achieved / partial, never needs_user / impossible) re-plans the **remaining** steps from the screen as it is now, once per run (`TaskPlanner.replan`: the same planner with `replan` = steps done + findings, the step that failed + what happened, the still-planned steps, and `screen_now`); the new steps replace the rest of the plan and the run goes on | `TaskPlanner.replan`, `AgentRun.execute` |
+| Tests | `NaviTests/AppManualTests.swift`, `NaviTests/PlanLedgerTests.swift` |
 
 Not yet: the web host manual in the runner (a generated web skill reaches the runner through
 `NAVI_PLAYBOOKS_JSON` only if it exists before the run starts — it is written during the first run
-on that site and used from the second); layer 3 (plans with checks); following a learned recipe
-by code; cloud sharing.
+on that site and used from the second); the ledger and `step_done` for browser steps run by the
+Chrome CDP runner (its own judge decides; `NAVI_PLAN_JSON` would carry the ledger); following a
+learned recipe by code; cloud sharing. None of this is live-tested yet: the next step is the task
+bench's tier 4–5 scenarios and an unfamiliar-app set (Fusion, Blender, Onshape).
 
 ## Build order
 
