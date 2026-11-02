@@ -55,6 +55,8 @@ enum PrivacyData {
         }
 
         AgentExperience.shared.removeAll()
+        AppManualStore.shared.removeAll()
+        GeneratedSkillStore.shared.removeAll()
         let files = eraseFiles(paths, includeMemoryDatabase: false)
         report.logItems = files.logItems
         for key in contentDefaultsKeys { UserDefaults.navi.removeObject(forKey: key) }

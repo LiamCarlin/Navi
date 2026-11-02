@@ -665,6 +665,8 @@ enum UltrafastBridge {
                 // WorkingSurface hook: the page the runner is working on (steps and the end carry its URL).
                 if event == "step" || event == "done", let u = json["url"] as? String {
                     WorkingSurface.noteBrowserPage(task: task, url: u, title: json["title"] as? String)
+                    // A site with no playbook gets one written now, for the next run there (`SkillSynthesizer`).
+                    if event == "done" { SkillSynthesizer.noteSite(url: u, title: json["title"] as? String) }
                 }
                 switch event {
                 case "status":

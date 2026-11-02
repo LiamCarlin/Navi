@@ -34,6 +34,10 @@ enum TaskPlanner {
         var useCurrentTab: Bool = false
         /// A later step needs information gathered in this one.
         var needsResult: Bool = false
+        /// Visible evidence that this step is complete ("the message shows as the newest bubble").
+        var doneWhen: String?
+        /// A wrong path for this step ("never open the checkout page").
+        var mustNot: String?
     }
 
     struct Plan: Equatable, Sendable {
@@ -52,6 +56,8 @@ enum TaskPlanner {
     - "goal" (required on every step): a self-contained instruction for that step, in the user's words, with everything it needs — for a browser step, what to find or do and, when a later step needs it, what information to gather (e.g. "Find the current weather forecast"). If the step needs information found by an earlier step, write {{result}} exactly where that information goes (e.g. "Send Bella an iMessage saying: {{result}}").
     - "app": for "app" steps only, the application name (e.g. "Messages", "Finder", "Mail", "Notes", "Safari")
     - "needs_result": true on a step whose findings a later step uses (only then)
+    - "done_when": one short sentence of VISIBLE evidence that the step is complete — what the screen shows when it is done (e.g. "the new note shows the forecast text", "the message appears as the newest bubble", "the STL export dialog is closed and the download appears"), never a feeling or a guess
+    - "must_not": optional, one short sentence naming a wrong path for this step when there is an obvious one (e.g. "never reach the checkout or payment page", "do not create a new document")
     - for "browser" steps also: "query": the best web search for the goal (short, no launcher chatter like "open chrome" or "go to the browser"), or "url": an exact page to open when the task names a site or URL, or "use_current_tab": true when the task refers to the page that is open now.
 
     Rules: never invent details the user did not give; keep the user's names, places and dates verbatim; searching, reading, comparing and browsing all belong to one browser step; a message or email is sent in its app, not in the browser (unless the task names a web app like Gmail); do not add verification or "confirm" steps.
@@ -170,6 +176,8 @@ enum TaskPlanner {
                 step.useCurrentTab = (r["use_current_tab"] as? Bool) ?? false
             }
             step.needsResult = (r["needs_result"] as? Bool) ?? false
+            if let d = (r["done_when"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty { step.doneWhen = String(d.prefix(200)) }
+            if let m = (r["must_not"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty { step.mustNot = String(m.prefix(200)) }
             steps.append(step)
         }
         // A placeholder without a producer is a hallucinated dependency: refuse the plan.
@@ -419,6 +427,37 @@ enum TaskPlanner {
         if plan == nil { Log.agent.warning("TaskPlanner: unparseable reply: \(reply.prefix(300), privacy: .private)") }
         if habits != nil { Log.agent.debug("TaskPlanner: planned with user habits") }
         return (plan, Int(Date().timeIntervalSince(start) * 1000), reply)
+    }
+
+    // MARK: Re-plan from the screen
+
+    static let maxReplans = 1
+    static let maxReplanSteps = 4
+    static let replanInstruction = """
+    RE-PLAN. The task was planned and run step by step; "replan" says which steps are done (with what they found), which step failed and what happened, and what the screen shows NOW. Plan only the REMAINING steps, starting from this screen: the first new step continues where the failed step stopped (on the screen in front when it helps — a browser step with "use_current_tab": true, or an "app" step in that app) or takes another route to the same end; never repeat a step marked done, never redo what "what_happened" says was already done, and when the failed step's place cannot do it, do it elsewhere. Keep the user's words. At most 4 steps. Give every step "done_when".
+    """
+
+    /// The remaining steps of a task whose step failed, planned again from the screen as it is
+    /// now. nil when the model has nothing usable.
+    static func replan(task: String, ledger: PlanLedger, failure: String, verdict: RunVerdict?, screen: FrontmostProbe.Info,
+                       screenText: String?, claude: ClaudeClient) async throws -> Plan? {
+        var state = stateJSON(task: task, frontmost: screen)
+        state["replan"] = ledger.replanSection(failure: failure, verdict: verdict)
+        var now: [String: Any] = ["app": screen.appName ?? screen.bundleID ?? "unknown"]
+        if let t = screen.windowTitle, !t.isEmpty { now["window_title"] = t }
+        if let u = screen.url { now["url"] = u }
+        if let text = screenText?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { now["screen_text"] = String(text.prefix(2500)) }
+        state["screen_now"] = now
+        let data = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
+        let m = try await claude.create(model: model, system: systemPrompt + "\n\n" + replanInstruction,
+                                        messages: [["role": "user", "content": String(decoding: data, as: UTF8.self)],
+                                                   ["role": "assistant", "content": assistantPrefill]],
+                                        maxTokens: 700, effort: "low", thinking: nil)
+        guard var plan = parse(completePrefilled(m.text)) else { return nil }
+        plan = prune(plan, task: task)
+        plan.steps = Array(plan.steps.prefix(maxReplanSteps))
+        plan.source = "replan"
+        return plan.steps.isEmpty ? nil : plan
     }
 
     // MARK: Prefetch (router → agent, before ⏎)

@@ -46,8 +46,24 @@ final class ActionExecutor: @unchecked Sendable {
             if !isBackground, snapshot.pid > 0 { await activate(pid: snapshot.pid) }
             await input.click(at: CGPoint(x: x, y: y))
         case .press(let id):
+            guard let el = snapshot.element(id) else { throw NaviError.other("The off-screen control \(id) is gone") }
+            // A menu-bar command from the app's manual: found again by its titles and pressed
+            // through AX (no menu opens, the app stays where it is); its shortcut is the fallback.
+            if el.actions.contains(AppManual.menuCommandAction) {
+                let pid = el.pid
+                let full = el.label
+                let pressed = await AXQueue.run { AppManual.press(full: full, pid: pid) }
+                if pressed != true {
+                    guard let combo = el.menuShortcut, let k = try? KeyCombo.parse(combo) else {
+                        throw NaviError.other("The menu command \(el.displayName) could not be pressed")
+                    }
+                    if isBackground || snapshot.elements.isEmpty { await input.pressWithBriefActivation(k) }
+                    else { await activate(pid: snapshot.pid); await input.press(k) }
+                }
+                return
+            }
             // Off-screen: AXPress needs no pixel, and there is none to fall back on.
-            guard let el = snapshot.element(id), let ref = el.ref else { throw NaviError.other("The off-screen control \(id) is gone") }
+            guard let ref = el.ref else { throw NaviError.other("The off-screen control \(id) is gone") }
             // A sidebar row takes no press: selecting it is what a click would do.
             let err = await AXQueue.run {
                 el.selectsByRow && !el.hasPress ? AXUIElementSetAttributeValue(ref, kAXSelectedAttribute as CFString, kCFBooleanTrue)

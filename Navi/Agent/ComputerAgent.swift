@@ -55,6 +55,9 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     /// `run` doesn't wait for it; without Claude, classifies the surface (Jev).
     @MainActor
     func prepare(task: String, context: QueryContext) {
+        // The manual and playbook of the app in front, and of a running app the task names,
+        // read or written while they type: a run in an app Navi has never seen starts knowing it.
+        AppKnowledge.prepare(task: task, model: NaviSettings.shared.agentModel, claude: claude)
         // What the task refers to in the user's own work ("the last assignment I did"), settled
         // while they type; the planner prefetch below waits for it.
         TaskGrounding.prepare(task: task)
@@ -98,6 +101,7 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     @MainActor
     func run(task: String, context: QueryContext, options: RunOptions) -> AgentRunHandle {
         let s = NaviSettings.shared
+        SkillSynthesizer.register(model: s.agentModel, claude: claude)
         let config = AgentRun.Config(model: s.agentModel,
                                      maxSteps: max(1, options.maxSteps ?? s.agentMaxSteps),
                                      approvalMode: s.agentApprovalMode,
@@ -220,6 +224,8 @@ final class AgentRun: @unchecked Sendable {
     private var screenshotWindow: CGWindowID?
     /// The typed outcome the last step's driver reported on its handle (`AgentRunHandle.verdict`).
     private var lastStepVerdict: RunVerdict?
+    /// Where the plan stands while a step runs (`PlanLedger`): in Jev's and the writer's state.
+    private var ledger: PlanLedger?
     @MainActor private var overlay: AgentOverlay?
 
     init(task: String, context: QueryContext, config: Config, jev: JevClient, claude: ClaudeClient) {
@@ -691,13 +697,21 @@ final class AgentRun: @unchecked Sendable {
             }
             handle.emit(.planned(lines.joined(separator: "\n")))
         }
+        var plan = plan
         var result: String?
         var summaries: [String] = []
+        /// What each finished step produced (its result or summary), for the ledger.
+        var stepResults: [Int: String] = [:]
+        var replans = 0
         /// The last step ran on the native driver (an app, or a browser driven natively).
         var lastStepNative = false
-        for (i, var step) in plan.steps.enumerated() {
+        var i = 0
+        defer { ledger = nil }
+        while i < plan.steps.count {
+            var step = plan.steps[i]
             try checkCancelled()
             task = TaskPlanner.resolve(step.goal, result: result)
+            ledger = PlanLedger(task: originalTask, plan: plan, current: i, results: stepResults, replans: replans)
             if plan.isMultiStep {
                 handle.emit(.status("Step \(i + 1) of \(plan.steps.count) · \(step.surface == .browser ? "browser" : (step.app ?? "app"))"))
             }
@@ -795,8 +809,30 @@ final class AgentRun: @unchecked Sendable {
             case .cancelled:
                 throw CancellationError()      // `main` emits the single `.cancelled`
             case .failed(let msg):
+                // A step that did not get there (not one the user or the app itself stops): the rest
+                // of the task is planned again from the screen as it is now, once — the stale plan is
+                // not retried, and a step whose place cannot do it moves elsewhere.
+                let v = lastStepVerdict
+                if replans < TaskPlanner.maxReplans, claude.isConfigured, v == nil || v == .notAchieved || v == .partial,
+                   let current = ledger {
+                    handle.emit(.status("Step \(i + 1) stopped short — planning the rest again from this screen"))
+                    let now = await probe(includeURL: true)
+                    let text = ranRunner ? pageText : (lastSnapshotText ?? pageText)
+                    if let fresh = try? await TaskPlanner.replan(task: originalTask, ledger: current, failure: msg, verdict: v, screen: now,
+                                                                 screenText: text, claude: claude) {
+                        replans += 1
+                        plan.steps.replaceSubrange(i..., with: fresh.steps)
+                        plan.source = fresh.source
+                        let lines = fresh.steps.enumerated().map { j, s in
+                            "\(i + j + 1). \(s.surface == .browser ? "Browser" : (s.app ?? "App")): \(s.goal)"
+                        }
+                        handle.emit(.planned((summaries.enumerated().map { "✓ \($0 + 1). \(AgentAction.short($1, 80))" } + lines).joined(separator: "\n")))
+                        Log.agent.info("Re-planned from the screen after step \(i + 1): \(fresh.steps.count) steps")
+                        continue
+                    }
+                }
                 // The step's own typed outcome (needs the user, impossible here, not done) rides up.
-                handle.verdict = lastStepVerdict.flatMap { $0 == .achieved ? nil : $0 } ?? .notAchieved
+                handle.verdict = v.flatMap { $0 == .achieved ? nil : $0 } ?? .notAchieved
                 handle.emit(.failed(plan.isMultiStep ? "Step \(i + 1) of \(plan.steps.count) failed: \(msg)" : msg)); return
             case .completed(let summary):
                 let isLast = i + 1 == plan.steps.count
@@ -809,10 +845,13 @@ final class AgentRun: @unchecked Sendable {
                     }
                     if !isLast { handle.emit(.status("Found: \(AgentAction.short(result ?? "nothing", 120))")) }
                     summaries.append(isLast && result != nil && result != summary ? "\(result!)\n(\(summary))" : summary)
+                    stepResults[i] = result ?? summary
                 } else {
                     summaries.append(summary)
+                    stepResults[i] = summary
                 }
             }
+            i += 1
         }
         handle.verdict = .achieved
         handle.emit(.completed(summary: plan.isMultiStep ? summaries.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n") : (summaries.first ?? "Done.")))
@@ -1061,11 +1100,28 @@ final class AgentRun: @unchecked Sendable {
         var prefetchedReview: (page: String, outcome: CURunState.Outcome, task: Task<Review, Never>)?
         defer { prefetchedReview?.task.cancel() }
 
+        /// The manual of each app this run drove (`AppManual`), read once per app — nil kept too,
+        /// so an app with no menu bar is not walked again every step.
+        var manuals: [String: AppManual?] = [:]
+        func manual(for snap: AXSnapshot) async -> AppManual? {
+            guard let b = snap.bundleID, !b.isEmpty, snap.pid > 0, !AXSnapshotter.isBrowser(b) else { return nil }
+            if let m = manuals[b] { return m }
+            let m = await AppManualStore.shared.ensure(pid: snap.pid, bundleID: b, appName: snap.appName)
+            manuals[b] = m
+            return m
+        }
+
         func observe(forceOCR: Bool = false) async -> CUScreen {
             var snap = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
             // An app that was just opened (or a window still building) exposes nothing for a
             // few hundred ms; Jev could only say "none".
             _ = await Self.settleSnapshot(&snap, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
+            // The app's own commands for this goal (its menu bar, the ones this user runs first)
+            // join the off-screen controls: "File › Export…" is one press in any app.
+            if let m = await manual(for: snap) {
+                let used = AppUse.live(bundleID: snap.bundleID).commands
+                snap.offscreen = AppManual.merge(snap.offscreen, commands: m.offscreenElements(for: task, used: used, pid: snap.pid))
+            }
             var ocr: [CUOCRLine]?
             if screenshots, forceOCR || CUOCRPolicy.wantsOCR(snap), let wid = await CUOCRReader.windowID(for: snap, target: target) {
                 ocr = await ocrReader.read(windowID: wid)
@@ -1123,6 +1179,15 @@ final class AgentRun: @unchecked Sendable {
             }
             guard !redactedLog.isEmpty else { return }
             AgentExperience.shared.record(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, goal: task, actions: redactedLog)
+            // In an app Navi wrote the playbook for, what worked becomes that playbook's recipe.
+            SkillSynthesizer.learn(bundleID: screen.snapshot.bundleID, url: screen.url, goal: task, actions: redactedLog, achieved: true, lastAction: nil)
+        }
+
+        /// A run that did not get there: the generated playbook's matching recipe counts a failure
+        /// and the dead end goes to `avoid`.
+        func learnFailure() {
+            SkillSynthesizer.learn(bundleID: screen.snapshot.bundleID, url: screen.url, goal: task, actions: redactedLog, achieved: false,
+                                   lastAction: redactedLog.last)
         }
 
         /// After an action ran on `acted`: extend (or close) the trajectory being recorded.
@@ -1149,7 +1214,7 @@ final class AgentRun: @unchecked Sendable {
             writerAnswer = a.text.isEmpty ? nil : a.text
             writeRun(outcome.rawValue + " · " + a.verdict.rawValue)
             if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
-            if !a.achieved { noteRoute(worked: false) }
+            if !a.achieved { noteRoute(worked: false); learnFailure() }
             handle.verdict = a.verdict
             if a.achieved {
                 remember()
@@ -1185,11 +1250,12 @@ final class AgentRun: @unchecked Sendable {
         /// The writer's read of the screen as it is now, as a task: `handOff` awaits it, and a
         /// screen Jev stopped on starts it early while the OCR re-read runs (`prefetchedReview`).
         func startReview(_ outcome: CURunState.Outcome, mayResume: Bool) -> Task<Review, Never> {
-            let packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
+            var packet = CUWriter.answerPacket(goal: task, screen: screen, history: run.history, stopped: outcome.told,
                                                earlier: run.earlierScreens(final: screen.signature), guidance: run.guidance,
                                                earlierStops: run.earlierStops,
                                                canAsk: mayResume && run.guidance.exchanges.count < Self.maxQuestions, spoken: context.spoken,
                                                conversation: context.conversation)
+            if let p = ledger?.state { packet["plan"] = p }
             let (snapshot, target, claude, model) = (screen.snapshot, target, claude, config.model)
             return Task.detached(priority: .userInitiated) {
                 var png: Data?
@@ -1256,9 +1322,12 @@ final class AgentRun: @unchecked Sendable {
         /// that verdict, not the stop, decides what follows (`CUEscalation.next`): done, a question,
         /// Jev again with a focus, or Claude driving for a few steps. True to resume Jev; otherwise
         /// the run has ended.
-        func handOff(_ stopped: CURunState.Outcome, doneConfidence: Double = 0) async throws -> Bool {
+        func handOff(_ stopped: CURunState.Outcome, doneConfidence: Double = 0, stepDone: Double? = nil) async throws -> Bool {
             let outcome = run.countStall(stopped)
-            if outcome == .done, effectGoal, !wantsResult, !humanLog.isEmpty, doneConfidence >= Self.acceptDoneConfidence || !writerAvailable {
+            // Jev's own "done" ends an effect step unread only when it is sure — and, for a step with
+            // completion evidence (`PlanLedger`), only when it also sees that evidence on screen.
+            let evidenceShown = PlanLedger.acceptsDone(doneWhen: ledger?.currentDoneWhen, stepDone: stepDone)
+            if outcome == .done, effectGoal, !wantsResult, !humanLog.isEmpty, (doneConfidence >= Self.acceptDoneConfidence && evidenceShown) || !writerAvailable {
                 finishUnread(.done, failure: "")
                 return false
             }
@@ -1491,10 +1560,33 @@ final class AgentRun: @unchecked Sendable {
                 announcedSkill = skill.name
                 handle.emit(.status("Using the \(skill.name) playbook"))
             }
+            // The generic shortcuts mean what this app's menus say they mean (its manual); the
+            // playbook's own wording wins where it has one.
+            let appManual = manuals[screen.snapshot.bundleID ?? ""] ?? nil
+            let baseCombos = appManual?.keyCombos(base: CUDecide.keyCombos) ?? CUDecide.keyCombos
+            // An app or site with no playbook: Navi writes one now (ready for a later step and
+            // every later run); a generated playbook with no recipe for this goal gets one.
+            let labels = Array(screen.snapshot.elements.map(\.label).filter { !$0.isEmpty }.prefix(SkillSynthesizer.maxScreenLabels))
+            // In a browser the skill is the browser's own; a site with none of its own is unknown too.
+            let unknownSite = screen.snapshot.bundleID.map(AXSnapshotter.isBrowser) == true
+                && (screen.url?.hasPrefix("http") ?? false) && AppSkills.skill(url: screen.url) == nil
+            if skill == nil || unknownSite, writerAvailable {
+                let name = screen.snapshot.appName ?? screen.snapshot.bundleID ?? "this app"
+                if announcedSkill != "learning:" + name {
+                    announcedSkill = "learning:" + name
+                    handle.emit(.status("Learning how \(SkillSynthesizer.hosts(for: screen.url).first ?? name) works"))
+                }
+                SkillSynthesizer.ensure(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, url: screen.url,
+                                        pid: screen.snapshot.pid, labels: labels, windowTitle: screen.snapshot.windowTitle,
+                                        model: config.model, claude: claude)
+            } else if writerAvailable {
+                SkillSynthesizer.ensureRecipe(for: task, bundleID: screen.snapshot.bundleID, url: screen.url,
+                                              manual: appManual, labels: labels, claude: claude)
+            }
             // How this user acts here (their clicks, shortcuts, procedures), from screen memory.
             var moves = UserMoves.liveHints(goal: task, bundleID: screen.snapshot.bundleID, url: screen.url,
                                             items: screen.items.map { ($0.index, $0.text) }, lastClicked: lastClickedLabel,
-                                            shortcuts: AppSkills.keyCombos(for: skill))
+                                            shortcuts: AppSkills.keyCombos(for: skill, base: baseCombos))
             // Their routine for this task: the next step marked, the whole way in Jev's state.
             if var r = route {
                 r.settle(on: screen)
@@ -1508,6 +1600,8 @@ final class AgentRun: @unchecked Sendable {
                                        writerAvailable: writerAvailable,
                                        goalSpellsText: obvious.map { !typedTexts.contains($0) } ?? false,
                                        playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
+                                       manual: appManual?.state,
+                                       plan: ledger?.state, stepDoneWhen: ledger?.currentDoneWhen,
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
                                        conversation: context.conversation, userContext: userContext,
                                        userMoves: moves.isEmpty ? nil : moves,
@@ -1603,7 +1697,7 @@ final class AgentRun: @unchecked Sendable {
                     screen = await observe(forceOCR: true)
                     continue
                 }
-                if try await handOff(stop, doneConfidence: decision?.confidence ?? 0) { continue } else { return }
+                if try await handOff(stop, doneConfidence: decision?.confidence ?? 0, stepDone: verdict.stepDone) { continue } else { return }
             }
             guard let decision, let move else { continue }
             prefetchedReview?.task.cancel()

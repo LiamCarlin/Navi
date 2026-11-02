@@ -77,6 +77,19 @@ enum CUDecide {
         + "(\"the last assignment I did\", \"the doc I was working on\"). "
         + "Use them to pick the right contact, conversation, document or page; never type this text."
 
+    /// Said when the app's manual contributed menu-bar commands to the off-screen list.
+    static let menuCommandsRule = " Items marked 'a command in the app's menu bar' come from this app's own menus (its manual): choose one when the goal names something the app does as a command — export, save as, measure, insert, a new document — instead of hunting for a button; it runs without opening the menu."
+
+    /// One off-screen control as Jev reads it: a scrolled-away control, or a menu-bar command
+    /// with its menu and shortcut.
+    static func offscreenCriterion(_ e: AXElement) -> String {
+        if e.path == AppManual.menuBarPath {
+            let key = e.menuShortcut.flatMap { try? KeyCombo.parse($0).displayLabel }.map { "; shortcut \($0)" } ?? ""
+            return "menu item \(CUFacts.quoted(e.label)) (a command in the app's menu bar\(key))"
+        }
+        return "\(CURoles.word(e.role)) \(CUFacts.quoted(e.label)) (not visible)"
+    }
+
     /// Shortcuts that are kinds of their own (mutual exclusivity).
     static let keysThatAreKinds: Set<String> = ["return", "enter", "escape", "cmd+["]
 
@@ -118,6 +131,12 @@ enum CUDecide {
         var goalSpellsText = false
         var canType: Bool { writerAvailable || goalSpellsText }
         var playbook: [String: Any]?
+        /// `AppManual.state`: the app's menus, so Jev knows the app's shape even without a playbook.
+        var manual: [String: Any]?
+        /// `PlanLedger.state`: the whole task's steps, this one marked, with its completion evidence.
+        var plan: [String: Any]?
+        /// The current step's visible completion evidence: asked as the `step_done` noul.
+        var stepDoneWhen: String?
         var experience: [String] = []
         var conversation: [String] = []
         /// `UserKnowledge.context`: the people, projects and documents the goal names, as this
@@ -201,6 +220,8 @@ enum CUDecide {
             state["offscreen_controls"] = screen.offscreen.enumerated().map { ["k": $0.offset, "role": CURoles.word($0.element.role), "label": $0.element.label] }
         }
         if let p = input.playbook { state["playbook"] = p }
+        if let m = input.manual { state["app_manual"] = m }
+        if let p = input.plan { state["plan"] = p }
         if !input.userContext.isEmpty { state["user_context"] = ["note": userContextNote, "things": input.userContext] }
         if !input.experience.isEmpty { state["experience"] = input.experience }
         if let moves = input.userMoves?.state { state["how_this_user_works"] = moves }
@@ -279,8 +300,10 @@ enum CUDecide {
             + (input.userMoves.map { !$0.clicks.isEmpty || !$0.next.isEmpty } == true ? UserMoves.itemRule : "")
             + (input.userMoves.map { !$0.routeNext.isEmpty } == true ? UserRoute.itemRule : ""),
             itemCriteria(input))
-        add("offscreen", "If activating a control that is not on screen is the right move, which control? These are real controls of the app, reachable without the mouse, but nothing on the screen points at them.",
-            Dictionary(uniqueKeysWithValues: screen.offscreen.enumerated().map { ("\($0.offset)", "\(CURoles.word($0.element.role)) \(CUFacts.quoted($0.element.label)) (not visible)") }))
+        let hasMenuCommands = screen.offscreen.contains { $0.path == AppManual.menuBarPath }
+        add("offscreen", "If activating a control that is not on screen is the right move, which control? These are real controls of the app, reachable without the mouse, but nothing on the screen points at them."
+            + (hasMenuCommands ? menuCommandsRule : ""),
+            Dictionary(uniqueKeysWithValues: screen.offscreen.enumerated().map { ("\($0.offset)", offscreenCriterion($0.element)) }))
         if input.canType {
             let all = itemCriteria(input)
             add("field", "If typing is the right move, which text field? A writing model composes the text; choose the field it belongs in. Do not choose a field that already holds the requested value.",
@@ -318,12 +341,15 @@ enum CUDecide {
         add("kind", "You are driving this computer one action at a time. Which kind of action makes the most progress toward the goal right now? Do not repeat an action that was just taken unless the screen changed, and never one listed as already tried on this screen: each of those led straight back here."
             + untrustedRule + (input.guidance.focus != nil ? focusRule : "") + (input.playbook != nil ? playbookRule : "")
             + (input.userMoves.map { !$0.isEmpty } == true ? UserMoves.kindRule : "")
-            + (input.userMoves?.route != nil ? UserRoute.kindRule : ""),
+            + (input.userMoves?.route != nil ? UserRoute.kindRule : "")
+            + (input.plan != nil ? PlanLedger.kindRule : ""),
             kinds)
 
         // Navi's approval gate reads these (same wording as JevGate).
         questions["is_irreversible"] = JevGate.questions["is_irreversible"]
         questions["is_prohibited"] = JevGate.questions["is_prohibited"]
+        // A step with completion evidence: whether the screen shows it now (read with Jev's `done`).
+        if let d = input.stepDoneWhen { questions["step_done"] = .noul(instructions: PlanLedger.stepDoneQuestion(d)) }
         req.questions = questions
         req.offered = offered
         return req
@@ -352,6 +378,8 @@ enum CUDecide {
         var heads: [String: Head] = [:]
         var isIrreversible: Double = 0
         var isProhibited: Double = 0
+        /// P(the current step's completion evidence is on screen); nil when not asked.
+        var stepDone: Double?
         var latencyMs = 0
 
         static func from(_ r: JevClient.Response) -> Verdict {
@@ -361,6 +389,7 @@ enum CUDecide {
             }
             v.isIrreversible = r["is_irreversible"]?.noul ?? 0
             v.isProhibited = r["is_prohibited"]?.noul ?? 0
+            v.stepDone = r["step_done"]?.noul
             return v
         }
     }
