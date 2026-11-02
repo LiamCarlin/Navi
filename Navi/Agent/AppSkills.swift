@@ -60,6 +60,13 @@ struct AppSkill: Sendable, Equatable {
 }
 
 enum AppSkills {
+    /// Every skill: the library first (it wins a lookup), then the playbooks Navi wrote for
+    /// apps the library does not cover (`SkillSynthesizer`).
+    static var all: [AppSkill] { library + GeneratedSkillStore.shared.skills }
+
+    /// The native skills a task may imply: the library's, then the generated ones.
+    static var allNative: [AppSkill] { native + GeneratedSkillStore.shared.skills.filter { !$0.bundleIDs.isEmpty } }
+
     // MARK: Lookup
 
     static func skill(bundleID: String?) -> AppSkill? {
@@ -121,17 +128,25 @@ enum AppSkills {
                                                "memos", "files", "shell", "prime", "insta", "search"]
     static let openers = #"(?:in|on|into|open|launch|use|using|with|via|to|inside|from|switch to|go to)\s+(?:the\s+|my\s+)?"#
 
-    /// One compiled pattern per name/alias, built once.
-    private static let mentionPatterns: [(skill: AppSkill, name: String, regex: NSRegularExpression)] = all.flatMap { s in
-        ([s.name] + s.aliases).compactMap { a -> (AppSkill, String, NSRegularExpression)? in
-            let name = a.lowercased()
-            let escaped = NSRegularExpression.escapedPattern(for: name)
-            let pattern = commonWordNames.contains(name)
-                ? #"\b(?:"# + openers + escaped + #"|"# + escaped + #"\s+app)\b"#
-                : #"\b"# + escaped + #"\b"#
-            return (try? NSRegularExpression(pattern: pattern)).map { (s, name, $0) }
+    typealias MentionPattern = (skill: AppSkill, name: String, regex: NSRegularExpression)
+
+    /// One compiled pattern per name/alias.
+    static func mentionPatterns(for skills: [AppSkill]) -> [MentionPattern] {
+        skills.flatMap { s in
+            ([s.name] + s.aliases).compactMap { a -> MentionPattern? in
+                let name = a.lowercased()
+                let escaped = NSRegularExpression.escapedPattern(for: name)
+                let pattern = commonWordNames.contains(name)
+                    ? #"\b(?:"# + openers + escaped + #"|"# + escaped + #"\s+app)\b"#
+                    : #"\b"# + escaped + #"\b"#
+                return (try? NSRegularExpression(pattern: pattern)).map { (s, name, $0) }
+            }
         }
     }
+
+    /// The library's patterns, built once; the generated skills' are kept by their store.
+    private static let libraryMentionPatterns: [MentionPattern] = mentionPatterns(for: library)
+    private static var mentionPatterns: [MentionPattern] { libraryMentionPatterns + GeneratedSkillStore.shared.mentionPatterns }
 
     /// The skill a task names outright — by name or spoken alias, as a whole
     /// word/phrase ("in slack", "on youtube", "texts"). Longest mention wins.
@@ -164,7 +179,7 @@ enum AppSkills {
         let claimed = Set(skill(bundleID: frontmostBundleID)?.weakTriggers ?? [])
         let named = mentioned(in: task)
         var scored: [(AppSkill, Int, Int)] = []
-        for (i, s) in native.enumerated() where !s.bundleIDs.isEmpty {
+        for (i, s) in allNative.enumerated() where !s.bundleIDs.isEmpty {
             let strong = hits(s.triggers)
             let weak = hits(s.weakTriggers.filter { !claimed.contains($0) })
             let score = strong * 2 + weak + (named?.name == s.name ? 100 : 0)

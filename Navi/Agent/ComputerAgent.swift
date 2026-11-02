@@ -55,6 +55,9 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     /// `run` doesn't wait for it; without Claude, classifies the surface (Jev).
     @MainActor
     func prepare(task: String, context: QueryContext) {
+        // The manual and playbook of the app in front, and of a running app the task names,
+        // read or written while they type: a run in an app Navi has never seen starts knowing it.
+        AppKnowledge.prepare(task: task, model: NaviSettings.shared.agentModel, claude: claude)
         // What the task refers to in the user's own work ("the last assignment I did"), settled
         // while they type; the planner prefetch below waits for it.
         TaskGrounding.prepare(task: task)
@@ -98,6 +101,7 @@ final class ComputerAgent: ComputerAgentRunning, @unchecked Sendable {
     @MainActor
     func run(task: String, context: QueryContext, options: RunOptions) -> AgentRunHandle {
         let s = NaviSettings.shared
+        SkillSynthesizer.register(model: s.agentModel, claude: claude)
         let config = AgentRun.Config(model: s.agentModel,
                                      maxSteps: max(1, options.maxSteps ?? s.agentMaxSteps),
                                      approvalMode: s.agentApprovalMode,
@@ -1061,11 +1065,28 @@ final class AgentRun: @unchecked Sendable {
         var prefetchedReview: (page: String, outcome: CURunState.Outcome, task: Task<Review, Never>)?
         defer { prefetchedReview?.task.cancel() }
 
+        /// The manual of each app this run drove (`AppManual`), read once per app — nil kept too,
+        /// so an app with no menu bar is not walked again every step.
+        var manuals: [String: AppManual?] = [:]
+        func manual(for snap: AXSnapshot) async -> AppManual? {
+            guard let b = snap.bundleID, !b.isEmpty, snap.pid > 0, !AXSnapshotter.isBrowser(b) else { return nil }
+            if let m = manuals[b] { return m }
+            let m = await AppManualStore.shared.ensure(pid: snap.pid, bundleID: b, appName: snap.appName)
+            manuals[b] = m
+            return m
+        }
+
         func observe(forceOCR: Bool = false) async -> CUScreen {
             var snap = await snapshotter.capture(near: lastActedFrame, includeMenuBar: wantMenuBar, target: target)
             // An app that was just opened (or a window still building) exposes nothing for a
             // few hundred ms; Jev could only say "none".
             _ = await Self.settleSnapshot(&snap, snapshotter: snapshotter, includeMenuBar: wantMenuBar, target: target) { [self] in !isCancelled }
+            // The app's own commands for this goal (its menu bar, the ones this user runs first)
+            // join the off-screen controls: "File › Export…" is one press in any app.
+            if let m = await manual(for: snap) {
+                let used = AppUse.live(bundleID: snap.bundleID).commands
+                snap.offscreen = AppManual.merge(snap.offscreen, commands: m.offscreenElements(for: task, used: used, pid: snap.pid))
+            }
             var ocr: [CUOCRLine]?
             if screenshots, forceOCR || CUOCRPolicy.wantsOCR(snap), let wid = await CUOCRReader.windowID(for: snap, target: target) {
                 ocr = await ocrReader.read(windowID: wid)
@@ -1123,6 +1144,15 @@ final class AgentRun: @unchecked Sendable {
             }
             guard !redactedLog.isEmpty else { return }
             AgentExperience.shared.record(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, goal: task, actions: redactedLog)
+            // In an app Navi wrote the playbook for, what worked becomes that playbook's recipe.
+            SkillSynthesizer.learn(bundleID: screen.snapshot.bundleID, url: screen.url, goal: task, actions: redactedLog, achieved: true, lastAction: nil)
+        }
+
+        /// A run that did not get there: the generated playbook's matching recipe counts a failure
+        /// and the dead end goes to `avoid`.
+        func learnFailure() {
+            SkillSynthesizer.learn(bundleID: screen.snapshot.bundleID, url: screen.url, goal: task, actions: redactedLog, achieved: false,
+                                   lastAction: redactedLog.last)
         }
 
         /// After an action ran on `acted`: extend (or close) the trajectory being recorded.
@@ -1149,7 +1179,7 @@ final class AgentRun: @unchecked Sendable {
             writerAnswer = a.text.isEmpty ? nil : a.text
             writeRun(outcome.rawValue + " · " + a.verdict.rawValue)
             if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
-            if !a.achieved { noteRoute(worked: false) }
+            if !a.achieved { noteRoute(worked: false); learnFailure() }
             handle.verdict = a.verdict
             if a.achieved {
                 remember()
@@ -1491,10 +1521,33 @@ final class AgentRun: @unchecked Sendable {
                 announcedSkill = skill.name
                 handle.emit(.status("Using the \(skill.name) playbook"))
             }
+            // The generic shortcuts mean what this app's menus say they mean (its manual); the
+            // playbook's own wording wins where it has one.
+            let appManual = manuals[screen.snapshot.bundleID ?? ""] ?? nil
+            let baseCombos = appManual?.keyCombos(base: CUDecide.keyCombos) ?? CUDecide.keyCombos
+            // An app or site with no playbook: Navi writes one now (ready for a later step and
+            // every later run); a generated playbook with no recipe for this goal gets one.
+            let labels = Array(screen.snapshot.elements.map(\.label).filter { !$0.isEmpty }.prefix(SkillSynthesizer.maxScreenLabels))
+            // In a browser the skill is the browser's own; a site with none of its own is unknown too.
+            let unknownSite = screen.snapshot.bundleID.map(AXSnapshotter.isBrowser) == true
+                && (screen.url?.hasPrefix("http") ?? false) && AppSkills.skill(url: screen.url) == nil
+            if skill == nil || unknownSite, writerAvailable {
+                let name = screen.snapshot.appName ?? screen.snapshot.bundleID ?? "this app"
+                if announcedSkill != "learning:" + name {
+                    announcedSkill = "learning:" + name
+                    handle.emit(.status("Learning how \(SkillSynthesizer.hosts(for: screen.url).first ?? name) works"))
+                }
+                SkillSynthesizer.ensure(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, url: screen.url,
+                                        pid: screen.snapshot.pid, labels: labels, windowTitle: screen.snapshot.windowTitle,
+                                        model: config.model, claude: claude)
+            } else if writerAvailable {
+                SkillSynthesizer.ensureRecipe(for: task, bundleID: screen.snapshot.bundleID, url: screen.url,
+                                              manual: appManual, labels: labels, claude: claude)
+            }
             // How this user acts here (their clicks, shortcuts, procedures), from screen memory.
             var moves = UserMoves.liveHints(goal: task, bundleID: screen.snapshot.bundleID, url: screen.url,
                                             items: screen.items.map { ($0.index, $0.text) }, lastClicked: lastClickedLabel,
-                                            shortcuts: AppSkills.keyCombos(for: skill))
+                                            shortcuts: AppSkills.keyCombos(for: skill, base: baseCombos))
             // Their routine for this task: the next step marked, the whole way in Jev's state.
             if var r = route {
                 r.settle(on: screen)
@@ -1508,6 +1561,7 @@ final class AgentRun: @unchecked Sendable {
                                        writerAvailable: writerAvailable,
                                        goalSpellsText: obvious.map { !typedTexts.contains($0) } ?? false,
                                        playbook: skill.map { AppSkills.playbook(for: $0, goal: task) },
+                                       manual: appManual?.state,
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
                                        conversation: context.conversation, userContext: userContext,
                                        userMoves: moves.isEmpty ? nil : moves,

@@ -16,7 +16,8 @@ import Foundation
 /// third-party app that people install *instead* (Spotify) comes before the
 /// Apple app it replaces — a running app wins either way.
 extension AppSkills {
-    static let all: [AppSkill] = native + web
+    /// The hand-written skills. `all` adds the generated ones (`GeneratedSkillStore`).
+    static let library: [AppSkill] = native + web
 
     // Shared wording, so Jev sees the same phrasing across apps.
     static let sendMessageDone = "the message appears as the newest bubble at the bottom of the conversation and the message field is empty again"

@@ -46,7 +46,7 @@ log stream --predicate 'subsystem == "com.liamcarlin.navi"' --level debug
 | `Navi/Providers` | HTTP clients | `JevClient` (TypeSafe System One), `ClaudeClient` (Messages API, streaming + tool loops), `GeminiClient` (optional cheap vision) |
 | `Navi/Router` | query → intent → results | `QueryRouter`, `AnswerService`, `AppIndex`, `FileSearch`, `Calculator`, `SystemCommands` |
 | `Navi/Panel` | the ⌘Space UI | `PanelController` (NSPanel), `PanelViewModel` (state machine), `HotKeyManager`, `Views/*` |
-| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserPaths` (their own path from where a run starts to the task's target, from every click: the primary plan), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types) |
+| `Navi/Agent` | computer use | `ComputerAgent` (native loop after typesafe-computer-use, `TypesafeCU/*`; Claude-only `computer_toolset_20260801` loop as the alternative driver), `ScreenCapture`, `InputController` (CGEvent/AX), `AgentTools`, `AgentTarget` (the pinned app in background mode), `AppSkills` (per-app playbooks Jev reads), `AgentExperience` (what worked before, per app), `UserHabits` (how this user works, from screen memory), `UserKnowledge` (their people, projects, documents — where each lives), `UserContacts` (how they reach each person: the app they open that chat in, the email address they use), `TaskGrounding` (what a task's words point at in their own work: "the last assignment I did" → that page), `WorkingSurface` (where recent runs worked — tab/app, task, outcome — so follow-ups continue there), `UserMoves` (what they click, their shortcuts and procedures, per app/site/page), `UserRoutines`/`UserRoute` (their own routine for this task, followed step by step), `UserPaths` (their own path from where a run starts to the task's target, from every click: the primary plan), `UserCard` (their own address/ZIP/name from My Card, for their errands' form fields), `TypingSounds` (key clicks while Navi types), `AppManual` (the app's own menu-bar commands, read from the app, cached per version), `AppUse` (how this user works an app, from the journal), `SkillSynthesizer`/`GeneratedSkillStore` (playbooks Navi writes for apps the library lacks, refined by runs), `AppKnowledge` (prepared while typing) |
 | `Navi/Schedule` | the scheduler card (⌘Space drop-down) | `ScheduleParser`/`ScheduleRequest` (query → people, day, time, length), `SchedulePlanner` (free slots, suggestions), `ScheduleDirectory` (Contacts), `ScheduleCalendar` (EventKit + Calendar AppleScript for guests), `SchedulerModel` |
 | `Navi/Remind` | the reminder card (⌘Space drop-down) | `ReminderParser`/`ReminderRequest` (query → task, due, repeat, priority), `ReminderPlanner` (quick due chips), `ReminderStore` (EventKit reminders), `ReminderModel` |
 | `Navi/Memory` | screen memory | `MemoryService`, `CaptureScheduler`, `OCR` (Vision), `ActionJournal` (the user's own clicks, shortcuts, where they type), `MemoryStore` (SQLite FTS5), `Digester` (operational: goal, steps, habits, the actions that did it → procedures), `RoutineMiner` (procedures + actions → routines the agent can carry out), `VaultWriter` (Obsidian markdown), `Recall` |
@@ -113,6 +113,26 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     implies ("text mom" → Messages) when no planner runs, and `AppSkills.startURL`
     turns "play X on youtube" into the results page. When a new app misbehaves, add or
     fix its skill first; run the live A/B probe (see memory notes) before trusting it.
+  - **Apps Navi has never seen** (`Agent/AppManual`, `Agent/SkillSynthesizer`, `Agent/AppUse`; design in
+    docs/UNFAMILIAR_APPS.md): Jev only sees the screen, so an app with no playbook used to be trial and error
+    (bench 2026-11-01: Onshape "export the bowl as an stl" BLOCKED at once and restarted on Google; "make a new
+    part studio" clicked the feature list's new-folder ×3). Now (1) the app's **menu bar is its manual**: read once
+    per app version through AX (`AppManualStore`, ≤ 800 commands, on disk), and every native step offers the
+    commands whose titles/menus carry the goal's words (+ synonyms: export/save as/download, measure/inspect…) as
+    `press_offscreen` candidates ("menu item ‘File › Export…’ (a command in the app's menu bar; shortcut ⇧⌘E)"),
+    pressed through AX by title without opening the menu (shortcut as fallback); the generic combos are
+    re-described with the app's meaning ("cmd+n: File › New Design (Fusion)"); a command with a generic combo is
+    a shortcut, every other one an off-screen press (mutual exclusivity). (2) **Generated playbooks**: an app or
+    site with no `AppSkill` gets one written by Claude (structured output, once, ~5 s, prefetched while typing by
+    `AppKnowledge.prepare` for the app in front / a running app the task names) from its name, manual, one
+    snapshot's labels and the user's own use; `GeneratedSkillStore` keeps them under `Application Support/Navi/
+    skills/`, `AppSkills.all` = library + generated (library wins), aliases/triggers reach routing. A generated
+    playbook with no recipe for the goal gets one (Haiku, stored). (3) **The user's own use grows both**
+    (`AppUse`, from `ActionJournal` + routines, no new recording): their commands rank first among the manual's,
+    their shortcuts and routines go into the playbook, the synthesizer's packet carries
+    `how_this_user_works_here`. (4) **Runs refine the file**: achieved ⇒ a `learned` recipe; not ⇒ the matching
+    recipe's `failed` + an `avoid` line; two failures without a success withdraw it. Web skills reach the runner
+    via `NAVI_PLAYBOOKS_JSON` from the run after the one that wrote them. Tests: `NaviTests/AppManualTests.swift`.
   - **Recipients are contacts, not text** (`Agent/RecipientPicker`; runner adaptation 18):
     after TYPE_TEXT into To/Cc/Bcc/invitees the driver waits for the app's suggestion list
     (~0.5 s, fills in stages), picks the entry for the name (a person over a group that

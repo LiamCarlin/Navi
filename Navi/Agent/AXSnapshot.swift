@@ -49,6 +49,9 @@ struct AXElement: @unchecked Sendable {
     var inRow: Bool = false
     /// A text input's placeholder ("Search", "iMessage"): what it shows when empty — never its value.
     var placeholder: String = ""
+    /// A menu-bar command from the app's manual (`AppManual`): its key equivalent, the fallback
+    /// when the AX press is refused. nil for everything else.
+    var menuShortcut: String?
     /// Live reference; nil in tests.
     var ref: AXUIElement?
 
