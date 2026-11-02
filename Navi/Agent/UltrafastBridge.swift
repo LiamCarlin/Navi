@@ -442,12 +442,14 @@ enum UltrafastBridge {
     /// The policy of the most recent run (set in `runOnce`), for `run`'s reveal.
     nonisolated(unsafe) private static var lastTabPolicy = "keep"
 
+    /// Browsers the CDP runner drives.
+    static let chromiumBrowsers = ["com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.edgemac"]
+
     /// The runner works in its own Chrome tab; make Chrome frontmost so the
     /// user watches the task happen instead of wondering what the new tab is.
     @MainActor
     static func bringBrowserForward() {
-        let chrome = ["com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.edgemac"]
-        for bid in chrome {
+        for bid in chromiumBrowsers {
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first {
                 app.activate()
                 return
@@ -710,6 +712,12 @@ enum UltrafastBridge {
                         desc += " (no change)"
                     }
                     handle.emit(.step(index: stepIndex, description: desc))
+                case "pointer":
+                    // Where the runner is about to click, in screen points (only for a tab the user can see).
+                    if let x = json["x"] as? Double, let y = json["y"] as? Double {
+                        NaviCursor.show(at: CGPoint(x: x, y: y), on: .bundleIDs(Self.chromiumBrowsers),
+                                        clicking: json["click"] as? Bool ?? true)
+                    }
                 case "screenshot":
                     if let b64 = json["jpeg_base64"] as? String, let d = Data(base64Encoded: b64), let img = NSImage(data: d) {
                         handle.emit(.screenshot(img))

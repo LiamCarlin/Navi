@@ -223,7 +223,16 @@ final class InputController: @unchecked Sendable {
         return CGEvent(source: nil)?.location ?? .zero
     }
 
+    /// Whose window the logo cursor (`NaviCursor`) sits on for this route.
+    private var cursorOwner: NaviCursor.Owner {
+        switch route {
+        case .hid: return .anyone
+        case .process(let pid, let window): return window.map { .window($0) } ?? .pid(pid)
+        }
+    }
+
     func move(to p: CGPoint) async {
+        NaviCursor.show(at: p, on: cursorOwner)
         post(mouse(.mouseMoved, at: p, button: .left))
         await sleep(ms: 20)
     }
@@ -231,6 +240,7 @@ final class InputController: @unchecked Sendable {
     func click(at p: CGPoint?, button: MouseButton = .left, count: Int = 1, flags: CGEventFlags = []) async {
         let point = p ?? cursorPosition
         if p != nil { await move(to: point) }
+        NaviCursor.show(at: point, on: cursorOwner, clicking: true)
         let (down, up, cgButton) = types(for: button)
         for n in 1...max(1, count) {
             let d = mouse(down, at: point, button: cgButton)
@@ -247,6 +257,7 @@ final class InputController: @unchecked Sendable {
     func mouseDown(at p: CGPoint?) async {
         let point = p ?? cursorPosition
         if p != nil { await move(to: point) }
+        NaviCursor.show(at: point, on: cursorOwner, clicking: true)
         post(mouse(.leftMouseDown, at: point, button: .left))
         await sleep(ms: 30)
     }
@@ -266,6 +277,7 @@ final class InputController: @unchecked Sendable {
             let t = CGFloat(i) / CGFloat(steps)
             let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
             post(mouse(.leftMouseDragged, at: p, button: .left))
+            if i % 4 == 0 { NaviCursor.show(at: p, on: cursorOwner) }
             await sleep(ms: 16)
         }
         await sleep(ms: 60)
