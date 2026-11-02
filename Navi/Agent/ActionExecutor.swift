@@ -225,6 +225,17 @@ final class ActionExecutor: @unchecked Sendable {
 
     // MARK: Suggestions (RecipientPicker)
 
+    /// Keeps the field's app active while its suggestions are looked up and picked (background
+    /// mode only: in the foreground it already is). Pair with `endSuggestions`.
+    func beginSuggestions(pid: pid_t) async -> NSRunningApplication? {
+        guard isBackground else { return nil }
+        return await input.beginActivation(pid: pid)
+    }
+
+    func endSuggestions(_ previous: NSRunningApplication?) async {
+        await input.endActivation(previous)
+    }
+
     /// Return to the field's app: commits the suggestion it highlights.
     func pressReturn(pid: pid_t) async {
         if !isBackground { await activate(pid: pid) }

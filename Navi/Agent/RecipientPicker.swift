@@ -100,14 +100,19 @@ enum RecipientPicker {
     /// A person entry: "Name, <phone or email>, …" ("Mikey Ku, +1 (774) 578-8428, Text Message").
     /// Only the part right after the name counts — a group lists members and
     /// may carry an unsaved member's number further on ("Mikey, Bhar, …, +14257800416").
+    /// The part must be the handle itself: "Jonathan, Kieran & +1 (925) 548-3198" is a group whose
+    /// last member is a number, not Jonathan's phone (live 2026-11-02: that group was picked for "Jonathan").
     static func hasHandle(_ label: String) -> Bool {
         let p = parts(label)
-        guard p.count >= 2 else { return false }
-        return p[1].contains("@") || p[1].filter(\.isNumber).count >= 7
+        guard p.count >= 2, !p[0].contains("&") else { return false }
+        let h = p[1]
+        return !h.contains("&") && (h.range(of: #"^[^@\s]+@[^@\s]+$"#, options: .regularExpression) != nil || looksLikeAddress(h))
     }
 
-    /// Several people in one entry ("Mikey, Dhvan & David", "Bhar, Mikey, Zach, Kilan…").
+    /// Several people in one entry ("Mikey, Dhvan & David", "Bhar, Mikey, Zach, Kilan…",
+    /// "Jonathan, Kieran & +1 (925) 548-3198").
     static func isGroup(_ label: String) -> Bool {
+        if MessageAudience.isGroupConversation(label) { return true }
         if hasHandle(label) { return false }
         return label.contains("&") || parts(label).count >= 3
     }
@@ -147,9 +152,11 @@ enum RecipientPicker {
         // prefixes ("Theo Gangi"). A group's "name" may just be its first member
         // ("Mikey, Bhar, Zach…"), so for a group only an exact name of 2+ words counts.
         let namedGroup = group && typedExactly && typedWords.count >= 2
-        if wholeName, !group || namedGroup { s += typedExactly ? 3 : 1 }
+        // A name is never a group that merely lists that person: "Jonathan" is not "Jonathan, Kieran & +1",
+        // even when nothing else came up — sending there would text the others too.
+        if group, !namedGroup { return nil }
+        if wholeName { s += typedExactly ? 3 : 1 }
         if hasHandle(label) { s += 1 }                                     // a person with a number/email
-        if group, !namedGroup { s -= 2 }                                   // not a group, unless it is all that matches
         if isSelected { s += 0.5 }                                         // the app's own best guess
         let fullName = fold(name(of: label))
         if !recent.isEmpty, fullName.count >= 3, recent.contains(fullName) { s += 0.75 }
@@ -185,6 +192,8 @@ enum RecipientPicker {
         case noMatch([String])
         /// Picked, but the list stayed open — the pick may not have taken.
         case unconfirmed(String)
+        /// The pick put several people in the field (a group conversation): never what one name means.
+        case addedSeveral(String, Int)
 
         /// Appended to the step's history entry, so Jev (and the coach) know the recipient is set.
         func note(typed: String) -> String {
@@ -194,6 +203,7 @@ enum RecipientPicker {
             case .noSuggestions: return " → error: no contact suggestion came up for ‘\(typed)’ (recipient NOT set)"
             case .noMatch(let seen): return " → error: no suggestion matches ‘\(typed)’ (saw: \(seen.prefix(3).joined(separator: "; "))) — recipient NOT set"
             case .unconfirmed(let n): return " → clicked the suggestion ‘\(n)’ but the list stayed open"
+            case .addedSeveral(let n, let k): return " → error: the suggestion ‘\(n)’ added \(k) people (a group), not one person — recipient NOT set"
             }
         }
 
@@ -207,7 +217,7 @@ enum RecipientPicker {
         /// No contact is behind the name: in a messaging/email app the run stops here.
         var stopsContactApp: Bool {
             switch self {
-            case .noSuggestions, .noMatch: return true
+            case .noSuggestions, .noMatch, .addedSeveral: return true
             default: return false
             }
         }
@@ -218,6 +228,8 @@ enum RecipientPicker {
             switch self {
             case .noMatch(let seen) where !seen.isEmpty:
                 return "Typed ‘\(typed)’ into \(field)\(where_), but none of the suggestions (\(seen.prefix(3).joined(separator: ", "))) is that person, so I stopped before writing anything. Say their full name, number or email."
+            case .addedSeveral(let n, let k):
+                return "Typed ‘\(typed)’ into \(field)\(where_), but the suggestion ‘\(n)’ is a group of \(k) people, not just them, so I stopped before writing anything. Say their full name, number or email."
             default:
                 return "Typed ‘\(typed)’ into \(field)\(where_), but no matching contact came up, so I stopped before writing anything. Say their full name, number or email."
             }

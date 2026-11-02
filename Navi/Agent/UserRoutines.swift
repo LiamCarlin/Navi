@@ -424,7 +424,11 @@ final class UserRoutines: @unchecked Sendable {
         let routinePlaces = reach.map { named.union([$0]) } ?? named
         // What the task points at in the user's own work (usually settled while typing), in parallel.
         async let grounding = cached ? TaskGrounding.ground(task: task, timeout: 1.0) : TaskGrounding.ground(task: task, memory: memory, jev: jev)
-        let cs = candidates(task: task, routines: routines, places: implied, named: routinePlaces)
+        // A message for one person: a routine that went through a group conversation that lists them
+        // ("Jonathan & +1") is another task (live 2026-11-02, "send a message to only jonathan").
+        let onePerson = MessageAudience.isOnePerson(task)
+        let usable = onePerson ? routines.filter { !Self.passesGroupChat($0.steps) } : routines
+        let cs = candidates(task: task, routines: usable, places: implied, named: routinePlaces)
         var result: Match?
         if !cs.isEmpty {
             if let jev, jev.isConfigured {
@@ -454,12 +458,18 @@ final class UserRoutines: @unchecked Sendable {
             let t0 = Date()
             // The people it names by their full name ("mikey" → "Mikey Ku"): their own chat, not a group listing them.
             let people = (memory?.knowledge.matches(for: task) ?? []).filter { $0.thing.type == "person" }.prefix(2).map(\.thing.name)
-            let plan = paths.plan(task: task, grounded: g, places: implied, named: reach.map { [$0] } ?? named, people: Array(people))
+            var plan = paths.plan(task: task, grounded: g, places: implied, named: reach.map { [$0] } ?? named, people: Array(people))
+            if onePerson, let p = plan, MessageAudience.isGroupConversation(p.target) || Self.passesGroupChat(p.steps) { plan = nil }
             if let plan { Log.agent.info("UserPaths: \(plan.source, privacy: .public) path, \(plan.steps.count) steps, support \(plan.support) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms") }
             result = choose(routine: result, path: plan, task: task)
         }
         if cached { store(result, for: task) }
         return result
+    }
+
+    /// Does a routine or path click a group conversation on the way (its row, Messages' "New Message to A, B & …")?
+    static func passesGroupChat(_ steps: [RoutineStep]) -> Bool {
+        steps.contains { $0.kind == .click && MessageAudience.isGroupConversation($0.label) }
     }
 
     /// A routine of theirs for this very task done more than once (in the path's place) wins;
@@ -522,6 +532,9 @@ struct UserRoute: Sendable {
     var pattern = false
     /// The whole usual way, for Jev (`their_path`).
     var theirPath: [String] = []
+    /// The task messages one person (`MessageAudience.isOnePerson`): a group conversation that lists
+    /// them is never their step's control ("Jonathan & +1" is not Jonathan's chat).
+    var avoidGroupChats = false
 
     static let lookahead = 2
     static let maxFollowed = 10
@@ -605,8 +618,9 @@ struct UserRoute: Sendable {
         let step = steps[i]
         guard [.click, .type].contains(step.kind), isHere(step, screen) else { return [] }
         let wantsField = step.kind == .type
-        var pool = screen.snapshot.elements.filter { labelMatches(step, $0.label) && $0.isTextInput == wantsField && !$0.isSecure }
-        if pool.isEmpty, !wantsField { pool = screen.offscreen.filter { labelMatches(step, $0.label) && !$0.isTextInput } }
+        let allowed: (AXElement) -> Bool = { !avoidGroupChats || !MessageAudience.isGroupConversation($0.label) }
+        var pool = screen.snapshot.elements.filter { labelMatches(step, $0.label) && $0.isTextInput == wantsField && !$0.isSecure && allowed($0) }
+        if pool.isEmpty, !wantsField { pool = screen.offscreen.filter { labelMatches(step, $0.label) && !$0.isTextInput && allowed($0) } }
         guard pool.count > 1 else { return pool }
         // The same role, then the same container, then the most slot words.
         let sameRole = pool.filter { Self.roleWord($0) == step.role }
@@ -644,7 +658,8 @@ struct UserRoute: Sendable {
                 return screen.offscreen.contains(where: { $0.id == t[0].id }) ? .press(elementID: t[0].id) : .click(elementID: t[0].id)
             }
             // A line of text with no control of its own, named exactly (a fixed step only).
-            guard t.isEmpty, step.slot == nil, !pattern, isHere(step, screen), let it = CUFacts.literalItem(step.label, in: screen.items) else { return nil }
+            guard t.isEmpty, step.slot == nil, !pattern, isHere(step, screen), let it = CUFacts.literalItem(step.label, in: screen.items),
+                  !avoidGroupChats || !MessageAudience.isGroupConversation(it.text) else { return nil }
             if let id = screen.elementForItem[it.index] { return .click(elementID: id) }
             return .clickPoint(x: Double(it.center.x), y: Double(it.center.y), label: it.text)
         }

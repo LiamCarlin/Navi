@@ -166,6 +166,11 @@ enum CUWriter {
             "screen_text_in_reading_order": screen.items.map(\.text),
         ]
         p.merge(guidance.state()) { a, _ in a }
+        // A message for one person, judged in a group conversation, is not achieved.
+        if var m = MessageAudience.fact(task: goal, person: nil) {
+            if let title = screen.snapshot.windowTitle, MessageAudience.isGroupConversation(title) { m["open_conversation_is_a_group"] = title }
+            p["message_to"] = m
+        }
         if !earlierStops.isEmpty { p["earlier_stops"] = earlierStops }
         if !earlier.isEmpty { p["earlier_screens"] = earlier }
         if !conversation.isEmpty { p["conversation"] = conversation }

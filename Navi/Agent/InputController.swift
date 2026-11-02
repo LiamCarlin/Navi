@@ -381,6 +381,34 @@ final class InputController: @unchecked Sendable {
         return activated
     }
 
+    /// Brings `pid` forward for something that only works while the app is active, and returns
+    /// the app to hand activation back to (`endActivation`). Messages' To: suggestion list is a
+    /// panel that hides while Messages is inactive: typed into in the background, a name never
+    /// shows a contact to pick (live 2026-11-02: "no contact suggestion came up for ‘Jonathan’"
+    /// on the two runs whose ⌘N had handed focus back, a pick on the two that found Messages in front).
+    /// Nil when nothing needs handing back (the app was already in front, or not in `.process` mode).
+    func beginActivation(pid: pid_t) async -> NSRunningApplication? {
+        guard case .process = route else { return nil }
+        let (previous, activated): (NSRunningApplication?, Bool) = await MainActor.run {
+            let prev = NSWorkspace.shared.frontmostApplication
+            guard prev?.processIdentifier != pid, let app = NSRunningApplication(processIdentifier: pid) else { return (nil, false) }
+            return (prev, app.activate())
+        }
+        guard activated else { return nil }
+        for _ in 0..<15 {
+            if await MainActor.run(body: { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }) { break }
+            await sleep(ms: 20)
+        }
+        return previous
+    }
+
+    /// Hands activation back to the app the user was in (`beginActivation`).
+    func endActivation(_ previous: NSRunningApplication?) async {
+        guard let previous else { return }
+        await sleep(ms: 40)
+        _ = await MainActor.run { previous.activate() }
+    }
+
     func hold(_ combo: KeyCombo, seconds: Double) async {
         let down = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: true)
         down?.flags = combo.flags
