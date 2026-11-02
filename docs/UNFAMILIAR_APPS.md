@@ -204,6 +204,18 @@ Chrome CDP runner (its own judge decides; `NAVI_PLAN_JSON` would carry the ledge
 learned recipe by code; cloud sharing. None of this is live-tested yet: the next step is the task
 bench's tier 4–5 scenarios and an unfamiliar-app set (Fusion, Blender, Onshape).
 
+## First live run (2026-11-02)
+
+"export the yarn bowl as an stl", typed over the Wing document in Onshape: the run stayed in the Wing
+tab, typed "yarn bowl" into the document's part filter and ended "no part named yarn bowl". Two
+causes: the planner keeps a site's task on the site's open tab, and the Yarn Bowl document was 32 days
+old — outside `UserKnowledge`'s 30-day window, so nothing said the task names a document of the user's.
+A second run showed the re-plan working but its new step was a Google search for the whole sentence,
+and an early BLOCKED on cad.onshape.com restarted at www.onshape.com. All five are fixed (see
+CLAUDE.md, "First live run"); the Onshape playbook Navi wrote during that run is at
+`Application Support/Navi/skills/host_onshape.com.json` (8 recipes, none for export — the per-goal
+recipe now arrives before the runner starts).
+
 ## Build order
 
 1. `AppManual` + manual items as `press_offscreen` + manual shortcuts on the KEY head. ~1 day.

@@ -137,6 +137,14 @@ struct AppSkillsTests {
         // Food from no named place: a delivery site, searched for the food (was a Google search for the sentence).
         #expect(UltrafastBridge.freshStart(for: "order me a burger", after: "https://canvas.olin.edu/courses/1079") == "https://www.doordash.com/search/store/burger")
         #expect(UltrafastBridge.freshStart(for: "what's the weather in boston", after: "https://canvas.olin.edu/courses/1079").hasPrefix("https://www.google.com/search"))
+        // A run that starts on the user's own page, or already on the task's own site, stays there when Jev
+        // finds nothing at first (schoolwork-022 left the Onshape Part Studio for Google; cad.onshape.com → www.onshape.com).
+        let bowl = "https://cad.onshape.com/documents/ddd/w/eee/e/fff"
+        #expect(UltrafastBridge.staysOnStartPage(task: "export the yarn bowl as an stl", first: bowl, ownPage: bowl))
+        #expect(!UltrafastBridge.staysOnStartPage(task: "export the yarn bowl as an stl", first: "https://canvas.olin.edu/", ownPage: bowl))
+        #expect(UltrafastBridge.staysOnStartPage(task: "order me a big mac on mcdonalds", first: "https://mcdonalds.order.online/menu", ownPage: nil))
+        #expect(!UltrafastBridge.staysOnStartPage(task: "go to mcdonalds and order me a burger", first: "https://canvas.olin.edu/courses/1079", ownPage: nil))
+        #expect(!UltrafastBridge.staysOnStartPage(task: "what's the weather in boston", first: "https://www.google.com/search?q=weather", ownPage: nil))
         // Planned browser steps and the planner-less path both use it.
         #expect(TaskSurface.startURL(task: "watch the new trailer on youtube", frontmost: FrontmostProbe.Info(bundleID: nil, appName: nil)) == "https://www.youtube.com/results?search_query=new%20trailer")
         var step = TaskPlanner.Step(surface: .browser, goal: "on youtube play lofi beats")

@@ -141,6 +141,16 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     short (not_achieved/partial) re-plans the remaining steps from the screen as it is now, once per run
     (`TaskPlanner.replan`: steps done + findings, the failed step + what happened, `screen_now`), never redoing a done
     step. Not on the Chrome CDP runner's steps yet. Tests: `NaviTests/PlanLedgerTests.swift`.
+    **First live run (2026-11-02, "export the yarn bowl as an stl" over the Wing doc):** the run worked in the
+    Onshape document in front, not the Yarn Bowl. Fixes: `ScreenInFront.ownWork` — the page of the user's own
+    thing the task names (`UserKnowledge.liveStartURL`) wins over the tab in front, even on the same site, unless
+    the task points at the screen; `UserKnowledge.longWindow` (180 days) — a document or project named outright
+    is still theirs after the 30-day window (`matchesIncludingOlder`; the Yarn Bowl was 32 days old);
+    `UltrafastBridge.staysOnStartPage` — a run starting on the user's own page or already on the task's site never
+    restarts on a search (cad.onshape.com had restarted at www.onshape.com); `TaskPlanner.continueOnScreen` — a
+    re-planned first browser step with no page (or a web search for the sentence) continues on the tab it was
+    planned from; `SkillSynthesizer.recipeBeforeRun` — a site with a generated playbook but no recipe for the goal
+    gets one (≤ 2.5 s wait) before the Chrome runner starts.
   - **Recipients are contacts, not text** (`Agent/RecipientPicker`; runner adaptation 18):
     after TYPE_TEXT into To/Cc/Bcc/invitees the driver waits for the app's suggestion list
     (~0.5 s, fills in stages), picks the entry for the name (a person over a group that

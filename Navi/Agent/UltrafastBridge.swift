@@ -375,8 +375,14 @@ enum UltrafastBridge {
         // finding nothing to do on it is no reason to start over on a search for the sentence (the old
         // "What Happens When You Don't Skip the Ads" video) — the judge says what is wrong instead.
         let aboutThisTab = staysOnAttachedTab(task: task, attachURL: attachURL)
+        // A run that starts on the user's own page (the Yarn Bowl document) or already on the task's own site
+        // (cad.onshape.com → www.onshape.com) has nowhere better to start over: the judge and a takeover act there.
+        let startsWhereItBelongs = staysOnStartPage(task: task, first: first, ownPage: UserKnowledge.liveStartURL(for: task))
+        // A site Navi wrote the playbook for but has no recipe for this goal: one is written now (≤ 2.5 s)
+        // so the runner starts with it, not on the run after.
+        await SkillSynthesizer.recipeBeforeRun(task: task, url: first)
         var (outcome, text) = await runOnce(task: task, url: first, handle: handle, maxSteps: maxSteps, screenshots: screenshots,
-                                            allowEarlyBlockRetry: first != search && !aboutThisTab, background: background,
+                                            allowEarlyBlockRetry: first != search && !aboutThisTab && !startsWhereItBelongs, background: background,
                                             openedIsDone: navigationOnly, attachURL: attachURL, mayAsk: mayAsk)
         if outcome == .blockedBeforeActing {
             // Jev found nothing useful on the starting page (e.g. an unrelated tab). Start over
@@ -430,6 +436,17 @@ enum UltrafastBridge {
     static func staysOnAttachedTab(task: String, attachURL: String?) -> Bool {
         guard let url = attachURL, url.hasPrefix("http") else { return false }
         return !ScreenInFront.namesOtherWebPlace(task, frontURL: url)
+    }
+
+    /// Does a run that starts on `first` stay there when Jev finds nothing to do at first? Yes when `first`
+    /// is the page of the user's own thing the task names (`ownPage`: grounding / `UserKnowledge`), or
+    /// when the fresh start would land on the same site anyway (bench schoolwork-022: the Onshape Part
+    /// Studio was left for Google; 2026-11-02: cad.onshape.com restarted at www.onshape.com). Pure.
+    static func staysOnStartPage(task: String, first: String, ownPage: String?) -> Bool {
+        guard first.hasPrefix("http"), !TaskPlanner.isWebSearch(first) else { return false }
+        if let own = ownPage, TaskPlanner.samePage(own, first) { return true }
+        let fresh = freshStart(for: task, after: first)
+        return !TaskPlanner.isWebSearch(fresh) && ScreenInFront.sameSite(ScreenInFront.host(fresh), ScreenInFront.host(first))
     }
 
     /// Where a task starts when the page it was given had nothing for it: the page or site the

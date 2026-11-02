@@ -178,4 +178,37 @@ import Testing
         #expect(md.contains("[[HCI Team Notes]]") && md.contains("[open](https://docs.google.com/document/d/1AfP/edit)"))
         #expect(!md.contains("private summary"))
     }
+
+    // MARK: A document named outright, from before the short window
+
+    @Test func aDocumentNamedOutrightIsStillTheUsersOwnAfterTheShortWindow() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("navi-knowledge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try MemoryStore(directory: dir)
+        let bowl = "https://cad.onshape.com/documents/32e3/w/d02c/e/ecd7"
+        let wing = "https://cad.onshape.com/documents/a01c/w/bbb/e/ccc"
+        let now = Date()
+        func add(_ url: String, daysAgo: Double, _ name: String) throws {
+            let start = now.addingTimeInterval(-daysAgo * 86_400)
+            _ = try store.insertSession(SessionRecord(start: start, end: start.addingTimeInterval(300), bundleID: "com.google.Chrome", appName: "Google Chrome",
+                                                      url: url, title: "\(name) | Part Studio 1", summary: "s", topics: [], entities: [EntityRef(name: name, type: "project")]))
+        }
+        // The Yarn Bowl was worked on 32–34 days ago; the Wing every day this week.
+        for d in [32.0, 33, 34] { try add(bowl, daysAgo: d, "Yarn Bowl") }
+        for d in [0.5, 1, 2] { try add(wing, daysAgo: d, "Wing") }
+        let k = UserKnowledge(store: store)
+        #expect(k.matches(for: "export the yarn bowl as an stl").isEmpty)
+        let older = k.matchesIncludingOlder(for: "export the yarn bowl as an stl")
+        #expect(older.first?.thing.name == "Yarn Bowl" && older.first?.thing.url == bowl)
+        #expect(UserKnowledge.startURL(for: "export the yarn bowl as an stl", knowledge: k) == bowl)
+        // Something of this week stays first and needs no older look; a person never comes from the older set.
+        #expect(UserKnowledge.startURL(for: "open the wing", knowledge: k) == wing)
+        #expect(k.matchesIncludingOlder(for: "open the wing").allSatisfy { $0.thing.name == "Wing" })
+        // Nothing older than the long window.
+        try add("https://cad.onshape.com/documents/old/w/x/e/y", daysAgo: 200, "Ancient Gear")
+        try add("https://cad.onshape.com/documents/old/w/x/e/y", daysAgo: 201, "Ancient Gear")
+        k.invalidate()
+        #expect(k.matchesIncludingOlder(for: "open the ancient gear").isEmpty)
+    }
 }

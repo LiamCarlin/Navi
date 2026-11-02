@@ -463,8 +463,12 @@ final class AgentRun: @unchecked Sendable {
             if let plan {
                 // The screen in front wins when the task points at it ("add 2 of these", "pause the video",
                 // "open my cart" on a store, "the scores on page 2" over a PDF) — not the last run's tab.
-                let anchored = ScreenInFront.anchor(plan, task: originalTask, frontmost: front)
+                var anchored = ScreenInFront.anchor(plan, task: originalTask, frontmost: front)
                 if anchored != plan { Log.agent.info("ScreenInFront: first step moved onto \(front.appName ?? front.bundleID ?? "?", privacy: .public)") }
+                // …but the user's own thing the task names ("the yarn bowl") is opened at its own page,
+                // not worked on in whatever document of that site is in front.
+                let own = ScreenInFront.ownWork(anchored, task: originalTask, frontmost: front, ownPage: UserKnowledge.liveStartURL(for: originalTask))
+                if own != anchored { Log.agent.info("UserKnowledge: first step moved to the page of the thing the task names"); anchored = own }
                 return (front, anchored)
             }
             Log.agent.warning("TaskPlanner returned no usable plan; classifying the surface with Jev")
@@ -706,6 +710,8 @@ final class AgentRun: @unchecked Sendable {
         /// The last step ran on the native driver (an app, or a browser driven natively).
         var lastStepNative = false
         var i = 0
+        /// The screen the next step starts from: the one the task was typed over, or the one it was re-planned from.
+        var frontmost = frontmost
         defer { ledger = nil }
         while i < plan.steps.count {
             var step = plan.steps[i]
@@ -821,6 +827,7 @@ final class AgentRun: @unchecked Sendable {
                     if let fresh = try? await TaskPlanner.replan(task: originalTask, ledger: current, failure: msg, verdict: v, screen: now,
                                                                  screenText: text, claude: claude) {
                         replans += 1
+                        frontmost = now
                         plan.steps.replaceSubrange(i..., with: fresh.steps)
                         plan.source = fresh.source
                         let lines = fresh.steps.enumerated().map { j, s in
