@@ -544,6 +544,20 @@ struct UserRoute: Sendable {
         return fills.isEmpty ? RoutineMiner.tokens(slot) : fills
     }
 
+    /// Does the routine belong where this step works? One of its steps is in this app (on the web:
+    /// this site), or it opens this app. A planner step in Messages never carries the Outlook web
+    /// "New mail" path of the whole task (2026-11-02: `this_users_way` said "click ‘New mail’" while
+    /// Jev was writing a text).
+    static func fits(_ routine: Routine, bundleID: String?, appName: String?, url: String?) -> Bool {
+        let site = url.flatMap(UserHabits.siteKey(of:))
+        let clean: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+        return routine.steps.contains { step in
+            if step.kind == .open { return !clean(step.label).isEmpty && clean(step.label) == clean(appName ?? "") }
+            if let s = step.site { return site.map { PathGraph.Scope.samePlace($0, s) } ?? false }
+            return !step.bundleID.isEmpty && step.bundleID == bundleID
+        }
+    }
+
     // MARK: Finding a step on screen
 
     static func sameApp(_ name: String, _ screen: CUScreen) -> Bool {

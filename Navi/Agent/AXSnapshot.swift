@@ -164,6 +164,66 @@ struct AXSnapshot: @unchecked Sendable {
     /// now, the rest after every other region (a 600-note sidebar no longer eats the time box
     /// before the editor next to it).
     static let wideContainer = 12
+    /// The sweep for a field to write in after a walk that ran out of time without one (Messages:
+    /// the transcript's bubbles ate the box, the message box comes after it): extra time, how deep,
+    /// how many children of each container, how many inputs.
+    static let inputSweepSeconds = 0.1
+    static let inputSweepDepth = 8
+    static let inputSweepWidth = 24
+    static let inputSweepFinds = 3
+    /// Roles whose children the sweep never opens: no field to write in lives inside them.
+    static let leafRoles: Set<String> = ["AXStaticText", "AXImage", "AXButton", "AXLink", "AXCheckBox", "AXRadioButton",
+                                         "AXMenuButton", "AXPopUpButton", "AXSlider", "AXTextArea", "AXTextField"]
+
+    /// A text area's value that its own container already speaks — the cell of a chat bubble is
+    /// named “Your iMessage, Here, 12:36 AM” around the bubble's “Here” — is text shown, not a
+    /// field to type into: a field's contents are never part of its container's name.
+    static func echoedByContainer(_ value: String, context: String) -> Bool {
+        let v = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        guard v.count >= 2, !context.isEmpty else { return false }
+        func fold(_ s: String) -> String {
+            s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .replacingOccurrences(of: "’", with: "'").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        return fold(context).contains(fold(String(v.prefix(40))))
+    }
+
+    /// The two nearest container names, newest last, each ≤ 300 characters.
+    static func nestedContext(_ context: String, _ label: String) -> String {
+        let last = context.components(separatedBy: "\n").last ?? ""
+        return [last, String(label.prefix(300))].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    /// Whether the walk found a field a message, note or answer can be written in: a text input
+    /// that is not a search box and holds no chips (a To: field holding its recipient is done).
+    static func hasWritableInput(_ elements: [AXElement]) -> Bool {
+        elements.contains { e in
+            guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(e.role) else { return false }
+            let words = (e.label + " " + e.placeholder).lowercased()
+            return !words.contains("search") && !(e.value ?? "").contains("\u{FFFC}")
+        }
+    }
+
+    /// A field's chips: To: in Messages/Mail holds each recipient as U+FFFC drawn as a pill, a pop-up
+    /// button inside the field (“Dhvan Shah, +1…”). The value names them — ‹Dhvan Shah› — so Jev
+    /// reads the recipient as set instead of an unreadable character, and never types it again.
+    static func namingChips(_ elements: [AXElement]) -> [AXElement] {
+        elements.map { e in
+            guard e.isTextInput, let value = e.value, value.contains("\u{FFFC}") else { return e }
+            let box = e.frame.insetBy(dx: -2, dy: -2)
+            let pills = elements.filter { p in
+                (p.role == "AXPopUpButton" || p.role == "AXButton") && !p.label.isEmpty && box.contains(CGPoint(x: p.frame.midX, y: p.frame.midY))
+            }.sorted { ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX) }
+            var names = pills.map { p in p.label.components(separatedBy: ", ").first ?? p.label }[...]
+            var out = ""
+            for ch in value {
+                if ch == "\u{FFFC}" { out += "‹" + (names.popFirst() ?? "contact") + "›" } else { out.append(ch) }
+            }
+            var e = e
+            e.value = String(out.prefix(60))
+            return e
+        }
+    }
 
     /// Cheap fingerprint (focused app, window title, focused element role/value)
     /// used to detect that an action had an effect without a full walk.
@@ -576,6 +636,9 @@ final class AXSnapshotter: @unchecked Sendable {
         var element: AXUIElement
         var depth: Int
         var ancestors: [String]
+        /// The full names of the two nearest named containers (`ancestors` keeps 30 characters of
+        /// each, for the path): a Messages bubble's cell is named after the bubble's own text.
+        var context: String = ""
         var inWebArea: Bool = false
         /// Under a list/outline row or cell: a text field there is a row's name edited in place.
         var inRow: Bool = false
@@ -696,8 +759,13 @@ final class AXSnapshotter: @unchecked Sendable {
             }
             // A text area that only shows text (a Messages bubble: no name, no placeholder, a value
             // that cannot be set) is text to read, not a field to type into.
+            // macOS 26 Messages reports its bubbles' value settable, so the cell that names the
+            // bubble's text (“Your iMessage, Here, 12:36 AM”) decides first: a field's own value is
+            // never part of its container's name (2026-11-02: four bubbles offered as fields, the
+            // message box unseen, the recipient typed again).
             if isText, role != "AXSecureTextField", label.isEmpty, placeholder.isEmpty, !(value ?? "").isEmpty,
-               (vals[6] as? Bool) != true, !node.inWebArea, !valueIsSettable(el) {
+               (vals[6] as? Bool) != true, !node.inWebArea,
+               AXSnapshot.echoedByContainer(value ?? "", context: node.context) || !valueIsSettable(el) {
                 isText = false
                 if let f, let v = value, lines.count < AXSnapshot.textLineCap, windowFrame.map({ $0.intersects(f) }) ?? true {
                     let t = v.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
@@ -765,19 +833,72 @@ final class AXSnapshotter: @unchecked Sendable {
                 let inWeb = node.inWebArea || role == "AXWebArea"
                 let rowish = !inWeb && (role == "AXRow" || role == "AXCell")
                 var anc = node.ancestors
-                if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" { anc.append(String(label.prefix(30))) }
-                deferred.append(contentsOf: later.map { Node(element: $0, depth: node.depth + 1, ancestors: anc, inWebArea: inWeb,
+                var ctx = node.context
+                if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" {
+                    anc.append(String(label.prefix(30)))
+                    ctx = AXSnapshot.nestedContext(ctx, label)
+                }
+                deferred.append(contentsOf: later.map { Node(element: $0, depth: node.depth + 1, ancestors: anc, context: ctx, inWebArea: inWeb,
                                                              inRow: node.inRow || rowish, modal: modal) })
             }
             var ancestors = node.ancestors
+            var context = node.context
             // The window's and the web area's titles are the page title twice over —
             // no help telling elements apart; real containers (forms, sections, toolbars) are.
-            if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" { ancestors.append(String(label.prefix(30))) }
+            if !label.isEmpty, role != "AXStaticText", !isText, role != "AXWindow", role != "AXWebArea" {
+                ancestors.append(String(label.prefix(30)))
+                context = AXSnapshot.nestedContext(context, label)
+            }
             let inWebArea = node.inWebArea || role == "AXWebArea"
             // Push in reverse so the DFS visits children in their natural (reading) order.
             let inRow = node.inRow || (!inWebArea && (role == "AXRow" || role == "AXCell"))
             for child in children.reversed() {
-                stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, inWebArea: inWebArea, inRow: inRow, modal: modal))
+                stack.append(Node(element: child, depth: node.depth + 1, ancestors: ancestors, context: context, inWebArea: inWebArea,
+                                  inRow: inRow, modal: modal))
+            }
+        }
+
+        // The time box ended inside a deep pane (a Messages transcript: bubbles eight levels down)
+        // before a field to write in was reached — the message box sits after the transcript. A short
+        // sweep over what is left, text inputs only and no deeper than `inputSweepDepth`, finds it.
+        if !AXSnapshot.hasWritableInput(raw), !stack.isEmpty || deferredAt < deferred.count {
+            let sweepDeadline = Date().addingTimeInterval(AXSnapshot.inputSweepSeconds)
+            var pending: [Node] = Array(deferred[deferredAt...].reversed()) + stack
+            var found = 0
+            while let node = pending.popLast(), Date() < sweepDeadline, found < AXSnapshot.inputSweepFinds {
+                let el = node.element
+                let v = multiple(el, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
+                                      kAXEnabledAttribute, kAXFocusedAttribute, "AXFrame", kAXChildrenAttribute, kAXHiddenAttribute,
+                                      kAXPlaceholderValueAttribute])
+                let role = v[0] as? String ?? ""
+                if (v[9] as? Bool) == true { continue }
+                let f = rect(v[7]) ?? frame(of: el)
+                if let f, let wf = windowFrame, !f.isEmpty, !f.intersects(wf), node.depth > 0 { continue }
+                let title = (v[2] as? String) ?? "", desc = (v[3] as? String) ?? "", placeholder = (v[10] as? String) ?? ""
+                if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role), (v[1] as? String) != "AXSecureTextField" {
+                    let value = AXSnapshot.fieldValue(stringValue(v[4]), placeholder: placeholder)
+                    var label = firstNonEmpty([title, desc])
+                    let shown = label.isEmpty && placeholder.isEmpty && !(value ?? "").isEmpty
+                        && (AXSnapshot.echoedByContainer(value ?? "", context: node.context) || !valueIsSettable(el))
+                    if !shown, (v[5] as? Bool) ?? true, let f, f.width >= 1, f.height >= 1 {
+                        if label.isEmpty { label = placeholder.isEmpty ? String((value ?? "").prefix(60)) : placeholder }
+                        raw.append(AXElement(role: role, subrole: v[1] as? String, label: label, value: value.map { String($0.prefix(60)) },
+                                             frame: f, isFocused: (v[6] as? Bool) ?? false, path: node.ancestors.suffix(3).joined(separator: " › "),
+                                             actions: actionNames(el), pid: pid, isWebContent: node.inWebArea, inRow: node.inRow,
+                                             placeholder: placeholder, ref: el))
+                        scopes.append(node.modal)
+                        found += 1
+                    }
+                    continue
+                }
+                guard node.depth < AXSnapshot.inputSweepDepth, !AXSnapshot.leafRoles.contains(role), let kids = elements(v[8]) else { continue }
+                let name = firstNonEmpty([title, desc])
+                var anc = node.ancestors, ctx = node.context
+                if !name.isEmpty, role != "AXWindow", role != "AXWebArea" { anc.append(String(name.prefix(30))); ctx = AXSnapshot.nestedContext(ctx, name) }
+                for k in kids.prefix(AXSnapshot.inputSweepWidth).reversed() {
+                    pending.append(Node(element: k, depth: node.depth + 1, ancestors: anc, context: ctx,
+                                        inWebArea: node.inWebArea || role == "AXWebArea", inRow: node.inRow, modal: node.modal))
+                }
             }
         }
 
@@ -786,6 +907,7 @@ final class AXSnapshotter: @unchecked Sendable {
         // filters `raw` (the modal limit below once ran first and Navi crashed with "Index out of
         // range" as Preview's Sign popover / a Save sheet opened, 2026-11-01).
         raw = AXSnapshot.namingUnlabelled(raw, unlabelled: unlabelled, texts: texts)
+        raw = AXSnapshot.namingChips(raw)
 
         // A popover or modal dialog in front: only what is inside it can be clicked.
         if !modals.isEmpty {

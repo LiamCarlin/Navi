@@ -27,6 +27,15 @@ enum CUSend {
         return RecipientPicker.contactApps.contains(bundleID ?? "") && composerWords.contains(where: words.contains)
     }
 
+    /// The field the message itself is written in (Messages' ‘Message’ / iMessage box, a chat
+    /// app's composer): not To:, not a search box. The bottom-most one when several match.
+    static func composer(in snapshot: AXSnapshot) -> AXElement? {
+        snapshot.elements.filter { e in
+            e.isTextInput && !e.isSecure && !RecipientPicker.isRecipientField(e) && e.role != "AXSearchField"
+                && isTypedSend(role: e.role, label: e.label, placeholder: e.placeholder, bundleID: snapshot.bundleID, irreversible: 0)
+        }.max { $0.frame.maxY < $1.frame.maxY }
+    }
+
     /// A click on a control that sends what was written ("Send", "Post").
     static func isSendControl(label: String, irreversible p: Double) -> Bool {
         guard p >= irreversible, let first = words(label).first else { return false }

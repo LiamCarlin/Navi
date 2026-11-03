@@ -1081,6 +1081,8 @@ final class AgentRun: @unchecked Sendable {
         var sentTexts: [String] = []
         /// Typed into a message field and not yet sent: a Return next sends it.
         var typedUnsent: String?
+        /// Recipients set in this run: what was typed into To: and the contact it became.
+        var pickedRecipients: [String] = []
         var announcedSkill: String?
         var lastActedFrame: CGRect?
         /// The label of the item clicked last: `UserMoves` says what this user clicks after it.
@@ -1162,7 +1164,11 @@ final class AgentRun: @unchecked Sendable {
         var replayUsed = false
         // The user's own way of doing this task (`UserRoutines`): its steps are pressed directly
         // while each one is on screen once and safe; otherwise Jev decides with their way in view.
-        var route = routeMatch.map(\.route)
+        // Matched for the whole task: a planner step elsewhere (the Messages half of "check Outlook,
+        // then text Dhvan") gets it only when the routine belongs where this step works.
+        var route = routeMatch.map(\.route).flatMap { r in
+            task == originalTask || UserRoute.fits(r.routine, bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, url: screen.url) ? r : nil
+        }
         // "Ask before every action" means every action: then Jev proposes each step and the user approves it.
         var followRoute = route != nil && config.approvalMode != .alwaysAsk
         /// How the run went for the routine, once — only when it actually steered the run.
@@ -1186,9 +1192,13 @@ final class AgentRun: @unchecked Sendable {
 
         /// A run that did not get there: the generated playbook's matching recipe counts a failure
         /// and the dead end goes to `avoid`.
-        func learnFailure() {
+        /// Every app keeps the lesson too (`AgentExperience`): how it ended, from code, recalled as
+        /// "✗ … went wrong" the next time a goal like this runs here.
+        func learnFailure(_ lesson: String) {
             SkillSynthesizer.learn(bundleID: screen.snapshot.bundleID, url: screen.url, goal: task, actions: redactedLog, achieved: false,
                                    lastAction: redactedLog.last)
+            AgentExperience.shared.recordFailure(bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, goal: task,
+                                                 actions: redactedLog, lesson: lesson)
         }
 
         /// After an action ran on `acted`: extend (or close) the trajectory being recorded.
@@ -1215,7 +1225,11 @@ final class AgentRun: @unchecked Sendable {
             writerAnswer = a.text.isEmpty ? nil : a.text
             writeRun(outcome.rawValue + " · " + a.verdict.rawValue)
             if !a.achieved, replayUsed { CUReplay.shared.forget(bundleID: startBundle, goal: task) }
-            if !a.achieved { noteRoute(worked: false); learnFailure() }
+            // A question for the user or a goal that cannot be done here is no wrong way to learn from.
+            if !a.achieved { noteRoute(worked: false) }
+            if a.verdict == .partial || a.verdict == .notAchieved {
+                learnFailure("\(a.verdict.rawValue) — \(outcome.rawValue)" + (redactedLog.last.map { " after \($0)" } ?? ""))
+            }
             handle.verdict = a.verdict
             if a.achieved {
                 remember()
@@ -1234,6 +1248,7 @@ final class AgentRun: @unchecked Sendable {
                 handle.verdict = .achieved
                 handle.emit(.completed(summary: Self.summary(humanLog)))
             } else {
+                learnFailure("stopped unread — \(outcome.rawValue)" + (redactedLog.last.map { " after \($0)" } ?? ""))
                 handle.verdict = .notAchieved
                 handle.emit(.failed(failure))
             }
@@ -1604,7 +1619,8 @@ final class AgentRun: @unchecked Sendable {
                                        manual: appManual?.state,
                                        plan: ledger?.state, stepDoneWhen: ledger?.currentDoneWhen,
                                        experience: AgentExperience.shared.recall(bundleID: screen.snapshot.bundleID, goal: task),
-                                       conversation: context.conversation, userContext: userContext,
+                                       conversation: context.conversation,
+                                       userContext: UserKnowledge.forStep(userContext, appName: screen.snapshot.appName, isPlannerStep: task != originalTask),
                                        userMoves: moves.isEmpty ? nil : moves,
                                        previousLabels: previousLabels.flatMap { $0.ocr == screen.usedOCR ? $0.labels : nil })
 
@@ -1723,13 +1739,14 @@ final class AgentRun: @unchecked Sendable {
             var submit = false
             var repeatRefused = false
             var sentNow = false
-            if case .typeText(let id)? = action, let field = screen.snapshot.element(id) {
+            /// The text for `field`: the goal's one quoted phrase, else the writer's, else a local guess.
+            func compose(for field: AXElement) async throws {
                 if let o = obvious, !typedTexts.contains(o) {
                     text = o
                 } else if writerAvailable {
                     let t = Date()
                     var fill: CUWriter.Fill?
-                    if let spec = speculative, spec.elementID == id {
+                    if let spec = speculative, spec.elementID == field.id {
                         fill = await spec.task.value
                         speculative = nil
                     } else {
@@ -1744,7 +1761,29 @@ final class AgentRun: @unchecked Sendable {
                 } else {
                     text = FieldText.localGuess(goal: task, field: field, typed: typedTexts)
                 }
-                if text == nil {
+            }
+            if case .typeText(let id)? = action, var field = screen.snapshot.element(id) {
+                try await compose(for: field)
+                // The recipient this run already picked is set — its chip is in To:. Typing the name
+                // again replaces the chip with a lookup (2026-11-02: "Dhvan Shah" picked, then typed
+                // again because the message box was not seen, and the text ended "no contact"). The
+                // text belongs in the message box: redirected there, else refused with the reason.
+                if let typed = text, RecipientPicker.isRecipientField(field), RecipientPicker.alreadyPicked(typed, picked: pickedRecipients) {
+                    if let box = CUSend.composer(in: screen.snapshot) {
+                        handle.emit(.status("‘\(typed)’ is already the recipient — writing the message in \(box.displayName)"))
+                        action = .typeText(elementID: box.id)
+                        field = box
+                        text = nil
+                        submit = false
+                        try await compose(for: box)
+                        if let t = text, RecipientPicker.alreadyPicked(t, picked: pickedRecipients) { text = nil }
+                    } else {
+                        text = nil
+                        what = "type_text refused: ‘\(typed)’ is already the recipient (picked earlier in this run, its chip is in \(field.displayName)) — the message goes in the message field, never To: again"
+                        action = nil
+                    }
+                }
+                if text == nil, action != nil {
                     what = "type_text refused: nothing to type into \(CUFacts.quoted(field.displayName.trimmingCharacters(in: CharacterSet(charactersIn: "‘’"))))"
                     action = nil
                 } else if let t = text, CUSend.repeats(t, sent: sentTexts) {
@@ -1855,6 +1894,7 @@ final class AgentRun: @unchecked Sendable {
                             }
                         }
                         recipientOutcome = outcome
+                        if case .picked(let n) = outcome { pickedRecipients += [typed, n] }
                         line += outcome.note(typed: typed)
                         handle.emit(.status("Recipient: " + outcome.note(typed: typed).dropFirst(3)))
                     } else if case .typeText(let id) = action, let field = screen.snapshot.element(id), let typed = text {
@@ -1950,6 +1990,8 @@ final class AgentRun: @unchecked Sendable {
                 if let outcome = recipientOutcome, let field = recipientField, let typed = text,
                    outcome.stopsContactApp, RecipientPicker.contactApps.contains(screen.snapshot.bundleID ?? "") {
                     writeRun("no contact")
+                    learnFailure("no contact came up for the name typed into \(field.displayName)"
+                                 + (pickedRecipients.isEmpty ? "" : " — the recipient was already set and the name was typed again"))
                     handle.verdict = .needsUser
                     handle.emit(.failed(outcome.failure(typed: typed, field: field.displayName, app: screen.snapshot.appName)))
                     return
@@ -1965,6 +2007,12 @@ final class AgentRun: @unchecked Sendable {
             screen = await observe()
             // A one-click goal's click: give a late pane its moment before judging it.
             let answered = literalLanded ? await awaitAnswer(before: acted, label: literal) : !screen.signature.same(as: before)
+            // An action that changed nothing did not get anywhere: it is not part of the way that
+            // worked (`AgentExperience`, generated playbooks), so the next run does not copy it.
+            if let action, actionRan, !answered, !waiting, !action.isReadOnly, action.kind != "type_text",
+               redactedLog.last == action.human(in: acted.snapshot, text: nil) {
+                redactedLog.removeLast()
+            }
             if let action, actionRan {
                 let itemText = decision.target.flatMap { Int($0.choice) }.flatMap { i in acted.items.first { $0.index == i }?.text }
                 recordReplay(action, on: acted, itemText: itemText, moved: answered)
