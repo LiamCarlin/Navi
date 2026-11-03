@@ -115,6 +115,7 @@ final class UserPaths: @unchecked Sendable {
         // A task that reaches someone goes where they are reached (their chat, a new mail); the doc or page it
         // names is what to send ("email dhvan the hci notes"), not where to go.
         let reaches = TaskGrounding.isCommunication(task)
+        let onePerson = MessageAudience.isOnePerson(task)
         let pages = !anyOne && !reaches
         let recent = TaskGrounding.scope(of: task, now: Date()).recent
 
@@ -125,7 +126,10 @@ final class UserPaths: @unchecked Sendable {
                 out.append(.init(kind: .page, page: page, url: UserHabits.cleanURL(u), node: nil, label: gr.name, fill: [], cost: 0, what: gr.name, source: "thing"))
             }
             if pages { out += g.pageTargets(words: want, scope: scope) }
-            if items { out += g.itemTargets(words: want, scope: scope) }
+            if items {
+                // One person's message: a group row that lists them is not their chat ("Jonathan & +1").
+                out += g.itemTargets(words: want, scope: scope).filter { !onePerson || !MessageAudience.isGroupConversation($0.label) }
+            }
             if pages { out += g.pageKindTargets(words: want, recent: recent, scope: scope) }
             out += g.intentTargets(intents, scope: scope)
             return out.sorted { $0.cost < $1.cost }

@@ -80,8 +80,11 @@ enum UserContacts {
     static let nonConversationTitles: Set<String> = ["", "messages", "quick look", "new message", "whatsapp", "facetime", "mail", "slack", "inbox"]
 
     /// The conversation a Messages window shows ("Bella Chen"), or nil for the app itself.
+    /// A group that lists its members ("Jonathan & +1", "Jack, Dhvan & Jonathan") is nobody's own
+    /// chat: opening it is not reaching any one of them (it once made "text jonathan" a group text).
     static func conversation(windowTitle: String?) -> String? {
-        guard let t = windowTitle.map(stripMarks), !nonConversationTitles.contains(t.lowercased()) else { return nil }
+        guard let t = windowTitle.map(stripMarks), !nonConversationTitles.contains(t.lowercased()),
+              !MessageAudience.isGroupConversation(t) else { return nil }
         return t
     }
 
@@ -94,7 +97,8 @@ enum UserContacts {
             let tail = String(l[r]).replacingOccurrences(of: #"^Received (?:from|in) "#, with: "", options: .regularExpression)
             return clean(tail)
         }
-        guard ["button", "row", "cell", "text", "static text", "group"].contains(role.lowercased()) else { return nil }
+        guard ["button", "row", "cell", "text", "static text", "group"].contains(role.lowercased()),
+              !MessageAudience.isGroupConversation(l) else { return nil }
         let first = l.split(separator: ",", maxSplits: 1).first.map(String.init) ?? l
         return clean(first)
     }

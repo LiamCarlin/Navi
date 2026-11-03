@@ -1169,6 +1169,7 @@ final class AgentRun: @unchecked Sendable {
         var route = routeMatch.map(\.route).flatMap { r in
             task == originalTask || UserRoute.fits(r.routine, bundleID: screen.snapshot.bundleID, appName: screen.snapshot.appName, url: screen.url) ? r : nil
         }
+        route?.avoidGroupChats = MessageAudience.isOnePerson(task)
         // "Ask before every action" means every action: then Jev proposes each step and the user approves it.
         var followRoute = route != nil && config.approvalMode != .alwaysAsk
         /// How the run went for the routine, once — only when it actually steered the run.
@@ -1823,6 +1824,15 @@ final class AgentRun: @unchecked Sendable {
             }
             var literalLanded = false
             var actionRan = false
+            // A message for one person never goes into a group conversation (`MessageAudience`): the
+            // send is refused before it happens, whatever led there.
+            if let action, let group = Self.groupSend(action, submit: submit, task: task, screen: screen,
+                                                      typedUnsent: typedUnsent, irreversible: verdict.isIrreversible) {
+                writeRun("group conversation")
+                handle.verdict = .needsUser
+                handle.emit(.failed("The conversation open in \(screen.snapshot.appName ?? "the app") is a group (\(group)), not just the person this message is for, so I didn't send it. Say their full name, number or email."))
+                return
+            }
             if let action {
                 // Approval gating — JevGate's rules, from the nouls that rode along in the same call.
                 let human = action.human(in: screen.snapshot, text: text) + (submit ? " and press Return" : "")
@@ -1864,6 +1874,9 @@ final class AgentRun: @unchecked Sendable {
                 if let f = recipientField { recipientBaseline = await RecipientPicker.baseline(pid: f.pid > 0 ? f.pid : screen.snapshot.pid, field: f.frame) }
                 var recipientOutcome: RecipientPicker.Outcome?
                 var failed = false
+                // The suggestion list only shows while the app is active (Messages hides it otherwise).
+                var heldActive: NSRunningApplication?
+                if let f = recipientField { heldActive = await executor.beginSuggestions(pid: f.pid > 0 ? f.pid : screen.snapshot.pid) }
                 do {
                     try await executor.perform(action, text: text, snapshot: screen.snapshot)
                     if let field = recipientField, let typed = text {
@@ -1893,6 +1906,13 @@ final class AgentRun: @unchecked Sendable {
                                                                                    baseline: recipientBaseline, executor: executor)
                             }
                         }
+                        // One name must add one recipient: a pick that put several people in To: was a group.
+                        if case .picked(let n) = outcome {
+                            let added = MessageAudience.pillCount(await ActionExecutor.readBack(field).value) - MessageAudience.pillCount(field.value)
+                            if added > 1 { outcome = .addedSeveral(n, added) }
+                        }
+                        await executor.endSuggestions(heldActive)
+                        heldActive = nil
                         recipientOutcome = outcome
                         if case .picked(let n) = outcome { pickedRecipients += [typed, n] }
                         line += outcome.note(typed: typed)
@@ -1947,14 +1967,18 @@ final class AgentRun: @unchecked Sendable {
                     }
                     if action != .wait, recipientOutcome == nil { await AXSnapshotter.settle(after: before, maxMs: action.settleMs, target: target) }
                 } catch is CancellationError {
+                    await executor.endSuggestions(heldActive)
                     throw CancellationError()
                 } catch {
+                    await executor.endSuggestions(heldActive)
+                    heldActive = nil
                     let msg = (error as? NaviError)?.errorDescription ?? error.localizedDescription
                     Log.agent.error("Jev action failed (\(action.kind, privacy: .public)): \(msg, privacy: .private)")
                     line += " → refused: \(msg)"
                     failed = true
                     handle.emit(.status("Action failed: \(msg)"))
                 }
+                await executor.endSuggestions(heldActive)
                 try checkCancelled()
                 humanLog.append(human)
                 if case .picked(let n)? = recipientOutcome { humanLog[humanLog.count - 1] += " → ‘\(n)’" }
@@ -2062,6 +2086,29 @@ final class AgentRun: @unchecked Sendable {
     }
 
     /// The field reads back exactly what was typed (whitespace aside).
+    /// Would `action` send a message for one person into a group conversation? The group's name
+    /// when so: the window is a group ("Jonathan, Kieran & +1"), or a recipient field holds several people.
+    static func groupSend(_ action: AgentAction, submit: Bool, task: String, screen: CUScreen, typedUnsent: String?,
+                          irreversible: Double) -> String? {
+        guard RecipientPicker.contactApps.contains(screen.snapshot.bundleID ?? ""), MessageAudience.isOnePerson(task) else { return nil }
+        let sends: Bool
+        switch action {
+        case .typeText(let id):
+            guard submit, let f = screen.snapshot.element(id) else { return nil }
+            sends = CUSend.isTypedSend(role: f.role, label: f.label, placeholder: f.placeholder, bundleID: screen.snapshot.bundleID, irreversible: irreversible)
+        case .key(let k): sends = typedUnsent != nil && ["return", "kp_enter", "cmd+return", "cmd+enter"].contains(k.lowercased())
+        case .click(let id), .press(let id): sends = CUSend.isSendControl(label: screen.snapshot.element(id)?.label ?? "", irreversible: irreversible)
+        case .clickPoint(_, _, let label): sends = CUSend.isSendControl(label: label, irreversible: irreversible)
+        default: sends = false
+        }
+        guard sends else { return nil }
+        if let title = screen.snapshot.windowTitle, MessageAudience.isGroupConversation(title) { return title }
+        if let f = screen.snapshot.elements.first(where: { RecipientPicker.isRecipientField($0) && MessageAudience.pillCount($0.value) >= 2 }) {
+            return "\(MessageAudience.pillCount(f.value)) people in \(f.displayName)"
+        }
+        return nil
+    }
+
     static func holdsTyped(_ value: String?, _ typed: String) -> Bool {
         guard let v = value?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return false }
         return v == typed.trimmingCharacters(in: .whitespacesAndNewlines)

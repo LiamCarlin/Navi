@@ -44,7 +44,11 @@ import Testing
 
     @Test func readsTheConversationAClickOpened() {
         #expect(UserContacts.conversation(clickedLabel: "r2 gang fall 26, \u{200E}2 unread messages", role: "button") == "r2 gang fall 26")
-        #expect(UserContacts.conversation(clickedLabel: "\u{200E}\u{202A}Jillian & ~ Mateo\u{202C}", role: "button") == "Jillian & ~ Mateo")
+        // A group that lists its members is nobody's own chat (2026-11-02: "Jonathan & +1" made "text jonathan" a group text).
+        #expect(UserContacts.conversation(clickedLabel: "\u{200E}\u{202A}Jillian & ~ Mateo\u{202C}", role: "button") == nil)
+        #expect(UserContacts.conversation(clickedLabel: "Jonathan & +1, You loved “Dude I’m like 1k wpm”", role: "text") == nil)
+        #expect(UserContacts.conversation(clickedLabel: "Jack,  Dhvan,  Lena,  Premkumar,  Reja & Jonathan, Unread, son , 10:04 AM", role: "text") == nil)
+        #expect(UserContacts.conversation(windowTitle: "Jonathan, Kieran & +1 (925) 548-3198") == nil)
         #expect(UserContacts.conversation(clickedLabel: "\u{200E}message, Yes, sure thing, 10:17 AM, \u{200E}Received from João Pedro Mendes",
                                           role: "text") == "João Pedro Mendes")
         #expect(UserContacts.conversation(clickedLabel: "Marie Kung, Unread, Hey are you around", role: "row") == "Marie Kung")

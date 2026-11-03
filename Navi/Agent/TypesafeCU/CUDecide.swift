@@ -194,6 +194,7 @@ enum CUDecide {
         let mates = CUFacts.rowMates(screen.items)
         let frame = screen.frame
         let fresh = newItems(input)
+        let onePerson = MessageAudience.isOnePerson(input.goal)
         var state: [String: Any] = [
             "goal": input.goal,
             "now": input.now,
@@ -212,6 +213,7 @@ enum CUDecide {
                 if let n = input.userMoves?.clicks[it.index] { d["user_clicks"] = n }
                 if input.userMoves?.next.contains(it.index) == true { d["user_next"] = true }
                 if input.userMoves?.routeNext.contains(it.index) == true { d["user_way_next"] = true }
+                if onePerson, MessageAudience.isGroupConversation(it.text) { d["group_conversation"] = true }
                 return d.merging(itemExtras(it, screen: screen)) { a, _ in a }
             },
         ]
@@ -226,6 +228,8 @@ enum CUDecide {
         if !input.experience.isEmpty { state["experience"] = input.experience }
         if let moves = input.userMoves?.state { state["how_this_user_works"] = moves }
         if let way = input.userMoves?.route { state["this_users_way"] = way }
+        let person = input.userContext.first { $0["type"] as? String == "person" }?["name"] as? String
+        if let m = MessageAudience.fact(task: input.goal, person: person) { state["message_to"] = m }
         if !input.conversation.isEmpty {
             state["conversation"] = ["note": "What the user asked before this goal and what happened, most recent last; the goal may refer to it ('the text', 'him', 'that').",
                                      "earlier": input.conversation]
@@ -242,6 +246,7 @@ enum CUDecide {
         let hints = CUFacts.dateHints(screen.items, today: input.today)
         let mates = CUFacts.rowMates(screen.items)
         let fresh = newItems(input)
+        let onePerson = MessageAudience.isOnePerson(input.goal)
         var out: [String: String] = [:]
         for it in screen.items {
             var parts = [CUFacts.region(it, in: screen.frame)]
@@ -256,6 +261,7 @@ enum CUDecide {
             if let n = input.userMoves?.clicks[it.index] { parts.append("this user clicks this here (\(n)×)") }
             if input.userMoves?.next.contains(it.index) == true { parts.append("what this user usually clicks next") }
             if input.userMoves?.routeNext.contains(it.index) == true { parts.append("this user's own next step for this task") }
+            if onePerson, MessageAudience.isGroupConversation(it.text) { parts.append("a group conversation with several people — not the person this message is for") }
             out["\(it.index)"] = (it.fromAX && !it.role.isEmpty ? it.role + " " : "") + CUFacts.quoted(it.text) + " (" + parts.joined(separator: "; ") + ")"
         }
         return out

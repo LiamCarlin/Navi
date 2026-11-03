@@ -161,6 +161,15 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     lesson, and recalled to Jev as "✗ … went wrong"; goals match by what they ask (the message cut,
     `intent(of:)`) over the shorter goal's words; detours (a click undone by Esc/Close/Cancel, a repeat,
     an action that changed nothing) never enter what is stored. Tests: `NaviTests/ClickPlanningTests.swift`.
+    **One person is never a group** (`Agent/MessageAudience`; 2026-11-02 "text jonathan" went to
+    Jonathan, Kieran & +1): a message task naming one person (`isOnePerson`) never uses a conversation
+    that lists members (`isGroupConversation`: "Jonathan & +1", "Jack, Dhvan & Jonathan", "New Message
+    to A, B & …"; named groups like "THE GANG" are not flagged). The picker never takes such a
+    suggestion for a name (a member's number is no handle), a pick that adds > 1 pill stops the run,
+    routines/paths through a group row are dropped and `UserRoute` never presses one, group chats
+    don't count as reaching a person (`UserContacts`), Jev and the writer get `message_to`, and a send
+    into a group window/To: is refused (`AgentRun.groupSend`). In background mode the app is held
+    active while the name is typed and picked — Messages hides its suggestion list otherwise.
   - **User habits** (`Agent/UserHabits`): planning follows how *this* user works, read
     from screen memory (installed by `MemoryService`, toggle `agentUsesScreenHabits`).
     The planner state gets `user_habits`: per kind of work (email, texting, coursework…)
