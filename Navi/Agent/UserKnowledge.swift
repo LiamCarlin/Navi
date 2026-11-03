@@ -192,6 +192,20 @@ final class UserKnowledge: @unchecked Sendable {
         return out
     }
 
+    /// `context` for one planner step working in `appName`: the whole task's pick that is an app
+    /// session somewhere else ("Search Outlook for registrar emails" while the step texts in
+    /// Messages) is not what this step's words point at — dropped, so Jev is not told
+    /// "the_task_refers_to_this" about another app. Documents and people stay (they may be the content).
+    static func forStep(_ context: [[String: Any]], appName: String?, isPlannerStep: Bool) -> [[String: Any]] {
+        guard isPlannerStep, let appName else { return context }
+        let clean: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+        return context.filter { thing in
+            guard thing["the_task_refers_to_this"] != nil, thing["type"] as? String == "app",
+                  let place = thing["where"] as? String else { return true }
+            return clean(place) == clean(appName)
+        }
+    }
+
     /// The run's grounding, for a task or one of its steps.
     static func grounded(_ task: String, original: String? = nil) -> TaskGrounding.Grounded? {
         TaskGrounding.cached(for: task) ?? original.flatMap(TaskGrounding.cached(for:))

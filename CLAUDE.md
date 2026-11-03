@@ -148,6 +148,19 @@ brain; Claude is the slow "System Two" that writes text and drives the computer.
     confirms the list closed, and appends "→ picked the contact ‘…’" to the step. The name is
     *typed*: an AXValue set never starts the lookup. No contact in Messages/Mail/Outlook ⇒ the
     run stops instead of writing the message; "mom" retries as "Mama"/"Mum" first.
+    A contact picked in this run is never typed again (`RecipientPicker.alreadyPicked`): a type_text
+    into To: naming them goes to the message box (`CUSend.composer`), else it is refused with the reason
+    (2026-11-02: "text Dhvan my availability" picked Dhvan, then retyped him and ended "no contact").
+    The To: value names its chips (`AXSnapshot.namingChips`: "￼" → ‹Dhvan Shah›). Perception: a text
+    area whose container's name already says its text is a bubble, not a field
+    (`AXSnapshot.echoedByContainer` — macOS 26 Messages reports bubbles settable), and a walk that ran
+    out of time with no field to write in sweeps what is left for text inputs (≤ 0.1 s, depth ≤ 8:
+    Messages' message box sits after the transcript). A planner step only carries the whole task's
+    routine where it belongs (`UserRoute.fits`) and never another app's grounded session
+    (`UserKnowledge.forStep`). Learning (`AgentExperience`): failures are stored too, with a code-made
+    lesson, and recalled to Jev as "✗ … went wrong"; goals match by what they ask (the message cut,
+    `intent(of:)`) over the shorter goal's words; detours (a click undone by Esc/Close/Cancel, a repeat,
+    an action that changed nothing) never enter what is stored. Tests: `NaviTests/ClickPlanningTests.swift`.
     **One person is never a group** (`Agent/MessageAudience`; 2026-11-02 "text jonathan" went to
     Jonathan, Kieran & +1): a message task naming one person (`isOnePerson`) never uses a conversation
     that lists members (`isGroupConversation`: "Jonathan & +1", "Jack, Dhvan & Jonathan", "New Message

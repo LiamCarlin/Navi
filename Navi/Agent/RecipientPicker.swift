@@ -283,6 +283,22 @@ enum RecipientPicker {
         return true
     }
 
+    /// Is `typed` someone already picked in this run (`picked`: what was typed and the contact it
+    /// became)? Then their chip is in the field, and typing the name again would replace it with a
+    /// lookup — "Dhvan Shah" typed twice into To: ended a text that was one step from done.
+    static func alreadyPicked(_ typed: String, picked: [String]) -> Bool {
+        let t = fold(typed).trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return false }
+        let typedWords = words(typed)
+        // Every typed word starts a word of the picked name ("dhvan" ~ "Dhvan Shah"); a first letter
+        // alone is not enough here — "Jill" after "Jack" is a second recipient.
+        return picked.contains { p in
+            let nameWords = words(name(of: p))
+            return fold(name(of: p)).trimmingCharacters(in: .whitespaces) == t
+                || !typedWords.isEmpty && typedWords.allSatisfy { w in nameWords.contains { $0.hasPrefix(w) } }
+        }
+    }
+
     /// Words people use for family that contacts are rarely saved under.
     static let nicknames: [String: [String]] = [
         "mom": ["mama", "mum", "mother", "mommy", "ma", "mami"], "mum": ["mom", "mama", "mother", "mummy"],
